@@ -40,7 +40,11 @@ const saveJerarquia = async (req, res) => {
         return res.json({ ok: true, ...data });
     } catch (err) {
         console.error("saveJerarquia error:", err);
-        return res.status(500).json({ ok: false, message: "Error interno al guardar jerarquía" });
+        const status = Number.isFinite(Number(err?.statusCode)) ? Number(err.statusCode) : 500;
+        return res.status(status).json({
+            ok: false,
+            message: status === 500 ? "Error interno al guardar jerarquía" : (err?.message || "Datos inválidos")
+        });
     }
 };
 

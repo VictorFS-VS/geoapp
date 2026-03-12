@@ -499,8 +499,121 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
-  await pool.query(`DELETE FROM ema.expedientes WHERE id_expediente=$1`, [idExp]);
-  res.json({ ok: true });
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente invalido" });
+  }
+
+  const client = await pool.connect();
+  let expRow = null;
+  let tumbaRows = [];
+  let deleted = {
+    expediente: 0,
+    documentos_bd: 0,
+    bloque_mejoras: 0,
+    bloque_terreno: 0,
+    expediente_archivos: 0,
+    archivos_fisicos: 0,
+    carpeta_expediente_removida: false,
+  };
+  const cleanupWarnings = [];
+
+  try {
+    await client.query("BEGIN");
+
+    const expQ = await client.query(
+      `SELECT id_expediente, id_proyecto, codigo_exp
+         FROM ema.expedientes
+        WHERE id_expediente=$1`,
+      [idExp]
+    );
+    if (!expQ.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Expediente no encontrado" });
+    }
+    expRow = expQ.rows[0];
+
+    const tumbaQ = await client.query(
+      `SELECT id_archivo, url, nombre_archivo
+         FROM ema.tumba
+        WHERE id_documento=$1
+          AND tipo_documento='expedientes'`,
+      [idExp]
+    );
+    tumbaRows = tumbaQ.rows || [];
+
+    const delTumba = await client.query(
+      `DELETE FROM ema.tumba
+        WHERE id_documento=$1
+          AND tipo_documento='expedientes'`,
+      [idExp]
+    );
+    deleted.documentos_bd = delTumba.rowCount || 0;
+
+    const delMejoras = await client.query(`DELETE FROM ema.bloque_mejoras WHERE id_expediente=$1`, [idExp]);
+    deleted.bloque_mejoras = delMejoras.rowCount || 0;
+
+    const delTerreno = await client.query(`DELETE FROM ema.bloque_terreno WHERE id_expediente=$1`, [idExp]);
+    deleted.bloque_terreno = delTerreno.rowCount || 0;
+
+    // Legacy defensivo (si existe)
+    try {
+      const delLegacy = await client.query(
+        `DELETE FROM ema.expediente_archivos WHERE id_expediente=$1`,
+        [idExp]
+      );
+      deleted.expediente_archivos = delLegacy.rowCount || 0;
+    } catch (e) {
+      cleanupWarnings.push("No se pudo borrar ema.expediente_archivos (tabla inexistente o error).");
+    }
+
+    const delExp = await client.query(`DELETE FROM ema.expedientes WHERE id_expediente=$1`, [idExp]);
+    deleted.expediente = delExp.rowCount || 0;
+
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    return res.status(500).json({ message: "Error eliminando expediente", detail: String(e?.message || e) });
+  } finally {
+    client.release();
+  }
+
+  // Cleanup fisico fuera de la transaccion
+  for (const r of tumbaRows) {
+    try {
+      const abs = resolveAbsolutePath(r.url);
+      if (abs && (await fs.pathExists(abs))) {
+        await fs.remove(abs);
+        deleted.archivos_fisicos += 1;
+      }
+    } catch (e) {
+      cleanupWarnings.push(`No se pudo eliminar archivo fisico: ${r?.url || "desconocido"}`);
+    }
+  }
+
+  if (expRow?.id_proyecto) {
+    const expDir = path.join(
+      BASE_UPLOAD_DIR,
+      `proyecto_${expRow.id_proyecto}`,
+      "expedientes",
+      String(idExp)
+    );
+    try {
+      if (await fs.pathExists(expDir)) {
+        await fs.remove(expDir);
+        deleted.carpeta_expediente_removida = true;
+      }
+    } catch (e) {
+      cleanupWarnings.push("No se pudo eliminar la carpeta fisica del expediente.");
+    }
+  }
+
+  const payload = {
+    ok: true,
+    id_expediente: idExp,
+    deleted,
+  };
+  if (cleanupWarnings.length) payload.warnings = cleanupWarnings;
+  return res.json(payload);
 };
 
 // =====================

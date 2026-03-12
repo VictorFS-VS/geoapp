@@ -16,7 +16,7 @@ const pool = require("../db");
 const getJerarquia = async (idProyecto) => {
   // 1. Traer tramos
   const tramosRes = await pool.query(
-    `SELECT id_proyecto_tramo, id_proyecto, descripcion, cantidad_universo, id_vial_tramo, orden
+    `SELECT id_proyecto_tramo, id_proyecto, descripcion, cantidad_universo, id_vial_tramo, orden, fecha_limite, fecha_max
      FROM ema.proyecto_tramos
      WHERE id_proyecto = $1
      ORDER BY orden ASC, id_proyecto_tramo ASC`,
@@ -29,7 +29,7 @@ const getJerarquia = async (idProyecto) => {
 
   // 2. Traer todos los subtramos de esos tramos en un solo query
   const subtramosRes = await pool.query(
-    `SELECT id_proyecto_subtramo, id_proyecto_tramo, descripcion, cantidad_universo, orden
+    `SELECT id_proyecto_subtramo, id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max
      FROM ema.proyecto_subtramos
      WHERE id_proyecto_tramo = ANY($1::int[])
      ORDER BY id_proyecto_tramo ASC, orden ASC, id_proyecto_subtramo ASC`,
@@ -54,6 +54,31 @@ const parseOptInt = (val, fallback = null) => {
   if (val === "" || val === null || val === undefined) return fallback;
   const n = Number(val);
   return Number.isFinite(n) ? n : fallback;
+};
+
+const isYmdDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
+
+// Presence-aware DATE parsing:
+// - missing field => present=false (preserve on UPDATE)
+// - empty/null => present=true, value=null (clear on UPDATE / insert NULL)
+// - YYYY-MM-DD => present=true, value=that string
+const parseOptDatePresence = (obj, field) => {
+  const present = Object.prototype.hasOwnProperty.call(obj || {}, field);
+  if (!present) return { present: false, value: null };
+
+  const raw = obj?.[field];
+  if (raw === "" || raw === null || raw === undefined) return { present: true, value: null };
+
+  const s = String(raw).trim();
+  if (!s) return { present: true, value: null };
+
+  if (!isYmdDate(s)) {
+    const err = new Error(`${field} debe tener formato YYYY-MM-DD o ser null`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return { present: true, value: s };
 };
 
 /**
@@ -95,26 +120,38 @@ const saveJerarquia = async (idProyecto, tramos) => {
       let idTramoReal;
 
       if (idT) {
+        const fLim = parseOptDatePresence(t, "fecha_limite");
+        const fMax = parseOptDatePresence(t, "fecha_max");
+
         // Actualizar tramo existente
         await client.query(
           `UPDATE ema.proyecto_tramos
-           SET descripcion = $1, cantidad_universo = $2, id_vial_tramo = $3, orden = $4
-           WHERE id_proyecto_tramo = $5 AND id_proyecto = $6`,
+           SET descripcion = $1, cantidad_universo = $2, id_vial_tramo = $3, orden = $4,
+               fecha_limite = CASE WHEN $5 THEN $6::date ELSE fecha_limite END,
+               fecha_max = CASE WHEN $7 THEN $8::date ELSE fecha_max END
+           WHERE id_proyecto_tramo = $9 AND id_proyecto = $10`,
           [
             t.descripcion || "",
             parseOptInt(t.cantidad_universo, null),
             parseOptInt(t.id_vial_tramo, null),
             parseOptInt(t.orden, 0),
+            fLim.present,
+            fLim.value,
+            fMax.present,
+            fMax.value,
             idT,
             idProyecto,
           ]
         );
         idTramoReal = idT;
       } else {
+        const fLim = parseOptDatePresence(t, "fecha_limite");
+        const fMax = parseOptDatePresence(t, "fecha_max");
+
         // Insertar tramo nuevo
         const ins = await client.query(
-          `INSERT INTO ema.proyecto_tramos (id_proyecto, descripcion, cantidad_universo, id_vial_tramo, orden)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO ema.proyecto_tramos (id_proyecto, descripcion, cantidad_universo, id_vial_tramo, orden, fecha_limite, fecha_max)
+           VALUES ($1, $2, $3, $4, $5, $6::date, $7::date)
            RETURNING id_proyecto_tramo`,
           [
             idProyecto,
@@ -122,6 +159,8 @@ const saveJerarquia = async (idProyecto, tramos) => {
             parseOptInt(t.cantidad_universo, null),
             parseOptInt(t.id_vial_tramo, null),
             parseOptInt(t.orden, 0),
+            fLim.present ? fLim.value : null,
+            fMax.present ? fMax.value : null,
           ]
         );
         idTramoReal = ins.rows[0].id_proyecto_tramo;
@@ -153,17 +192,42 @@ const saveJerarquia = async (idProyecto, tramos) => {
           : null;
 
         if (idS) {
+          const fLim = parseOptDatePresence(s, "fecha_limite");
+          const fMax = parseOptDatePresence(s, "fecha_max");
+
           await client.query(
             `UPDATE ema.proyecto_subtramos
-             SET descripcion = $1, cantidad_universo = $2, orden = $3
-             WHERE id_proyecto_subtramo = $4 AND id_proyecto_tramo = $5`,
-            [s.descripcion || "", parseOptInt(s.cantidad_universo, null), parseOptInt(s.orden, 0), idS, idTramoReal]
+             SET descripcion = $1, cantidad_universo = $2, orden = $3,
+                 fecha_limite = CASE WHEN $4 THEN $5::date ELSE fecha_limite END,
+                 fecha_max = CASE WHEN $6 THEN $7::date ELSE fecha_max END
+             WHERE id_proyecto_subtramo = $8 AND id_proyecto_tramo = $9`,
+            [
+              s.descripcion || "",
+              parseOptInt(s.cantidad_universo, null),
+              parseOptInt(s.orden, 0),
+              fLim.present,
+              fLim.value,
+              fMax.present,
+              fMax.value,
+              idS,
+              idTramoReal,
+            ]
           );
         } else {
+          const fLim = parseOptDatePresence(s, "fecha_limite");
+          const fMax = parseOptDatePresence(s, "fecha_max");
+
           await client.query(
-            `INSERT INTO ema.proyecto_subtramos (id_proyecto_tramo, descripcion, cantidad_universo, orden)
-             VALUES ($1, $2, $3, $4)`,
-            [idTramoReal, s.descripcion || "", parseOptInt(s.cantidad_universo, null), parseOptInt(s.orden, 0)]
+            `INSERT INTO ema.proyecto_subtramos (id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max)
+             VALUES ($1, $2, $3, $4, $5::date, $6::date)`,
+            [
+              idTramoReal,
+              s.descripcion || "",
+              parseOptInt(s.cantidad_universo, null),
+              parseOptInt(s.orden, 0),
+              fLim.present ? fLim.value : null,
+              fMax.present ? fMax.value : null,
+            ]
           );
         }
       }
@@ -217,7 +281,9 @@ const getTramosCensales = async (idProyecto) => {
        descripcion,
        cantidad_universo,
        cantidad_universo AS universo_censal,
-       id_vial_tramo
+       id_vial_tramo,
+       fecha_limite,
+       fecha_max
      FROM ema.proyecto_tramos
      WHERE id_proyecto = $1
      ORDER BY orden ASC, descripcion ASC`,
@@ -243,7 +309,9 @@ const getSubtramosCensales = async (idProyecto, idTramo) => {
        id_proyecto_subtramo,
        descripcion,
        cantidad_universo,
-       cantidad_universo AS universo_censal
+       cantidad_universo AS universo_censal,
+       fecha_limite,
+       fecha_max
      FROM ema.proyecto_subtramos
      WHERE id_proyecto_tramo = $1
      ORDER BY orden ASC, descripcion ASC`,

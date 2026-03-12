@@ -12,6 +12,7 @@ import { useParams, Link, useSearchParams } from "react-router-dom";
 import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "react-bootstrap";
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
 import { alerts } from "@/utils/alerts";
+import { hasPerm } from "@/utils/auth";
 import * as XLSX from "xlsx";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -183,6 +184,8 @@ export default function Expedientes() {
   const [catastroLoadedFor, setCatastroLoadedFor] = useState(null);
   const [catastroLoading, setCatastroLoading] = useState(false);
   const [catastroError, setCatastroError] = useState("");
+
+  const canDeleteTotal = hasPerm("expedientes.delete");
 
   const [form, setForm] = useState({
     id_proyecto: idProyecto,
@@ -409,6 +412,18 @@ export default function Expedientes() {
   const [dbiInicioObs, setDbiInicioObs] = useState("");
   const [dbiInicioBusy, setDbiInicioBusy] = useState(false);
   const [dbiInicioError, setDbiInicioError] = useState("");
+
+  // delete total
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const deleteToken = (current?.codigo_exp || "").trim() || "ELIMINAR";
+  const deleteTokenLabel = (current?.codigo_exp || "").trim()
+    ? `Escriba el codigo del expediente (${deleteToken}) para confirmar.`
+    : `Escriba ELIMINAR para confirmar.`;
+  const deleteConfirmOk = deleteConfirm.trim() === deleteToken;
 
   const etapasList = tipoCarpeta === "mejora" ? ETAPAS_MEJORA : ETAPAS_TERRENO;
 
@@ -1216,6 +1231,35 @@ export default function Expedientes() {
     }
   };
 
+  const openDeleteModal = () => {
+    if (!current || !canDeleteTotal || readonly) return;
+    setDeleteConfirm("");
+    setDeleteError("");
+    setShowDeleteModal(true);
+  };
+
+  const deleteExpediente = async () => {
+    if (!current || !canDeleteTotal) return;
+    if (!deleteConfirmOk) return;
+    setDeleteBusy(true);
+    setDeleteError("");
+    try {
+      const resp = await apiDelete(`${API}/expedientes/${current.id_expediente}`);
+      alerts.toast.success("Expediente eliminado");
+      if (resp?.warnings?.length) {
+        alerts.toast.warning(`Eliminado con advertencias: ${resp.warnings.length}`);
+      }
+      setShowDeleteModal(false);
+      setShow(false);
+      setCurrent(null);
+      await load();
+    } catch (e) {
+      setDeleteError(String(e?.message || e));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   // =========================
   // UPLOAD DOCUMENTOS / CI
   // =========================
@@ -1518,7 +1562,7 @@ export default function Expedientes() {
               <th>Propietario</th>
               <th>C.I.</th>
               <th>Tramo</th>
-              <th>SubTramo</th>
+              <th>Tipo de carpeta</th>
               <th>Fecha</th>
               <th style={{ width: 160 }}>Acciones</th>
             </tr>
@@ -1542,7 +1586,16 @@ export default function Expedientes() {
                 <td>{r.propietario_nombre}</td>
                 <td>{r.propietario_ci}</td>
                 <td>{r.tramo}</td>
-                <td>{r.subtramo}</td>
+                <td>
+                  {(() => {
+                    const hasMejora = hasActiveStages(r?.carpeta_mejora);
+                    const hasTerreno = hasActiveStages(r?.carpeta_terreno);
+                    if (hasMejora && !hasTerreno) return "Mejora";
+                    if (hasTerreno && !hasMejora) return "Terreno";
+                    if (hasMejora && hasTerreno) return "Legacy";
+                    return "Sin iniciar";
+                  })()}
+                </td>
                 <td>{r.fecha_relevamiento ? String(r.fecha_relevamiento).slice(0, 10) : ""}</td>
                 <td>
                   <div className="btn-group">
@@ -2641,6 +2694,11 @@ export default function Expedientes() {
         </Modal.Body>
 
         <Modal.Footer>
+          {!readonly && canDeleteTotal && current && (
+            <Button variant="danger" onClick={openDeleteModal}>
+              Eliminar expediente
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => setShow(false)}>
             Cerrar
           </Button>
@@ -2649,6 +2707,37 @@ export default function Expedientes() {
               {mode === "crear" ? "Guardar" : "Actualizar"}
             </Button>
           )}
+        </Modal.Footer>
+      </Modal>
+
+      {/* =========================
+          MODAL DELETE TOTAL
+         ========================= */}
+      <Modal show={showDeleteModal} onHide={() => !deleteBusy && setShowDeleteModal(false)} centered>
+        <Modal.Header closeButton={!deleteBusy}>
+          <Modal.Title>Eliminar expediente definitivamente</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="mb-3">
+            Se eliminará el expediente, sus etapas, geometrías, documentos y archivos físicos asociados. Esta acción
+            no se puede deshacer.
+          </div>
+          <div className="mb-2 text-muted small">{deleteTokenLabel}</div>
+          <Form.Control
+            value={deleteConfirm}
+            disabled={deleteBusy}
+            onChange={(e) => setDeleteConfirm(e.target.value)}
+            placeholder={deleteToken}
+          />
+          {deleteError && <div className="text-danger small mt-2">{deleteError}</div>}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" disabled={deleteBusy} onClick={() => setShowDeleteModal(false)}>
+            Cancelar
+          </Button>
+          <Button variant="danger" disabled={deleteBusy || !deleteConfirmOk} onClick={deleteExpediente}>
+            {deleteBusy ? "Eliminando..." : "Eliminar definitivamente"}
+          </Button>
         </Modal.Footer>
       </Modal>
 

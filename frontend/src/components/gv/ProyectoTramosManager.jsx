@@ -21,6 +21,28 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
     const [showWarn, setShowWarn] = useState(false);
     const [warnItems, setWarnItems] = useState([]);
 
+    const normalizeDateYmd = (value) => {
+        if (value === null || value === undefined) return "";
+        const s = String(value).trim();
+        if (!s) return "";
+        const ymd = s.length >= 10 ? s.slice(0, 10) : s;
+        return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : "";
+    };
+
+    const normalizeJerarquiaDates = (items) => {
+        const arr = Array.isArray(items) ? items : [];
+        return arr.map((t) => ({
+            ...t,
+            fecha_limite: normalizeDateYmd(t?.fecha_limite),
+            fecha_max: normalizeDateYmd(t?.fecha_max),
+            subtramos: (Array.isArray(t?.subtramos) ? t.subtramos : []).map((s) => ({
+                ...s,
+                fecha_limite: normalizeDateYmd(s?.fecha_limite),
+                fecha_max: normalizeDateYmd(s?.fecha_max),
+            })),
+        }));
+    };
+
     useEffect(() => {
         if (!idProyecto) return;
         cargarDatos();
@@ -49,7 +71,7 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
             if (!resJerarquia.ok) throw new Error("Error al cargar la jerarquía de tramos");
 
             const jerarquiaJson = await resJerarquia.json();
-            setTramos(jerarquiaJson.tramos || []);
+            setTramos(normalizeJerarquiaDates(jerarquiaJson.tramos));
 
             if (resCatalogo.ok) {
                 const catJson = await resCatalogo.json();
@@ -82,7 +104,7 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
 
             if (!res.ok) throw new Error(data.message || "Error al guardar tramos");
 
-            setTramos(data.tramos || []);
+            setTramos(normalizeJerarquiaDates(data.tramos));
             alerts.toast.success("Tramos y subtramos guardados correctamente");
         } catch (err) {
             alerts.close();
@@ -106,6 +128,8 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                 cantidad_universo: "",
                 id_vial_tramo: "",
                 orden: 0,
+                fecha_limite: "",
+                fecha_max: "",
                 subtramos: []
             }
         ]);
@@ -119,7 +143,11 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
     const actualizarTramoLocally = (tId, field, value) => {
         setTramos(prev => prev.map(t => {
             if (t.id_proyecto_tramo === tId) {
-                return { ...t, [field]: value };
+                const nextValue =
+                    field === "fecha_limite" || field === "fecha_max"
+                        ? normalizeDateYmd(value)
+                        : value;
+                return { ...t, [field]: nextValue };
             }
             return t;
         }));
@@ -136,7 +164,9 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                             id_proyecto_subtramo: generateTempId(),
                             descripcion: "",
                             cantidad_universo: "",
-                            orden: 0
+                            orden: 0,
+                            fecha_limite: "",
+                            fecha_max: ""
                         }
                     ]
                 };
@@ -165,7 +195,11 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                     ...t,
                     subtramos: (t.subtramos || []).map(s => {
                         if (s.id_proyecto_subtramo === sId) {
-                            return { ...s, [field]: value };
+                            const nextValue =
+                                field === "fecha_limite" || field === "fecha_max"
+                                    ? normalizeDateYmd(value)
+                                    : value;
+                            return { ...s, [field]: nextValue };
                         }
                         return s;
                     })
@@ -470,6 +504,37 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                                                     </Form.Group>
                                                 </Col>
                                             </Row>
+                                            <Row className="mb-3">
+                                                <Col md={3}>
+                                                    <Form.Group>
+                                                        <Form.Label className="small fw-semibold">Fecha limite</Form.Label>
+                                                        <Form.Control
+                                                            size="sm"
+                                                            type="date"
+                                                            value={tramo.fecha_limite || ""}
+                                                            onChange={e => actualizarTramoLocally(tId, "fecha_limite", e.target.value)}
+                                                        />
+                                                    </Form.Group>
+                                                </Col>
+                                                <Col md={3}>
+                                                    <Form.Group>
+                                                        <Form.Label className="small fw-semibold">Fecha max</Form.Label>
+                                                        <Form.Control
+                                                            size="sm"
+                                                            type="date"
+                                                            value={tramo.fecha_max || ""}
+                                                            onChange={e => actualizarTramoLocally(tId, "fecha_max", e.target.value)}
+                                                        />
+                                                    </Form.Group>
+                                                </Col>
+                                                {tramo.fecha_limite && tramo.fecha_max && tramo.fecha_limite > tramo.fecha_max ? (
+                                                    <Col md={6} className="d-flex align-items-end">
+                                                        <div className="text-warning small">Fecha limite mayor que Fecha max</div>
+                                                    </Col>
+                                                ) : (
+                                                    <Col md={6} />
+                                                )}
+                                            </Row>
                                             <Row className="mb-2">
                                                 <Col md={12} className="d-flex align-items-center gap-2">
                                                     <span className="small text-muted">Suma subtramos:</span>
@@ -541,6 +606,33 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                                                                         🗑️
                                                                     </Button>
                                                                 </Col>
+                                                            </Row>
+                                                            <Row className="mt-2 g-2">
+                                                                <Col md={3}>
+                                                                    <Form.Control
+                                                                        size="sm"
+                                                                        type="date"
+                                                                        value={sub.fecha_limite || ""}
+                                                                        onChange={e => actualizarSubtramoLocally(tId, sId, "fecha_limite", e.target.value)}
+                                                                    />
+                                                                    <div className="small text-muted">Fecha limite</div>
+                                                                </Col>
+                                                                <Col md={3}>
+                                                                    <Form.Control
+                                                                        size="sm"
+                                                                        type="date"
+                                                                        value={sub.fecha_max || ""}
+                                                                        onChange={e => actualizarSubtramoLocally(tId, sId, "fecha_max", e.target.value)}
+                                                                    />
+                                                                    <div className="small text-muted">Fecha max</div>
+                                                                </Col>
+                                                                {sub.fecha_limite && sub.fecha_max && sub.fecha_limite > sub.fecha_max ? (
+                                                                    <Col md={6} className="d-flex align-items-center">
+                                                                        <div className="text-warning small">Fecha limite mayor que Fecha max</div>
+                                                                    </Col>
+                                                                ) : (
+                                                                    <Col md={6} />
+                                                                )}
                                                             </Row>
                                                         </Card.Body>
                                                     </Card>
