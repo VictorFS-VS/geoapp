@@ -11,7 +11,7 @@ const { requirePerm } = require("../middlewares/requirePerm");
 router.post(
   "/import/:idProyecto",
   verifyToken,
-  requirePerm("expedientes.create"), // o "expedientes.upload"
+  requirePerm("expedientes.create"),
   ctrl.importExcel
 );
 
@@ -70,7 +70,7 @@ router.post(
   ctrl.subirDocs
 );
 
-// CI
+// CI titular / adicional
 router.post(
   "/:idExpediente/ci/upload",
   verifyToken,
@@ -148,6 +148,7 @@ router.post(
   ctrl.subirDBI
 );
 
+module.exports = router;
 router.post(
   "/:idExpediente/dbi/eventos",
   verifyToken,

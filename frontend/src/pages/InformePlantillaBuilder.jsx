@@ -96,6 +96,7 @@ const emptyPregunta = {
   obligatorio: false,
   orden: 1,
   permite_foto: false,
+  id_unico: false,
   visible_if: null,
   required_if: null,
 };
@@ -1609,6 +1610,7 @@ export default function InformeBuilder() {
       obligatorio: !!preg.obligatorio,
       orden: preg.orden || 1,
       permite_foto: !!preg.permite_foto,
+      id_unico: !!preg.id_unico,
       visible_if: preg.visible_if ?? null,
       required_if: preg.required_if ?? null,
     };
@@ -2120,6 +2122,7 @@ export default function InformeBuilder() {
                                                       Required_if
                                                     </Badge>
                                                   ) : null}
+                                                  {preg.id_unico ? <Badge bg="dark">ID único</Badge> : null}
                                                 </div>
 
                                                 {(isSelectLikeTipo(preg.tipo) || isMultiTipo(preg.tipo)) && preg.opciones_json ? (
@@ -2635,14 +2638,59 @@ export default function InformeBuilder() {
                   <div className="row g-2 mt-1">
                     <div className="col-md-2">
                       <Form.Label>Orden</Form.Label>
-                      <Form.Control type="number" value={preguntaForm.orden} onChange={(e) => setPreguntaForm((s) => ({ ...s, orden: Number(e.target.value || 1) }))} />
+                      <Form.Control
+                        type="number"
+                        value={preguntaForm.orden}
+                        onChange={(e) =>
+                          setPreguntaForm((s) => ({
+                            ...s,
+                            orden: Number(e.target.value || 1),
+                          }))
+                        }
+                      />
                     </div>
-                    <div className="col-md-5 d-flex align-items-end">
-                      <Form.Check type="checkbox" label="Obligatorio" checked={!!preguntaForm.obligatorio} onChange={(e) => setPreguntaForm((s) => ({ ...s, obligatorio: e.target.checked }))} />
+
+                    <div className="col-md-3 d-flex align-items-end">
+                      <Form.Check
+                        type="checkbox"
+                        label="Obligatorio"
+                        checked={!!preguntaForm.obligatorio}
+                        onChange={(e) =>
+                          setPreguntaForm((s) => ({
+                            ...s,
+                            obligatorio: e.target.checked,
+                          }))
+                        }
+                      />
                     </div>
-                    <div className="col-md-5 d-flex align-items-end">
+
+                    <div className="col-md-3 d-flex align-items-end">
+                      <Form.Check
+                        type="checkbox"
+                        label="ID único"
+                        checked={!!preguntaForm.id_unico}
+                        onChange={(e) =>
+                          setPreguntaForm((s) => ({
+                            ...s,
+                            id_unico: e.target.checked,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="col-md-4 d-flex align-items-end">
                       {String(preguntaForm.tipo).toLowerCase() !== "imagen" ? (
-                        <Form.Check type="checkbox" label="Permite foto" checked={!!preguntaForm.permite_foto} onChange={(e) => setPreguntaForm((s) => ({ ...s, permite_foto: e.target.checked }))} />
+                        <Form.Check
+                          type="checkbox"
+                          label="Permite foto"
+                          checked={!!preguntaForm.permite_foto}
+                          onChange={(e) =>
+                            setPreguntaForm((s) => ({
+                              ...s,
+                              permite_foto: e.target.checked,
+                            }))
+                          }
+                        />
                       ) : (
                         <div className="text-muted small">
                           Tipo <b>Imagen</b>: esta pregunta ya es solo para adjuntar imágenes.

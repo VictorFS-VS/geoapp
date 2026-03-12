@@ -12,7 +12,7 @@ const { requirePerm } = require("../middlewares/requirePerm");
    ✅ IMPORTANTE
    - Este router es PRIVADO (con JWT)
    - Las rutas PÚBLICAS por token van en OTRO router:
-     /api/public-informe/:token  (el que ya te pasé)
+     /api/public-informe/:token
    ========================================================= */
 
 /* =========================================================
@@ -46,6 +46,14 @@ router.post(
   informesCtrl.createPlantilla
 );
 
+// ✅ NUEVO: duplicar plantilla completa (plantilla + secciones + preguntas)
+router.post(
+  "/plantillas/:id/duplicar",
+  verifyToken,
+  requirePerm("informes.plantillas.create"),
+  informesCtrl.duplicarPlantilla
+);
+
 router.put(
   "/plantillas/:id",
   verifyToken,
@@ -60,7 +68,7 @@ router.delete(
   informesCtrl.deletePlantilla
 );
 
-// ✅ Hard delete (control extra lo podés dejar también en controller)
+// ✅ Hard delete
 router.delete(
   "/plantillas/:id/hard",
   verifyToken,
@@ -174,7 +182,7 @@ router.get(
   informesCtrl.getInformesPuntosGeojson
 );
 
-// Buscar personas por proyecto (tu buscador)
+// Buscar personas por proyecto
 router.get(
   "/proyecto/:idProyecto/personas",
   verifyToken,
@@ -182,7 +190,7 @@ router.get(
   informesCtrl.buscarPersonasProyecto
 );
 
-// Preguntas usadas (combo buscador)
+// Preguntas usadas
 router.get(
   "/proyecto/:idProyecto/preguntas",
   verifyToken,
