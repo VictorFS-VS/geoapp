@@ -1,0 +1,74 @@
+/* Fondo general con imagen */
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.login-container {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-image: url('../img/Ema_Group_Marca_Agua.png'); /* Ajustá el path si es necesario */
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: contain;
+  background-color: #ffffff;
+}
+
+/* Caja del formulario */
+.login-box {
+  background: white;
+  padding: 3rem;
+  border-radius: 15px;
+  box-shadow: 0 0 25px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  transition: all 0.3s ease;
+  text-align: center;
+}
+
+/* Imagen de logo */
+.login-box img {
+  max-width: 250px;
+  margin: 0 auto 1rem;
+}
+
+/* Inputs y botón */
+.login-box input,
+.login-box button {
+  padding: 1rem;
+  font-size: 1.1rem;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  outline: none;
+}
+
+.login-box input:focus {
+  border-color: #007bff;
+}
+
+/* Botón de login */
+.login-box button {
+  background-color: #007bff;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  border: none;
+}
+
+.login-box button:hover {
+  background-color: #0056b3;
+}
+
+/* Mensaje de error */
+.login-box .error {
+  color: red;
+  font-size: 0.95rem;
+}

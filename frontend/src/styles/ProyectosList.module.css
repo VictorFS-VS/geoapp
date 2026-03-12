@@ -1,0 +1,96 @@
+/* Fondo general */
+.proyectos-page {
+  background-color: #edf1f7;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+/* Título centrado */
+.proyectos-title {
+  font-size: 2.2rem;
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 2rem;
+  color: #2c3e50;
+}
+
+/* Grid de filtros */
+.filtros-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* Botones de acción */
+.botones-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.botones-filtros button {
+  padding: 0.5rem 1.2rem;
+  font-weight: 500;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+}
+
+.filtrar-btn {
+  background-color: #28a745;
+  color: white;
+}
+
+.limpiar-btn {
+  background-color: #d1d1d1;
+}
+
+.crear-btn {
+  background-color: #0d9f50;
+  color: white;
+}
+
+.excel-btn {
+  background-color: #007bff;
+  color: white;
+}
+
+/* Tabla */
+.proyectos-table {
+  width: 100%;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+/* Cabecera */
+.proyectos-table thead {
+  background-color: #007bff;
+  color: white;
+  text-align: left;
+}
+
+.proyectos-table th,
+.proyectos-table td {
+  padding: 0.75rem;
+  font-size: 0.95rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+/* Filas hover */
+.proyectos-table tbody tr:hover {
+  background-color: #f4f9ff;
+}
+
+/* Botón Acciones */
+.acciones-btn {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  border: none;
+  border-radius: 4px;
+  background-color: #dee2e6;
+  cursor: pointer;
+}
