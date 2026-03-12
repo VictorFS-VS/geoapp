@@ -72,6 +72,45 @@ function isExpressFileUploadFile(f) {
   return f && typeof f === "object" && typeof f.mv === "function" && typeof f.name === "string";
 }
 
+function parseOptionalNonNegNumeric(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+
+  const v = raw[fieldName];
+  if (v === null) return { present: true, value: null };
+
+  const s = String(v ?? "").trim();
+  if (!s) return { present: true, value: null };
+
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) {
+    const err = new Error(`${fieldName} invalido (debe ser null o >= 0)`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Se conserva como string para no perder precisión si el campo es NUMERIC en PG
+  return { present: true, value: s };
+}
+
+function parseOptionalBoolean(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: false };
+
+  const v = raw[fieldName];
+  if (typeof v === "boolean") return { present: true, value: v };
+  if (typeof v === "number" && (v === 0 || v === 1)) return { present: true, value: Boolean(v) };
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (s === "true" || s === "1") return { present: true, value: true };
+    if (s === "false" || s === "0" || s === "") return { present: true, value: false };
+  }
+
+  const err = new Error(`${fieldName} invalido (debe ser boolean)`);
+  err.statusCode = 400;
+  throw err;
+}
+
 function resolveAbsolutePath(url) {
   if (!url) return null;
   const raw = String(url).trim();
@@ -153,10 +192,82 @@ const ETAPAS_TERRENO = [
 
 function emptyState(keys) {
   const obj = {};
-  keys.forEach((k) => {
-    obj[k] = { ok: false, obs: "" };
-  });
+  keys.forEach((k) => (obj[k] = { ok: false, obs: "", date: null }));
   return obj;
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeStageEntry(entry) {
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    return {
+      ...entry,
+      ok: Boolean(entry.ok),
+      obs: typeof entry.obs === "string" ? entry.obs : "",
+      date: entry.date || null,
+    };
+  }
+
+  if (typeof entry === "boolean") {
+    return { ok: entry, obs: "", date: null };
+  }
+
+  return { ok: false, obs: "", date: null };
+}
+
+function normalizeStageFolder(keys, folder) {
+  const src = folder && typeof folder === "object" && !Array.isArray(folder) ? folder : {};
+  const out = { ...src };
+  for (const key of keys) {
+    out[key] = normalizeStageEntry(src[key]);
+  }
+  return out;
+}
+
+function normalizeDbiState(dbi) {
+  const src = dbi && typeof dbi === "object" && !Array.isArray(dbi) ? dbi : {};
+  const estadosRaw = Array.isArray(src.estados) ? src.estados : [];
+
+  return {
+    ...src,
+    codigo: src.codigo || "",
+    ok: Boolean(src.ok),
+    obs: typeof src.obs === "string" ? src.obs : "",
+    fecha_ingreso: src.fecha_ingreso || null,
+    estado: src.estado || null,
+    estados: estadosRaw
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => ({
+        ...item,
+        estado: item.estado ? String(item.estado) : "",
+        fecha: item.fecha || null,
+        obs: typeof item.obs === "string" ? item.obs : "",
+      }))
+      .filter((item) => item.estado || item.fecha || item.obs),
+  };
+}
+
+function appendDbiEventIfNeeded(dbi, event) {
+  const curr = normalizeDbiState(dbi);
+  const normalizedEvent = {
+    estado: event?.estado ? String(event.estado) : "",
+    fecha: event?.fecha || nowIso(),
+    obs: typeof event?.obs === "string" ? event.obs : "",
+  };
+
+  if (!normalizedEvent.estado) return curr;
+
+  const exists = curr.estados.some(
+    (item) =>
+      item.estado === normalizedEvent.estado &&
+      item.fecha === normalizedEvent.fecha &&
+      item.obs === normalizedEvent.obs
+  );
+
+  if (exists) return curr;
+  return { ...curr, estados: [...curr.estados, normalizedEvent] };
 }
 
 function normalizeTipo(tipo) {
@@ -186,16 +297,11 @@ async function ensureEtapas(idExpediente) {
   const ct = rec.carpeta_terreno || {};
   const cd = rec.carpeta_dbi || {};
 
-  const needMejora = ETAPAS_MEJORA.some((k) => !cm?.[k] || typeof cm[k]?.ok !== "boolean");
-  const needTerreno = ETAPAS_TERRENO.some((k) => !ct?.[k] || typeof ct[k]?.ok !== "boolean");
+  const newCm = normalizeStageFolder(ETAPAS_MEJORA, cm);
+  const newCt = normalizeStageFolder(ETAPAS_TERRENO, ct);
+  const newCd = normalizeDbiState(cd);
 
-  let newCm = cm;
-  let newCt = ct;
-
-  if (needMejora) newCm = { ...emptyState(ETAPAS_MEJORA), ...cm };
-  if (needTerreno) newCt = { ...emptyState(ETAPAS_TERRENO), ...ct };
-
-  if (needMejora || needTerreno) {
+  if (JSON.stringify(newCm) !== JSON.stringify(cm) || JSON.stringify(newCt) !== JSON.stringify(ct)) {
     await pool.query(
       `UPDATE ema.expedientes
           SET carpeta_mejora = $1,
@@ -205,12 +311,6 @@ async function ensureEtapas(idExpediente) {
       [newCm, newCt, Number(idExpediente)]
     );
   }
-
-  const newCd = {
-    codigo: cd.codigo || "",
-    ok: Boolean(cd.ok),
-    obs: cd.obs || "",
-  };
 
   if (JSON.stringify(newCd) !== JSON.stringify(cd)) {
     await pool.query(
@@ -345,90 +445,107 @@ exports.getOne = async (req, res) => {
 };
 
 exports.create = async (req, res) => {
-  const b = req.body || {};
-  const resTramo = await resolveTramoInfo(b);
+  try {
+    const b = req.body || {};
+    const resTramo = await resolveTramoInfo(b);
 
-  const { rows } = await pool.query(
-    `INSERT INTO ema.expedientes
-     (
-       id_proyecto,
-       fecha_relevamiento,
-       gps,
-       tecnico,
-       codigo_exp,
-       propietario_nombre,
-       propietario_ci,
-       tramo,
-       subtramo,
-       id_tramo,
-       id_sub_tramo,
-       codigo_censo,
-       ci_propietario_frente_url,
-       ci_propietario_dorso_url,
-       ci_adicional_frente_url,
-       ci_adicional_dorso_url
-     )
-     VALUES
-     (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
-     )
-     RETURNING *`,
-    [
-      Number(b.id_proyecto),
-      b.fecha_relevamiento || null,
-      b.gps || null,
-      b.tecnico || null,
-      b.codigo_exp || null,
-      b.propietario_nombre || null,
-      b.propietario_ci || null,
-      resTramo.tramo,
-      resTramo.subtramo,
-      resTramo.id_tramo,
-      resTramo.id_sub_tramo,
-      resTramo.codigo_censo,
-      b.ci_propietario_frente_url || null,
-      b.ci_propietario_dorso_url || null,
-      b.ci_adicional_frente_url || null,
-      b.ci_adicional_dorso_url || null,
-    ]
-  );
+    const parteA = parseOptionalNonNegNumeric(b, "parte_a");
+    const parteB = parseOptionalNonNegNumeric(b, "parte_b");
+    const premioAplica = parseOptionalBoolean(b, "premio_aplica");
 
-  await ensureEtapas(rows[0].id_expediente);
+    const { rows } = await pool.query(
+      `INSERT INTO ema.expedientes
+       (
+         id_proyecto,
+         fecha_relevamiento,
+         gps,
+         tecnico,
+         codigo_exp,
+         propietario_nombre,
+         propietario_ci,
+         tramo,
+         subtramo,
+         id_tramo,
+         id_sub_tramo,
+         codigo_censo,
+         ci_propietario_frente_url,
+         ci_propietario_dorso_url,
+         ci_adicional_frente_url,
+         ci_adicional_dorso_url,
+         parte_a,
+         parte_b,
+         premio_aplica
+       )
+       VALUES
+       (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+       )
+       RETURNING *`,
+      [
+        Number(b.id_proyecto),
+        b.fecha_relevamiento || null,
+        b.gps || null,
+        b.tecnico || null,
+        b.codigo_exp || null,
+        b.propietario_nombre || null,
+        b.propietario_ci || null,
+        resTramo.tramo,
+        resTramo.subtramo,
+        resTramo.id_tramo,
+        resTramo.id_sub_tramo,
+        resTramo.codigo_censo,
+        b.ci_propietario_frente_url || null,
+        b.ci_propietario_dorso_url || null,
+        b.ci_adicional_frente_url || null,
+        b.ci_adicional_dorso_url || null,
+        parteA.present ? parteA.value : null,
+        parteB.present ? parteB.value : null,
+        premioAplica.present ? premioAplica.value : false,
+      ]
+    );
 
-  const { rows: rows2 } = await pool.query(
-    `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
-    [rows[0].id_expediente]
-  );
+    await ensureEtapas(rows[0].id_expediente);
 
-  res.json(rows2[0]);
+    const { rows: rows2 } = await pool.query(
+      `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
+      [rows[0].id_expediente]
+    );
+
+    res.json(rows2[0]);
+  } catch (e) {
+    return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
+  }
 };
 
 exports.update = async (req, res) => {
-  const idExp = Number(req.params.idExpediente);
-  const b = req.body || {};
-  const resTramo = await resolveTramoInfo(b);
+  try {
+    const idExp = Number(req.params.idExpediente);
+    const b = req.body || {};
+    const resTramo = await resolveTramoInfo(b);
 
-  const { rows } = await pool.query(
-    `UPDATE ema.expedientes SET
-      fecha_relevamiento = $1,
-      gps = $2,
-      tecnico = $3,
-      codigo_exp = $4,
-      propietario_nombre = $5,
-      propietario_ci = $6,
-      tramo = $7,
-      subtramo = $8,
-      id_tramo = $9,
-      id_sub_tramo = $10,
-      codigo_censo = $11,
-      ci_propietario_frente_url = $12,
-      ci_propietario_dorso_url = $13,
-      ci_adicional_frente_url = $14,
-      ci_adicional_dorso_url = $15,
-      updated_at = now()
-     WHERE id_expediente = $16
-     RETURNING *`,
-    [
+    const parteA = parseOptionalNonNegNumeric(b, "parte_a");
+    const parteB = parseOptionalNonNegNumeric(b, "parte_b");
+    const premioAplica = parseOptionalBoolean(b, "premio_aplica");
+
+    const sets = [
+      "fecha_relevamiento=$1",
+      "gps=$2",
+      "tecnico=$3",
+      "codigo_exp=$4",
+      "propietario_nombre=$5",
+      "propietario_ci=$6",
+      "tramo=$7",
+      "subtramo=$8",
+      "id_tramo=$9",
+      "id_sub_tramo=$10",
+      "codigo_censo=$11",
+      "ci_propietario_frente_url=$12",
+      "ci_propietario_dorso_url=$13",
+      "ci_adicional_frente_url=$14",
+      "ci_adicional_dorso_url=$15",
+    ];
+
+    const params = [
       b.fecha_relevamiento || null,
       b.gps || null,
       b.tecnico || null,
@@ -444,22 +561,51 @@ exports.update = async (req, res) => {
       b.ci_propietario_dorso_url || null,
       b.ci_adicional_frente_url || null,
       b.ci_adicional_dorso_url || null,
-      idExp,
-    ]
-  );
+    ];
 
-  if (!rows.length) {
-    return res.status(404).json({ error: "Expediente no encontrado" });
+    let idx = 16;
+
+    if (parteA.present) {
+      sets.push(`parte_a=$${idx}`);
+      params.push(parteA.value);
+      idx += 1;
+    }
+    if (parteB.present) {
+      sets.push(`parte_b=$${idx}`);
+      params.push(parteB.value);
+      idx += 1;
+    }
+    if (premioAplica.present) {
+      sets.push(`premio_aplica=$${idx}`);
+      params.push(premioAplica.value);
+      idx += 1;
+    }
+
+    sets.push("updated_at=now()");
+
+    const { rows } = await pool.query(
+      `UPDATE ema.expedientes SET
+        ${sets.join(", ")}
+       WHERE id_expediente=$${idx}
+       RETURNING *`,
+      [...params, idExp]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Expediente no encontrado" });
+    }
+
+    await ensureEtapas(idExp);
+
+    const { rows: rows2 } = await pool.query(
+      `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
+      [idExp]
+    );
+
+    res.json(rows2[0]);
+  } catch (e) {
+    return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
   }
-
-  await ensureEtapas(idExp);
-
-  const { rows: rows2 } = await pool.query(
-    `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
-    [idExp]
-  );
-
-  res.json(rows2[0]);
 };
 
 exports.remove = async (req, res) => {
@@ -499,14 +645,29 @@ exports.setEtapa = async (req, res) => {
   const ok = Boolean(body.ok);
   const obs = String(body.obs || "");
 
+  let dateOverride = null;
+  if (typeof body.date === "string" && body.date.trim()) {
+    const parsed = new Date(body.date);
+    if (Number.isNaN(parsed.getTime())) {
+      return res.status(400).json({ message: "date inválida" });
+    }
+    dateOverride = parsed.toISOString();
+  }
+
   if (tipo === "dbi") {
-    const curr = rec.carpeta_dbi || {};
-    const out = { ...curr, ok, obs };
+    const curr = normalizeDbiState(rec.carpeta_dbi);
+    const wasOk = Boolean(curr.ok);
+    const out = {
+      ...curr,
+      ok,
+      obs,
+      fecha_ingreso: !wasOk && ok ? curr.fecha_ingreso || nowIso() : curr.fecha_ingreso || null,
+      estado: !wasOk && ok ? curr.estado || "ingresado" : curr.estado || null,
+      estados: Array.isArray(curr.estados) ? curr.estados : [],
+    };
+
     await pool.query(
-      `UPDATE ema.expedientes
-          SET carpeta_dbi = $1,
-              updated_at = now()
-        WHERE id_expediente = $2`,
+      `UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`,
       [out, idExp]
     );
     return res.json(out);
@@ -518,11 +679,24 @@ exports.setEtapa = async (req, res) => {
   }
 
   const col = tipo === "mejora" ? "carpeta_mejora" : "carpeta_terreno";
-  const current = tipo === "mejora" ? rec.carpeta_mejora : rec.carpeta_terreno;
+  const current = normalizeStageFolder(list, tipo === "mejora" ? rec.carpeta_mejora : rec.carpeta_terreno);
+  const previous = normalizeStageEntry(current?.[key]);
+
+  let nextDate = previous.date || null;
+  if (dateOverride) {
+    nextDate = dateOverride;
+  } else if (!previous.ok && ok && !nextDate) {
+    nextDate = nowIso();
+  }
 
   const updated = {
     ...current,
-    [key]: { ...(current?.[key] || { ok: false, obs: "" }), ok, obs },
+    [key]: {
+      ...previous,
+      ok,
+      obs,
+      date: nextDate,
+    },
   };
 
   await pool.query(
@@ -541,25 +715,25 @@ exports.setEtapa = async (req, res) => {
 // =====================
 exports.listarDocs = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
-  const { carpeta = "" } = req.query;
-  const subcarpeta = sanitizeFolder(carpeta);
+  const hasCarpetaFilter = Object.prototype.hasOwnProperty.call(req.query || {}, "carpeta");
+  const subcarpeta = sanitizeFolder(req.query?.carpeta ?? "");
+  const params = [idExp];
 
-  const { rows } = await pool.query(
-    `SELECT id_archivo,
-            tipo_documento,
-            subcarpeta,
-            url,
-            nombre_archivo,
-            to_char(fecha_reg,'YYYY-MM-DD HH24:MI') AS fecha
-       FROM ema.tumba
-      WHERE id_documento = $1
-        AND tipo_documento = 'expedientes'
-        AND estado = 1
-        AND COALESCE(subcarpeta,'') = COALESCE($2,'')
-      ORDER BY fecha_reg DESC`,
-    [idExp, subcarpeta || ""]
-  );
+  let sql = `SELECT id_archivo, tipo_documento, subcarpeta, url, nombre_archivo,
+                    to_char(fecha_reg,'YYYY-MM-DD HH24:MI') AS fecha
+               FROM ema.tumba
+              WHERE id_documento = $1
+                AND tipo_documento = 'expedientes'
+                AND estado = 1`;
 
+  if (hasCarpetaFilter) {
+    params.push(subcarpeta || "");
+    sql += ` AND COALESCE(subcarpeta,'') = COALESCE($${params.length},'')`;
+  }
+
+  sql += ` ORDER BY fecha_reg DESC`;
+
+  const { rows } = await pool.query(sql, params);
   res.json(rows);
 };
 
@@ -740,16 +914,26 @@ const DB_SRID = 32721;
 const IN_SRID = 4326;
 const OUT_SRID = 4326;
 
+async function markPlanoGeorefOK(idExpediente, tipo) {
+  return markPlanoGeoref(idExpediente, tipo, true);
+}
+
 async function markPlanoGeoref(idExpediente, tipo, ok) {
   const rec = await ensureEtapas(idExpediente);
   if (!rec) return;
 
   const col = tipo === "mejora" ? "carpeta_mejora" : "carpeta_terreno";
-  const current = tipo === "mejora" ? rec.carpeta_mejora : rec.carpeta_terreno;
+  const keys = tipo === "mejora" ? ETAPAS_MEJORA : ETAPAS_TERRENO;
+  const current = normalizeStageFolder(keys, tipo === "mejora" ? rec.carpeta_mejora : rec.carpeta_terreno);
+  const previous = normalizeStageEntry(current?.plano_georef);
 
   const updated = {
     ...current,
-    plano_georef: { ...(current?.plano_georef || { ok: false, obs: "" }), ok: Boolean(ok) },
+    plano_georef: {
+      ...previous,
+      ok: Boolean(ok),
+      date: !previous.ok && Boolean(ok) ? previous.date || nowIso() : previous.date || null,
+    },
   };
 
   await pool.query(
@@ -759,10 +943,6 @@ async function markPlanoGeoref(idExpediente, tipo, ok) {
       WHERE id_expediente = $2`,
     [updated, Number(idExpediente)]
   );
-}
-
-async function markPlanoGeorefOK(idExpediente, tipo) {
-  return markPlanoGeoref(idExpediente, tipo, true);
 }
 
 exports.subirPoligonoMejoras = async (req, res) => {
@@ -891,17 +1071,122 @@ exports.subirDBI = async (req, res) => {
   );
 
   const rec = await ensureEtapas(idExp);
-  const out = { ...(rec?.carpeta_dbi || {}), codigo, ok: true };
+  const curr = normalizeDbiState(rec?.carpeta_dbi);
+  const fechaIngreso = curr.fecha_ingreso || nowIso();
+
+  let out = {
+    ...curr,
+    codigo,
+    ok: true,
+    fecha_ingreso: fechaIngreso,
+    estado: curr.estado || "ingresado",
+  };
+
+  if (!curr.fecha_ingreso) {
+    out = appendDbiEventIfNeeded(out, {
+      estado: out.estado || "ingresado",
+      fecha: fechaIngreso,
+      obs: out.obs || "",
+    });
+  }
 
   await pool.query(
-    `UPDATE ema.expedientes
-        SET carpeta_dbi = $1,
-            updated_at = now()
-      WHERE id_expediente = $2`,
+    `UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`,
     [out, idExp]
   );
 
   res.json({ ok: true, codigo, url: rel, nombre_archivo: finalName });
+};
+
+exports.agregarDbiEvento = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente inválido" });
+  }
+
+  const estadoRaw = String(req.body?.estado || "").trim();
+  if (!estadoRaw) {
+    return res.status(400).json({ message: "estado es requerido" });
+  }
+
+  const fechaRaw = req.body?.fecha ? String(req.body.fecha).trim() : "";
+  const obsRaw = req.body?.obs ? String(req.body.obs) : "";
+
+  const rec = await ensureEtapas(idExp);
+  if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
+
+  let dbi = normalizeDbiState(rec.carpeta_dbi);
+
+  const event = {
+    estado: estadoRaw,
+    fecha: fechaRaw || nowIso(),
+    obs: obsRaw,
+  };
+
+  dbi = appendDbiEventIfNeeded(dbi, event);
+  dbi.estado = estadoRaw;
+
+  await pool.query(`UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`, [
+    dbi,
+    idExp,
+  ]);
+
+  return res.json(dbi);
+};
+
+exports.iniciarDbi = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente inválido" });
+  }
+
+  const codigo = String(req.body?.codigo || "").trim();
+  if (!codigo) {
+    return res.status(400).json({ message: "codigo es requerido" });
+  }
+
+  const fechaIngresoRaw = String(req.body?.fecha_ingreso || "").trim();
+  if (!fechaIngresoRaw) {
+    return res.status(400).json({ message: "fecha_ingreso es requerido" });
+  }
+
+  const fechaIngresoDate = new Date(fechaIngresoRaw);
+  if (Number.isNaN(fechaIngresoDate.getTime())) {
+    return res.status(400).json({ message: "fecha_ingreso inválido" });
+  }
+
+  const obs = req.body?.obs ? String(req.body.obs) : "";
+
+  const rec = await ensureEtapas(idExp);
+  if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
+
+  let dbi = normalizeDbiState(rec.carpeta_dbi);
+  if (dbi.fecha_ingreso || dbi.codigo) {
+    return res.status(400).json({ message: "DBI ya fue iniciado para este expediente." });
+  }
+
+  const fechaIngreso = fechaIngresoDate.toISOString();
+  dbi = {
+    ...dbi,
+    codigo,
+    fecha_ingreso: fechaIngreso,
+    estado: "mesa de entrada",
+    obs,
+    ok: true,
+  };
+
+  dbi = appendDbiEventIfNeeded(dbi, {
+    estado: "mesa de entrada",
+    fecha: fechaIngreso,
+    obs,
+  });
+
+  await pool.query(`UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`, [
+    dbi,
+    idExp,
+  ]);
+
+  return res.json(dbi);
 };
 
 // =====================

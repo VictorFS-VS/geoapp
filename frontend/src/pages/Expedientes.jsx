@@ -11,7 +11,7 @@
 
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
-import { Button, Modal, Form, Table, Row, Col, Badge, Alert } from "react-bootstrap";
+import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "react-bootstrap";
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
 import { alerts } from "@/utils/alerts";
 import * as XLSX from "xlsx";
@@ -64,6 +64,41 @@ function todayYMD() {
 function normalizePositiveId(value) {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function formatLocalDateTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}`;
+}
+
+function isoToDatetimeLocal(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}`;
+}
+
+function datetimeLocalToIso(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
+function nowLocalDateTimeInput() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}`;
 }
 
 /* =========================
@@ -166,6 +201,9 @@ export default function Expedientes() {
     ci_propietario_dorso_url: "",
     ci_adicional_frente_url: "",
     ci_adicional_dorso_url: "",
+    parte_a: "",
+    parte_b: "",
+    premio_aplica: false,
   });
 
   // Catálogos Censales
@@ -182,6 +220,7 @@ export default function Expedientes() {
 
   // carpeta activa (mejora | terreno)
   const [tipoCarpeta, setTipoCarpeta] = useState("mejora");
+  const [avaluoOpen, setAvaluoOpen] = useState(true);
 
   const readonly = mode === "ver";
   const gpsFieldRef = useRef(null);
@@ -321,6 +360,9 @@ export default function Expedientes() {
     ci_propietario_dorso_url: row.ci_propietario_dorso_url || "",
     ci_adicional_frente_url: row.ci_adicional_frente_url || "",
     ci_adicional_dorso_url: row.ci_adicional_dorso_url || "",
+    parte_a: row.parte_a === null || row.parte_a === undefined ? "" : String(row.parte_a),
+    parte_b: row.parte_b === null || row.parte_b === undefined ? "" : String(row.parte_b),
+    premio_aplica: Boolean(row.premio_aplica),
   });
 
   const mergeRow = (nextRow) => {
@@ -367,6 +409,16 @@ export default function Expedientes() {
   const [dbiCodigo, setDbiCodigo] = useState("");
   const [dbiFile, setDbiFile] = useState(null);
   const [dbiBusy, setDbiBusy] = useState(false);
+  const [dbiEventoEstado, setDbiEventoEstado] = useState("");
+  const [dbiEventoEstadoPreset, setDbiEventoEstadoPreset] = useState("");
+  const [dbiEventoFecha, setDbiEventoFecha] = useState("");
+  const [dbiEventoObs, setDbiEventoObs] = useState("");
+  const [dbiEventoBusy, setDbiEventoBusy] = useState(false);
+  const [dbiEventoError, setDbiEventoError] = useState("");
+  const [dbiInicioFecha, setDbiInicioFecha] = useState("");
+  const [dbiInicioObs, setDbiInicioObs] = useState("");
+  const [dbiInicioBusy, setDbiInicioBusy] = useState(false);
+  const [dbiInicioError, setDbiInicioError] = useState("");
 
   const etapasList = tipoCarpeta === "mejora" ? ETAPAS_MEJORA : ETAPAS_TERRENO;
 
@@ -408,19 +460,24 @@ export default function Expedientes() {
     }
   }
 
-  async function setEtapa(key, ok, obs) {
+  async function setEtapa(key, ok, obs, date) {
     if (!current) return;
     if ((tipoCarpeta === "mejora" && onlyTerrenoActive) || (tipoCarpeta === "terreno" && onlyMejoraActive)) {
       return;
     }
     setSavingEtapa(true);
     try {
+      const payload = { ok, obs };
+      if (typeof date === "string" && date.trim()) payload.date = date;
       const data = await apiJson(
         `${API}/expedientes/${current.id_expediente}/etapas/${tipoCarpeta}/${key}`,
         "PUT",
-        { ok, obs }
+        payload
       );
       setEtapas(data || {});
+      if (ok && data && !data?.[key]?.date) {
+        await loadEtapas(current.id_expediente, tipoCarpeta);
+      }
     } catch (e) {
       alert(String(e?.message || e));
     } finally {
@@ -578,12 +635,113 @@ export default function Expedientes() {
       await apiForm(`${API}/expedientes/${current.id_expediente}/dbi/upload`, "POST", fd);
 
       setDbiFile(null);
+      const fresh = await apiGet(`${API}/expedientes/${current.id_expediente}`);
+      setCurrent(fresh);
+      mergeRow(fresh);
       await loadDocs(current.id_expediente);
       alert("DBI subido OK.");
     } catch (e) {
       alert(String(e?.message || e));
     } finally {
       setDbiBusy(false);
+    }
+  }
+
+  async function agregarDbiEvento() {
+    if (!current) return;
+    const estado = String(
+      dbiEventoEstadoPreset === "otro" ? dbiEventoEstado : dbiEventoEstadoPreset || dbiEventoEstado
+    )
+      .trim()
+      .toLowerCase();
+    if (!estado) {
+      setDbiEventoError("Estado es requerido.");
+      return;
+    }
+
+    setDbiEventoBusy(true);
+    setDbiEventoError("");
+    try {
+      const payload = {
+        estado,
+        obs: dbiEventoObs ? String(dbiEventoObs) : undefined,
+      };
+      if (dbiEventoFecha) {
+        const iso = new Date(dbiEventoFecha);
+        if (!Number.isNaN(iso.getTime())) {
+          payload.fecha = iso.toISOString();
+        }
+      }
+
+      const data = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/dbi/eventos`,
+        "POST",
+        payload
+      );
+
+      if (data && typeof data === "object") {
+        setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+      } else {
+        const fresh = await apiGet(`${API}/expedientes/${current.id_expediente}`);
+        setCurrent(fresh);
+        mergeRow(fresh);
+      }
+
+      setDbiEventoEstado("");
+      setDbiEventoEstadoPreset("");
+      setDbiEventoFecha("");
+      setDbiEventoObs("");
+    } catch (e) {
+      setDbiEventoError(String(e?.message || e));
+    } finally {
+      setDbiEventoBusy(false);
+    }
+  }
+
+  async function iniciarDbi() {
+    if (!current) return;
+    const codigo = String(dbiCodigo || "").trim();
+    if (!codigo) {
+      setDbiInicioError("Código es requerido.");
+      return;
+    }
+    const fechaRaw = String(dbiInicioFecha || "").trim();
+    if (!fechaRaw) {
+      setDbiInicioError("Fecha de ingreso es requerida.");
+      return;
+    }
+    const fecha = new Date(fechaRaw);
+    if (Number.isNaN(fecha.getTime())) {
+      setDbiInicioError("Fecha de ingreso inválida.");
+      return;
+    }
+
+    setDbiInicioBusy(true);
+    setDbiInicioError("");
+    try {
+      const payload = {
+        codigo,
+        fecha_ingreso: fecha.toISOString(),
+        obs: dbiInicioObs ? String(dbiInicioObs) : undefined,
+      };
+      const data = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/dbi/iniciar`,
+        "POST",
+        payload
+      );
+      if (data && typeof data === "object") {
+        setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+      } else {
+        const fresh = await apiGet(`${API}/expedientes/${current.id_expediente}`);
+        setCurrent(fresh);
+        mergeRow(fresh);
+      }
+      setDbiInicioObs("");
+      setDbiInicioError("");
+    } catch (e) {
+      setDbiInicioError(String(e?.message || e));
+    } finally {
+      setDbiInicioBusy(false);
     }
   }
 
@@ -911,9 +1069,7 @@ export default function Expedientes() {
   };
 
   const loadDocs = async (idExp) => {
-    const data = await apiGet(
-      `${API}/expedientes/${idExp}/documentos?carpeta=${encodeURIComponent(subcarpeta || "")}`
-    );
+    const data = await apiGet(`${API}/expedientes/${idExp}/documentos`);
     setDocs(Array.isArray(data) ? data : []);
   };
 
@@ -1052,6 +1208,9 @@ export default function Expedientes() {
       ci_propietario_dorso_url: "",
       ci_adicional_frente_url: "",
       ci_adicional_dorso_url: "",
+      parte_a: "",
+      parte_b: "",
+      premio_aplica: false,
     });
 
     setUploadFiles([]);
@@ -1063,6 +1222,11 @@ export default function Expedientes() {
     setPolyFiles([]);
     setDbiCodigo("");
     setDbiFile(null);
+    setDbiInicioObs("");
+    setDbiInicioError("");
+    setDbiInicioFecha(nowLocalDateTimeInput());
+    setDbiEventoFecha(nowLocalDateTimeInput());
+    setAvaluoOpen(true);
 
     setShow(true);
   };
@@ -1072,6 +1236,7 @@ export default function Expedientes() {
     setMode("ver");
     setCurrent(freshRow);
     setSubcarpeta("");
+    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
 
     const hasMejora = Object.values(freshRow?.carpeta_mejora || {}).some((s) => s?.ok);
     const hasTerreno = Object.values(freshRow?.carpeta_terreno || {}).some((s) => s?.ok);
@@ -1090,6 +1255,11 @@ export default function Expedientes() {
     setPolyFiles([]);
     setDbiCodigo("");
     setDbiFile(null);
+    setDbiInicioObs("");
+    setDbiInicioError("");
+    setDbiInicioFecha(nowLocalDateTimeInput());
+    setDbiEventoFecha(nowLocalDateTimeInput());
+    setAvaluoOpen(true);
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
@@ -1102,6 +1272,7 @@ export default function Expedientes() {
     setMode("editar");
     setCurrent(freshRow);
     setSubcarpeta("");
+    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
 
     const hasMejora = Object.values(freshRow?.carpeta_mejora || {}).some((s) => s?.ok);
     const hasTerreno = Object.values(freshRow?.carpeta_terreno || {}).some((s) => s?.ok);
@@ -1120,6 +1291,11 @@ export default function Expedientes() {
     setPolyFiles([]);
     setDbiCodigo("");
     setDbiFile(null);
+    setDbiInicioObs("");
+    setDbiInicioError("");
+    setDbiInicioFecha(nowLocalDateTimeInput());
+    setDbiEventoFecha(nowLocalDateTimeInput());
+    setAvaluoOpen(true);
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
@@ -1337,6 +1513,34 @@ export default function Expedientes() {
   const filtersActive = Boolean(
     String(filterQ || "").trim() || filterTramoId || filterSubtramoId
   );
+
+  const avaluoLabels = useMemo(() => {
+    if (tipoCarpeta === "terreno") {
+      return { a: "Fracción afectada", b: "Gastos de transferencia" };
+    }
+    return { a: "Mejoras agroforestales", b: "Mejoras edilicias" };
+  }, [tipoCarpeta]);
+
+  const avaluoCalc = useMemo(() => {
+    const toNum = (v) => {
+      if (v === null || v === undefined) return 0;
+      const s = String(v).trim();
+      if (!s) return 0;
+      const n = Number(s);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    };
+
+    const parteA = toNum(form?.parte_a);
+    const parteB = toNum(form?.parte_b);
+    const subtotal = parteA + parteB;
+    const premio = form?.premio_aplica ? subtotal * 0.1 : 0;
+    const total = subtotal + premio;
+
+    const fmt = (n) =>
+      Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    return { parteA, parteB, subtotal, premio, total, fmt };
+  }, [form?.parte_a, form?.parte_b, form?.premio_aplica]);
 
   return (
     <div className="container mt-3">
@@ -1701,6 +1905,115 @@ export default function Expedientes() {
             </Col>
           </Row>
 
+          <Row className="g-3">
+            <Col md={12}>
+              <div className="border rounded p-3">
+                <div className="d-flex align-items-center">
+                  <h5 className="mb-0">Avalúo</h5>
+                  <Button
+                    className="ms-auto"
+                    size="sm"
+                    variant="outline-secondary"
+                    onClick={() => setAvaluoOpen((v) => !v)}
+                    aria-controls="exp-avaluo-collapse"
+                    aria-expanded={avaluoOpen}
+                  >
+                    {avaluoOpen ? "Ocultar" : "Mostrar"}
+                  </Button>
+                </div>
+
+                <Collapse in={avaluoOpen}>
+                  <div id="exp-avaluo-collapse" className="mt-3">
+                    <Row className="g-3">
+                      <Col md={4}>
+                        <Form.Group>
+                          <Form.Label>{avaluoLabels.a}</Form.Label>
+                          {readonly ? (
+                            <div className="fw-semibold">
+                              {String(form.parte_a || "").trim() ? avaluoCalc.fmt(avaluoCalc.parteA) : "—"}
+                            </div>
+                          ) : (
+                            <Form.Control
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={form.parte_a}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (String(v).startsWith("-")) return;
+                                setForm({ ...form, parte_a: v });
+                              }}
+                              placeholder="0.00"
+                            />
+                          )}
+                        </Form.Group>
+                      </Col>
+
+                      <Col md={4}>
+                        <Form.Group>
+                          <Form.Label>{avaluoLabels.b}</Form.Label>
+                          {readonly ? (
+                            <div className="fw-semibold">
+                              {String(form.parte_b || "").trim() ? avaluoCalc.fmt(avaluoCalc.parteB) : "—"}
+                            </div>
+                          ) : (
+                            <Form.Control
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={form.parte_b}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (String(v).startsWith("-")) return;
+                                setForm({ ...form, parte_b: v });
+                              }}
+                              placeholder="0.00"
+                            />
+                          )}
+                        </Form.Group>
+                      </Col>
+
+                      <Col md={4}>
+                        <Form.Group>
+                          <Form.Label>Premio</Form.Label>
+                          {readonly ? (
+                            <div className="fw-semibold">{form.premio_aplica ? "Aplica 10%" : "No aplica"}</div>
+                          ) : (
+                            <Form.Check
+                              type="checkbox"
+                              label="Aplicar premio 10%"
+                              checked={!!form.premio_aplica}
+                              onChange={(e) => setForm({ ...form, premio_aplica: e.target.checked })}
+                            />
+                          )}
+                        </Form.Group>
+                      </Col>
+
+                      <Col md={12}>
+                        <Table bordered size="sm" className="mb-0">
+                          <tbody>
+                            <tr>
+                              <td className="fw-semibold">Subtotal</td>
+                              <td className="text-end">{avaluoCalc.fmt(avaluoCalc.subtotal)}</td>
+                            </tr>
+                            <tr>
+                              <td className="fw-semibold">Premio</td>
+                              <td className="text-end">{avaluoCalc.fmt(avaluoCalc.premio)}</td>
+                            </tr>
+                            <tr>
+                              <td className="fw-semibold">Total a desembolsar</td>
+                              <td className="text-end">{avaluoCalc.fmt(avaluoCalc.total)}</td>
+                            </tr>
+                          </tbody>
+                        </Table>
+                      </Col>
+                    </Row>
+                  </div>
+                </Collapse>
+              </div>
+            </Col>
+          </Row>
+
           <hr />
 
           {/* =========================
@@ -1767,6 +2080,7 @@ export default function Expedientes() {
                         <th style={{ width: 60 }}>OK</th>
                         <th>Estado</th>
                         <th>Observación</th>
+                        <th style={{ width: 160 }}>Fecha</th>
                         <th style={{ width: 260 }}>Acción</th>
                       </tr>
                     </thead>
@@ -1774,12 +2088,20 @@ export default function Expedientes() {
                       {etapasList.map((e) => {
                         const st = etapas?.[e.key] || { ok: false, obs: "" };
                         const editable = canEditKey(e.key);
+                        const stageDate = formatLocalDateTime(st?.date);
+                        const stageDateLocal = isoToDatetimeLocal(st?.date);
 
                         const isPlano = e.key === "plano_georef";
                         const disableCheck =
                           readonly || savingEtapa || !editable || isPlano || currentGroupBlocked;
                         const disableObs =
                           readonly || savingEtapa || (!editable && !st.ok) || currentGroupBlocked;
+                        const disableDate =
+                          readonly ||
+                          savingEtapa ||
+                          currentGroupBlocked ||
+                          ((!editable && !st.ok) && !st?.date) ||
+                          (isPlano && !st.ok && !st?.date);
 
                         return (
                           <tr key={e.key}>
@@ -1787,7 +2109,24 @@ export default function Expedientes() {
                               <Form.Check
                                 checked={!!st.ok}
                                 disabled={disableCheck}
-                                onChange={(ev) => setEtapa(e.key, ev.target.checked, st.obs || "")}
+                                onChange={(ev) => {
+                                  const checked = ev.target.checked;
+                                  let nextDateIso = undefined;
+
+                                  if (checked && !st?.date) {
+                                    const localNow = nowLocalDateTimeInput();
+                                    const iso = datetimeLocalToIso(localNow);
+                                    if (iso) {
+                                      nextDateIso = iso;
+                                      setEtapas((prev) => ({
+                                        ...prev,
+                                        [e.key]: { ...(prev?.[e.key] || {}), ok: true, date: iso },
+                                      }));
+                                    }
+                                  }
+
+                                  setEtapa(e.key, checked, st.obs || "", nextDateIso);
+                                }}
                               />
                             </td>
                             <td>
@@ -1810,9 +2149,34 @@ export default function Expedientes() {
                                   }));
                                 }}
                                 onBlur={() => {
-                                  if (!readonly) setEtapa(e.key, !!st.ok, st.obs || "");
+                                  if (!readonly) setEtapa(e.key, !!st.ok, st.obs || "", st?.date || "");
                                 }}
                               />
+                            </td>
+                            <td className="text-nowrap">
+                              {readonly ? (
+                                stageDate || "—"
+                              ) : (
+                                <Form.Control
+                                  type="datetime-local"
+                                  value={stageDateLocal}
+                                  disabled={disableDate}
+                                  onChange={(ev) => {
+                                    const local = ev.target.value;
+                                    const iso = datetimeLocalToIso(local);
+                                    setEtapas((prev) => ({
+                                      ...prev,
+                                      [e.key]: { ...(prev?.[e.key] || {}), date: iso || (prev?.[e.key]?.date ?? null) },
+                                    }));
+                                  }}
+                                  onBlur={(ev) => {
+                                    const local = ev.target.value;
+                                    const iso = datetimeLocalToIso(local);
+                                    if (!iso) return;
+                                    if (!readonly) setEtapa(e.key, !!st.ok, st.obs || "", iso);
+                                  }}
+                                />
+                              )}
                             </td>
                             <td>
                               {isPlano ? (
@@ -1953,43 +2317,215 @@ export default function Expedientes() {
             <Col md={12}>
               <h5 className="mb-2">Carpeta DBI</h5>
               {!current ? (
-                <div className="text-muted">Primero guardá el expediente para subir DBI.</div>
+                <div className="text-muted">Primero guardá el expediente para ver DBI.</div>
               ) : (
-                <Row className="g-2 align-items-end">
-                  <Col md={4}>
-                    <Form.Group>
-                      <Form.Label>Código</Form.Label>
-                      <Form.Control
-                        value={dbiCodigo}
-                        disabled={readonly || dbiBusy}
-                        onChange={(e) => setDbiCodigo(e.target.value)}
-                        placeholder="Ej: DBI-2026-001"
-                      />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group>
-                      <Form.Label>Archivo final (carpeta finalizada)</Form.Label>
-                      <Form.Control
-                        type="file"
-                        disabled={readonly || dbiBusy}
-                        onChange={(e) => setDbiFile(e.target.files?.[0] || null)}
-                      />
-                    </Form.Group>
-                  </Col>
-                  <Col md={2} className="text-end">
-                    {!readonly && (
-                      <Button variant="primary" disabled={dbiBusy} onClick={subirDBI}>
-                        {dbiBusy ? "Subiendo..." : "Subir DBI"}
-                      </Button>
-                    )}
-                  </Col>
-                  <Col md={12}>
-                    <div className="text-muted small">
-                      * Se guarda en tumba con subcarpeta <b>dbi</b> dentro del expediente.
+                <>
+                  {(() => {
+                    const dbiInfo = current?.carpeta_dbi || {};
+                    const dbiFecha = formatLocalDateTime(dbiInfo.fecha_ingreso);
+                    const hasCodigo = Boolean(dbiInfo.codigo);
+                    const hasEstado = Boolean(dbiInfo.estado);
+                    const hasFecha = Boolean(dbiFecha);
+                    if (!hasCodigo && !hasEstado && !hasFecha) return null;
+                    return (
+                      <div className="text-muted small mb-2">
+                        {hasCodigo && <span className="me-3">Código: {dbiInfo.codigo}</span>}
+                        {hasFecha && <span className="me-3">Fecha ingreso: {dbiFecha}</span>}
+                        {hasEstado && <span>Estado: {dbiInfo.estado}</span>}
+                      </div>
+                    );
+                  })()}
+                  {!readonly && (() => {
+                    const dbiInfo = current?.carpeta_dbi || {};
+                    const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
+                    if (dbiIniciado) return null;
+                    return (
+                      <div className="mt-2">
+                        <h6 className="mb-2">Registrar ingreso DBI</h6>
+                        {dbiInicioError && (
+                          <div className="text-danger small mb-2">{dbiInicioError}</div>
+                        )}
+                        <Row className="g-2 align-items-end">
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Código DBI</Form.Label>
+                              <Form.Control
+                                value={dbiCodigo}
+                                disabled={dbiInicioBusy}
+                                onChange={(e) => setDbiCodigo(e.target.value)}
+                                placeholder="Ej: DBI-2026-001"
+                              />
+                            </Form.Group>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Fecha ingreso</Form.Label>
+                              <Form.Control
+                                type="datetime-local"
+                                value={dbiInicioFecha}
+                                disabled={dbiInicioBusy}
+                                onChange={(e) => setDbiInicioFecha(e.target.value)}
+                              />
+                            </Form.Group>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Observación (opcional)</Form.Label>
+                              <Form.Control
+                                value={dbiInicioObs}
+                                disabled={dbiInicioBusy}
+                                onChange={(e) => setDbiInicioObs(e.target.value)}
+                                placeholder="detalle..."
+                              />
+                            </Form.Group>
+                          </Col>
+                          <Col md={12} className="text-end">
+                            <Button
+                              variant="primary"
+                              disabled={dbiInicioBusy || !dbiCodigo.trim() || !dbiInicioFecha}
+                              onClick={iniciarDbi}
+                            >
+                              {dbiInicioBusy ? "Registrando..." : "Registrar ingreso DBI"}
+                            </Button>
+                          </Col>
+                        </Row>
+                        <div className="text-muted small mt-1">
+                          Primero registrá el ingreso inicial de DBI para habilitar hitos posteriores.
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  <div className="mt-3">
+                    <h6 className="mb-2">Hitos DBI</h6>
+                    {(() => {
+                      const dbiInfo = current?.carpeta_dbi || {};
+                      const raw = Array.isArray(dbiInfo.estados) ? dbiInfo.estados : [];
+                      if (!raw.length) {
+                        return <div className="text-muted small">Sin hitos DBI registrados</div>;
+                      }
+                      const ordered = raw
+                        .map((item, idx) => ({ item, idx }))
+                        .sort((a, b) => {
+                          const ta = Date.parse(a.item?.fecha || "");
+                          const tb = Date.parse(b.item?.fecha || "");
+                          const va = Number.isNaN(ta) ? null : ta;
+                          const vb = Number.isNaN(tb) ? null : tb;
+                          if (va === null && vb === null) return a.idx - b.idx;
+                          if (va === null) return 1;
+                          if (vb === null) return -1;
+                          if (va === vb) return a.idx - b.idx;
+                          return va - vb;
+                        })
+                        .map((x) => x.item);
+
+                      return (
+                        <Table bordered size="sm" className="mt-2">
+                          <thead>
+                            <tr>
+                              <th>Estado</th>
+                              <th>Fecha</th>
+                              <th>Observación</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ordered.map((ev, i) => {
+                              const fecha = formatLocalDateTime(ev?.fecha);
+                              return (
+                                <tr key={`dbi-evt-${i}`}>
+                                  <td>{ev?.estado || "—"}</td>
+                                  <td>{fecha || "—"}</td>
+                                  <td>{ev?.obs || "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </Table>
+                      );
+                    })()}
+                  </div>
+                  {!readonly && (() => {
+                    const dbiInfo = current?.carpeta_dbi || {};
+                    const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
+                    if (!dbiIniciado) return null;
+                    return (
+                    <div className="mt-3">
+                      <h6 className="mb-2">Agregar hito DBI</h6>
+                      {dbiEventoError && (
+                        <div className="text-danger small mb-2">{dbiEventoError}</div>
+                      )}
+                      <Row className="g-2 align-items-end">
+                        <Col md={4}>
+                          <Form.Group>
+                            <Form.Label>Estado</Form.Label>
+                            <Form.Select
+                              value={dbiEventoEstadoPreset}
+                              disabled={dbiEventoBusy}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setDbiEventoEstadoPreset(val);
+                                if (val !== "otro") setDbiEventoEstado("");
+                              }}
+                            >
+                              <option value="">Seleccioná un estado</option>
+                              <option value="ingresado">ingresado</option>
+                              <option value="devuelto">devuelto</option>
+                              <option value="reingresado">reingresado</option>
+                              <option value="aprobado">aprobado</option>
+                              <option value="observado">observado</option>
+                              <option value="rechazado">rechazado</option>
+                              <option value="otro">Otro / personalizado</option>
+                            </Form.Select>
+                          </Form.Group>
+                          {dbiEventoEstadoPreset === "otro" && (
+                            <Form.Control
+                              className="mt-2"
+                              value={dbiEventoEstado}
+                              disabled={dbiEventoBusy}
+                              onChange={(e) => setDbiEventoEstado(e.target.value)}
+                              placeholder="estado personalizado"
+                            />
+                          )}
+                        </Col>
+                        <Col md={4}>
+                          <Form.Group>
+                            <Form.Label>Fecha (opcional)</Form.Label>
+                            <Form.Control
+                              type="datetime-local"
+                              value={dbiEventoFecha}
+                              disabled={dbiEventoBusy}
+                              onChange={(e) => setDbiEventoFecha(e.target.value)}
+                            />
+                          </Form.Group>
+                        </Col>
+                        <Col md={4}>
+                          <Form.Group>
+                            <Form.Label>Observación (opcional)</Form.Label>
+                            <Form.Control
+                              value={dbiEventoObs}
+                              disabled={dbiEventoBusy}
+                              onChange={(e) => setDbiEventoObs(e.target.value)}
+                              placeholder="detalle..."
+                            />
+                          </Form.Group>
+                        </Col>
+                        <Col md={12} className="text-end">
+                          <Button
+                            variant="outline-success"
+                            disabled={
+                              dbiEventoBusy ||
+                              (!dbiEventoEstadoPreset &&
+                                !dbiEventoEstado.trim())
+                            }
+                            onClick={agregarDbiEvento}
+                          >
+                            {dbiEventoBusy ? "Guardando..." : "Agregar hito"}
+                          </Button>
+                        </Col>
+                      </Row>
                     </div>
-                  </Col>
-                </Row>
+                    );
+                  })()}
+                </>
               )}
             </Col>
           </Row>
@@ -2037,7 +2573,6 @@ export default function Expedientes() {
                         </Button>
                       )}
                     </Col>
-
                     <Col md={6}>
                       <div className="border rounded p-3 h-100">
                         <div className="fw-semibold mb-2">C.I. Titular</div>

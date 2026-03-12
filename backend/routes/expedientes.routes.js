@@ -149,3 +149,28 @@ router.post(
 );
 
 module.exports = router;
+router.post(
+  "/:idExpediente/dbi/eventos",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.agregarDbiEvento
+);
+
+router.post(
+  "/:idExpediente/dbi/iniciar",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.iniciarDbi
+);
+
+// ======================================================
+// ❌ ELIMINADAS (YA NO USAMOS bloque_terreno/bloque_mejoras)
+// ======================================================
+//
+// router.get("/:idExpediente/terreno", ... ctrl.geojsonTerreno);
+// router.get("/:idExpediente/mejoras", ... ctrl.geojsonMejoras);
+//
+// router.post("/:idExpediente/mejoras/poligono", ... ctrl.subirPoligonoMejoras);
+// router.post("/:idExpediente/terreno/poligono", ... ctrl.subirPoligonoTerreno);
+
+module.exports = router;

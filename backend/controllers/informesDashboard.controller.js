@@ -70,7 +70,6 @@ function normalizeLabel(v) {
 }
 
 function chartTypeForPregunta(tipo) {
-  // Para números, normalmente barras
   const t = String(tipo || "").toLowerCase();
   if (isNumeric(t)) return "bar";
   if (isBoolean(t)) return "pie";
@@ -78,9 +77,55 @@ function chartTypeForPregunta(tipo) {
 }
 
 /* =========================
+   Heurísticas para excluir "numéricos"
+   que en realidad no conviene graficar
+   ========================= */
+function normText(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function shouldSkipNumericQuestion(p) {
+  const txt = normText(`${p?.etiqueta || ""} ${p?.seccion_titulo || ""}`);
+
+  const blacklist = [
+    "sujeto",
+    "telefono",
+    "celular",
+    "documento",
+    "cedula",
+    "c.i",
+    "ci ",
+    "ruc",
+    "codigo",
+    "codigo censo",
+    "progresiva",
+    "latitud",
+    "longitud",
+    "coordenada",
+    "coordenadas",
+    "gps",
+    "fecha",
+    "hora",
+    "ip",
+    "url",
+    "foto",
+    "version",
+    "navegador",
+    "direccion ip",
+    "geolocalizacion",
+  ];
+
+  return blacklist.some((x) => txt.includes(x));
+}
+
+/* =========================
    SQL builder para filtros comunes
    ========================= */
-function buildInformeFilters({ id_proyecto, id_plantilla, desde, hasta }) {
+function buildInformeFilters({ id_proyecto, id_plantilla, desde, hasta, solo_cerrados = false }) {
   const params = [];
   let idx = 1;
 
@@ -102,6 +147,11 @@ function buildInformeFilters({ id_proyecto, id_plantilla, desde, hasta }) {
     params.push(hasta);
   }
 
+  // Dejá este filtro solo si la columna existe en ema.informe
+  if (solo_cerrados) {
+    where += ` AND COALESCE(i.cerrado, false) = true`;
+  }
+
   return { whereSql: where, params };
 }
 
@@ -111,7 +161,9 @@ function buildInformeFilters({ id_proyecto, id_plantilla, desde, hasta }) {
 async function getPlantillasPorProyecto(req, res) {
   try {
     const id_proyecto = toInt(req.query.id_proyecto, null);
-    if (!id_proyecto) return res.status(400).json({ ok: false, error: "id_proyecto es requerido" });
+    if (!id_proyecto) {
+      return res.status(400).json({ ok: false, error: "id_proyecto es requerido" });
+    }
 
     const q = `
       SELECT
@@ -140,15 +192,22 @@ async function getPlantillasPorProyecto(req, res) {
 async function getChartsAgregados(req, res) {
   try {
     const id_proyecto = toInt(req.query.id_proyecto, null);
-    if (!id_proyecto) return res.status(400).json({ ok: false, error: "id_proyecto es requerido" });
+    if (!id_proyecto) {
+      return res.status(400).json({ ok: false, error: "id_proyecto es requerido" });
+    }
 
     const id_plantilla = toInt(req.query.id_plantilla, null);
     const desde = toDateISO(req.query.desde);
     const hasta = toDateISO(req.query.hasta);
-
     const solo_cerrados = toBool(req.query.solo_cerrados, false);
 
-    const { whereSql, params } = buildInformeFilters({ id_proyecto, id_plantilla, desde, hasta });
+    const { whereSql, params } = buildInformeFilters({
+      id_proyecto,
+      id_plantilla,
+      desde,
+      hasta,
+      solo_cerrados,
+    });
 
     // 1) Conteo
     const qCount = `SELECT COUNT(*)::int AS n FROM ema.informe i ${whereSql}`;
@@ -222,13 +281,19 @@ async function getChartsAgregados(req, res) {
       const pid = Number(p.id_pregunta);
       if (!pid) continue;
 
-      if (isNumeric(p.tipo)) numIds.push(pid);
-      else if (isBoolean(p.tipo)) boolIds.push(pid);
-      else if (isCategorical(p.tipo)) catIds.push(pid);
-      else catIds.push(pid);
+      if (isNumeric(p.tipo)) {
+        if (!shouldSkipNumericQuestion(p)) {
+          numIds.push(pid);
+        }
+      } else if (isBoolean(p.tipo)) {
+        boolIds.push(pid);
+      } else if (isCategorical(p.tipo)) {
+        catIds.push(pid);
+      } else {
+        catIds.push(pid);
+      }
     }
 
-    // 5) Agregados
     // 5A) Categóricos
     let catAgg = [];
     if (catIds.length) {
@@ -284,45 +349,73 @@ async function getChartsAgregados(req, res) {
       boolAgg = rBool.rows || [];
     }
 
-    // 5C) ✅ NUMÉRICOS AGRUPADOS (HISTOGRAMA)
-    // - parsea seguro valor_texto => numeric
-    // - luego agrupa por entero (round/trunc) => “1”, “2”, “3”...
-    // Si quisieras decimales, avisame y lo cambiamos a buckets.
+    // 5C) Numéricos seguros
     let numAgg = [];
     if (numIds.length) {
       const qNum = `
-        SELECT
-          r.id_pregunta,
-          (x.val)::int AS valor_int,
-          COUNT(*)::int AS cantidad
-        FROM ema.informe i
-        JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
-        JOIN LATERAL (
+        WITH num_base AS (
           SELECT
+            r.id_pregunta,
+            BTRIM(r.valor_texto) AS raw_valor
+          FROM ema.informe i
+          JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
+          ${whereSql}
+            AND r.id_pregunta = ANY($${params.length + 1}::int[])
+        ),
+        num_parse AS (
+          SELECT
+            nb.id_pregunta,
+            nb.raw_valor,
             CASE
-              WHEN r.valor_texto IS NULL THEN NULL
-              WHEN btrim(r.valor_texto) = '' THEN NULL
-              WHEN btrim(r.valor_texto) = '..' THEN NULL
+              WHEN nb.raw_valor IS NULL OR nb.raw_valor = '' THEN NULL
+              WHEN LOWER(nb.raw_valor) IN ('-', 'null', 'undefined', 'nan', '..') THEN NULL
+
+              -- excluir coordenadas "lat,lng"
+              WHEN nb.raw_valor ~ '^\\s*[+-]?\\d+(\\.\\d+)?\\s*,\\s*[+-]?\\d+(\\.\\d+)?\\s*$' THEN NULL
+
+              -- excluir progresivas tipo 0+100, 12+450
+              WHEN nb.raw_valor ~ '^\\s*\\d+\\s*\\+\\s*\\d+\\s*$' THEN NULL
+
+              -- excluir fechas tipo 2026-03-12
+              WHEN nb.raw_valor ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN NULL
+
+              -- excluir urls
+              WHEN LOWER(nb.raw_valor) ~ '^(https?|ftp)://' THEN NULL
+
+              -- excluir IDs numéricos largos (sujeto, códigos, etc.)
+              WHEN nb.raw_valor ~ '^\\s*\\d{10,}\\s*$' THEN NULL
+
               ELSE (
                 CASE
-                  WHEN replace(
-                         regexp_replace(btrim(r.valor_texto), '[^0-9\\.,+-]', '', 'g'),
-                         ',', '.'
-                       ) ~ '^[+-]?\\d+(\\.\\d+)?$'
-                  THEN replace(
-                         regexp_replace(btrim(r.valor_texto), '[^0-9\\.,+-]', '', 'g'),
-                         ',', '.'
-                       )::numeric
+                  WHEN REPLACE(REGEXP_REPLACE(nb.raw_valor, '[^0-9\\.,+-]', '', 'g'), ',', '.') ~ '^[+-]?\\d+(\\.\\d+)?$'
+                  THEN REPLACE(REGEXP_REPLACE(nb.raw_valor, '[^0-9\\.,+-]', '', 'g'), ',', '.')::numeric
                   ELSE NULL
                 END
               )
-            END AS val
-        ) x ON true
-        ${whereSql}
-          AND r.id_pregunta = ANY($${params.length + 1}::int[])
-          AND x.val IS NOT NULL
-        GROUP BY r.id_pregunta, (x.val)::int
-        ORDER BY r.id_pregunta ASC, valor_int ASC
+            END AS num_val
+          FROM num_base nb
+        ),
+        num_bucket AS (
+          SELECT
+            np.id_pregunta,
+            np.num_val,
+            CASE
+              WHEN np.num_val IS NULL THEN NULL
+              WHEN np.num_val = TRUNC(np.num_val)
+                THEN TRUNC(np.num_val)::text
+              ELSE TO_CHAR(ROUND(np.num_val, 2), 'FM999999999999999999999999990.00')
+            END AS bucket_label
+          FROM num_parse np
+          WHERE np.num_val IS NOT NULL
+        )
+        SELECT
+          nb.id_pregunta,
+          nb.bucket_label AS valor,
+          COUNT(*)::int AS cantidad,
+          MIN(nb.num_val) AS orden_num
+        FROM num_bucket nb
+        GROUP BY nb.id_pregunta, nb.bucket_label
+        ORDER BY nb.id_pregunta ASC, orden_num ASC, nb.bucket_label ASC
       `;
       const rNum = await pool.query(qNum, [...params, numIds]);
       numAgg = rNum.rows || [];
@@ -342,12 +435,16 @@ async function getChartsAgregados(req, res) {
       byPregunta.get(pid).data.push(cnt);
     }
 
-    for (const row of catAgg) pushAgg(Number(row.id_pregunta), row.valor, row.cantidad);
-    for (const row of boolAgg) pushAgg(Number(row.id_pregunta), row.valor, row.cantidad);
+    for (const row of catAgg) {
+      pushAgg(Number(row.id_pregunta), row.valor, row.cantidad);
+    }
 
-    // ✅ numAgg también va al mismo byPregunta (como categorías "1","2","3"...)
+    for (const row of boolAgg) {
+      pushAgg(Number(row.id_pregunta), row.valor, row.cantidad);
+    }
+
     for (const row of numAgg) {
-      pushAgg(Number(row.id_pregunta), String(row.valor_int), row.cantidad);
+      pushAgg(Number(row.id_pregunta), row.valor, row.cantidad);
     }
 
     const charts = [];
@@ -366,7 +463,6 @@ async function getChartsAgregados(req, res) {
       let labels = agg.labels.slice();
       let data = agg.data.slice();
 
-      // ordenar por opciones_json si aplica (para num no suele haber)
       if (p.opciones_json && Array.isArray(p.opciones_json) && !isNumeric(p.tipo)) {
         const wanted = p.opciones_json.map((x) => normalizeLabel(x)).filter(Boolean);
         const map = new Map(labels.map((l, i) => [l, data[i]]));
@@ -382,7 +478,6 @@ async function getChartsAgregados(req, res) {
         }
       }
 
-      // ✅ seguridad final: filtra vacíos / 0
       const filtered = [];
       for (let i = 0; i < labels.length; i++) {
         const l = normalizeLabel(labels[i]);
@@ -400,9 +495,14 @@ async function getChartsAgregados(req, res) {
         seccion,
         etiqueta,
         tipo_pregunta: p.tipo,
-        type: isNumeric(p.tipo) ? "bar" : type, // ✅ num siempre barras (mejor lectura)
+        type: isNumeric(p.tipo) ? "bar" : type,
         labels: filtered.map((x) => x[0]),
-        datasets: [{ label: "Cantidad", data: filtered.map((x) => x[1]) }],
+        datasets: [
+          {
+            label: "Cantidad",
+            data: filtered.map((x) => x[1]),
+          },
+        ],
       });
     }
 
