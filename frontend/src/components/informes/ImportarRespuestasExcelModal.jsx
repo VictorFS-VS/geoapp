@@ -63,6 +63,40 @@ const ALIAS = {
 };
 
 /* =========================
+   Canonical / Stop words
+========================= */
+const STOP_WORDS = new Set([
+  "de",
+  "del",
+  "la",
+  "las",
+  "el",
+  "los",
+  "y",
+  "e",
+]);
+
+function removeStopWords(s) {
+  const parts = normKey(s)
+    .split(" ")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => !STOP_WORDS.has(x));
+
+  return parts.join(" ").trim();
+}
+
+function canonicalKey(raw) {
+  const base = normKey(raw);
+  if (!base) return "";
+
+  const aliased = ALIAS[base] || base;
+  const noStops = removeStopWords(aliased);
+
+  return noStops || aliased || base;
+}
+
+/* =========================
    Helpers: parsing Excel
 ========================= */
 function pickFirstSheet(arrayBuffer) {
@@ -102,13 +136,13 @@ function parsePreguntaIdFromHeader(header) {
    Similaridad (fuzzy)
 ========================= */
 function tokensOf(s) {
-  const nk = normKey(s);
+  const nk = canonicalKey(s);
   if (!nk) return [];
   return nk.split(" ").filter(Boolean);
 }
 
 function bigrams(s) {
-  const t = normKey(s).replace(/\s+/g, " ");
+  const t = canonicalKey(s).replace(/\s+/g, " ");
   const out = [];
   for (let i = 0; i < t.length - 1; i++) out.push(t.slice(i, i + 2));
   return out;
@@ -127,16 +161,19 @@ function jaccard(a, b) {
 }
 
 function fuzzyScore(excelLabel, plantillaLabel) {
-  const tok = jaccard(tokensOf(excelLabel), tokensOf(plantillaLabel));
-  const bi = jaccard(bigrams(excelLabel), bigrams(plantillaLabel));
-  const n1 = normKey(excelLabel);
-  const n2 = normKey(plantillaLabel);
-  const prefix = n1 && n2 && (n1.startsWith(n2) || n2.startsWith(n1)) ? 0.12 : 0;
-  return 0.65 * tok + 0.35 * bi + prefix;
+  const a = canonicalKey(excelLabel);
+  const b = canonicalKey(plantillaLabel);
+
+  const tok = jaccard(tokensOf(a), tokensOf(b));
+  const bi = jaccard(bigrams(a), bigrams(b));
+  const prefix = a && b && (a.startsWith(b) || b.startsWith(a)) ? 0.12 : 0;
+  const exact = a === b && a !== "" ? 0.25 : 0;
+
+  return 0.65 * tok + 0.35 * bi + prefix + exact;
 }
 
 function getTopCandidates(excelCol, preguntasLista, max = 8) {
-  const excelNorm = normKey(excelCol);
+  const excelNorm = canonicalKey(excelCol);
   if (!excelNorm) return [];
 
   const scored = (preguntasLista || [])
@@ -170,7 +207,15 @@ async function apiSend(API_URL, authHeaders, path, method, body) {
   if (res.status === 204) return null;
 
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || data?.message || `Error HTTP ${res.status}`);
+
+  if (!res.ok) {
+    const err = new Error(data?.error || data?.message || `Error HTTP ${res.status}`);
+    err.status = res.status;
+    err.details = data?.detalles || data?.details || null;
+    err.raw = data;
+    throw err;
+  }
+
   return data;
 }
 
@@ -182,25 +227,27 @@ function buildNormalizedVariants(raw) {
   const out = new Set();
   if (!base) return [];
 
-  out.add(base);
+  const aliased1 = ALIAS[base] || base;
+  const aliased2 = ALIAS[aliased1] || aliased1;
 
-  const aliased1 = ALIAS[base];
-  if (aliased1) out.add(aliased1);
+  const variants = [
+    base,
+    aliased1,
+    aliased2,
+    removeStopWords(base),
+    removeStopWords(aliased1),
+    removeStopWords(aliased2),
+    canonicalKey(base),
+    canonicalKey(aliased1),
+    canonicalKey(aliased2),
+  ];
 
-  const aliased2 = aliased1 ? ALIAS[aliased1] : null;
-  if (aliased2) out.add(aliased2);
+  variants
+    .map((v) => String(v || "").trim())
+    .filter(Boolean)
+    .forEach((v) => out.add(v));
 
-  out.add(base.replace(/\bde\b/g, "").replace(/\s+/g, " ").trim());
-  out.add(base.replace(/\bdel\b/g, "").replace(/\s+/g, " ").trim());
-  out.add(base.replace(/\bde\b/g, "").replace(/\bdel\b/g, "").replace(/\s+/g, " ").trim());
-
-  if (aliased1) {
-    out.add(aliased1.replace(/\bde\b/g, "").replace(/\s+/g, " ").trim());
-    out.add(aliased1.replace(/\bdel\b/g, "").replace(/\s+/g, " ").trim());
-    out.add(aliased1.replace(/\bde\b/g, "").replace(/\bdel\b/g, "").replace(/\s+/g, " ").trim());
-  }
-
-  return Array.from(out).filter(Boolean);
+  return Array.from(out);
 }
 
 /* =========================
@@ -213,7 +260,6 @@ function toNumberSafe(v) {
   const s = String(v).trim();
   if (!s) return null;
 
-  // soporta coma decimal
   const normalized = s.replace(",", ".");
   const n = Number(normalized);
 
@@ -289,6 +335,121 @@ function destinoLabel(d) {
 }
 
 /* =========================
+   ID único helpers
+========================= */
+function normalizeUniqueValue(v) {
+  if (Array.isArray(v)) return v.map((x) => normalizeUniqueValue(x)).join("|");
+  return String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function validarDuplicadosIdUnico(rowsToCreate, preguntasById) {
+  const seenByPregunta = new Map();
+  const errores = [];
+
+  for (const row of rowsToCreate || []) {
+    const respuestas = row?.respuestas || {};
+
+    for (const [idPregStr, valor] of Object.entries(respuestas)) {
+      const idPreg = Number(idPregStr);
+      if (!Number.isFinite(idPreg)) continue;
+
+      const pregunta = preguntasById.get(idPreg);
+      if (!pregunta?.id_unico) continue;
+
+      const key = normalizeUniqueValue(valor);
+      if (!key) continue;
+
+      if (!seenByPregunta.has(idPreg)) {
+        seenByPregunta.set(idPreg, new Map());
+      }
+
+      const mapPregunta = seenByPregunta.get(idPreg);
+
+      if (mapPregunta.has(key)) {
+        const primeraFila = mapPregunta.get(key);
+        errores.push({
+          fila_excel_1: primeraFila,
+          fila_excel_2: row.rowIndex,
+          id_pregunta: idPreg,
+          etiqueta: pregunta?.etiqueta || pregunta?.titulo || `#${idPreg}`,
+          valor,
+        });
+      } else {
+        mapPregunta.set(key, row.rowIndex);
+      }
+    }
+  }
+
+  return errores;
+}
+
+function formatBackendImportError(ex, row, preguntasById) {
+  const status = Number(ex?.status || 0);
+  const details = Array.isArray(ex?.details) ? ex.details : [];
+
+  if (status === 409 && details.length) {
+    const mensajes = details.map((d) => {
+      const idPreg = Number(d?.id_pregunta);
+      const preg =
+        preguntasById.get(idPreg) ||
+        (idPreg ? { etiqueta: d?.etiqueta || `#${idPreg}` } : null);
+
+      const etiqueta = preg?.etiqueta || d?.etiqueta || `#${idPreg || "?"}`;
+      const valor = d?.valor ?? "";
+      return `${etiqueta}${valor !== "" ? `: "${valor}"` : ""}`;
+    });
+
+    return {
+      fila_excel: row.rowIndex,
+      id_proyecto: row.id_proyecto,
+      id_plantilla: row.id_plantilla,
+      id_link: row.id_link,
+      error: "Valor duplicado en campo ID único",
+      detalle_corto: mensajes.join(" | "),
+      detalles: details,
+      status,
+    };
+  }
+
+  if (status === 400 && details.length) {
+    const mensajes = details.map((d) => {
+      const idPreg = Number(d?.id_pregunta);
+      const preg =
+        preguntasById.get(idPreg) ||
+        (idPreg ? { etiqueta: d?.etiqueta || `#${idPreg}` } : null);
+
+      const etiqueta = preg?.etiqueta || d?.etiqueta || `#${idPreg || "?"}`;
+      return `${etiqueta} (${d?.reason || "inválido"})`;
+    });
+
+    return {
+      fila_excel: row.rowIndex,
+      id_proyecto: row.id_proyecto,
+      id_plantilla: row.id_plantilla,
+      id_link: row.id_link,
+      error: ex?.message || "Datos inválidos",
+      detalle_corto: mensajes.join(" | "),
+      detalles: details,
+      status,
+    };
+  }
+
+  return {
+    fila_excel: row.rowIndex,
+    id_proyecto: row.id_proyecto,
+    id_plantilla: row.id_plantilla,
+    id_link: row.id_link,
+    error: ex?.message || "Error",
+    detalle_corto: ex?.message || "Error",
+    detalles: details,
+    status,
+  };
+}
+
+/* =========================
    Component
 ========================= */
 export default function ImportarRespuestasExcelModal({
@@ -313,6 +474,7 @@ export default function ImportarRespuestasExcelModal({
   const [manualMap, setManualMap] = useState({});
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
+  const [duplicadosIdUnico, setDuplicadosIdUnico] = useState([]);
 
   const destinos = useMemo(() => {
     return (linksDestino || [])
@@ -371,10 +533,13 @@ export default function ImportarRespuestasExcelModal({
 
       const raw = q.etiqueta || q.titulo || "";
       const variants = buildNormalizedVariants(raw);
+      const canon = canonicalKey(raw);
 
       variants.forEach((k) => {
         if (k) m.set(k, id);
       });
+
+      if (canon) m.set(canon, id);
     });
 
     return m;
@@ -390,7 +555,9 @@ export default function ImportarRespuestasExcelModal({
 
       if (
         variants.includes(normKey("COORDENADAS GPS")) ||
+        variants.includes(canonicalKey("COORDENADAS GPS")) ||
         variants.includes(normKey("COORDENADA GPS")) ||
+        variants.includes(canonicalKey("COORDENADA GPS")) ||
         normKey(raw).includes(normKey("COORDENADAS GPS")) ||
         normKey(raw).includes(normKey("COORDENADA GPS"))
       ) {
@@ -398,6 +565,10 @@ export default function ImportarRespuestasExcelModal({
       }
     }
     return null;
+  }, [preguntasLista]);
+
+  const preguntasIdUnico = useMemo(() => {
+    return (preguntasLista || []).filter((q) => !!q.id_unico);
   }, [preguntasLista]);
 
   const usedPreguntaIds = useMemo(() => {
@@ -427,6 +598,7 @@ export default function ImportarRespuestasExcelModal({
     setRunning(false);
     setResult(null);
     setDestinoKey("");
+    setDuplicadosIdUnico([]);
   }
 
   function applyManualOverrides(colMapBase, manualMapState) {
@@ -469,12 +641,10 @@ export default function ImportarRespuestasExcelModal({
       const r = rows[index];
       const respuestas = {};
 
-      // Mapeo normal
       for (const cm of colMapResolved) {
         const idPreg = cm?.id_pregunta;
         if (!idPreg) continue;
 
-        // Evitar que lat/lng se guarden como preguntas separadas
         if (latCol && cm.col === latCol) continue;
         if (lngCol && cm.col === lngCol) continue;
 
@@ -484,7 +654,6 @@ export default function ImportarRespuestasExcelModal({
         respuestas[String(idPreg)] = v;
       }
 
-      // Mapeo especial para COORDENADAS GPS => [lat, lng]
       if (gpsPreguntaId && latCol && lngCol) {
         const lat = toNumberSafe(r[latCol]);
         const lng = toNumberSafe(r[lngCol]);
@@ -511,8 +680,11 @@ export default function ImportarRespuestasExcelModal({
   function recalcFrom(base, manual, rows) {
     const resolved = applyManualOverrides(base, manual);
     const createRows = buildCreateRows(rows, resolved);
+    const duplicados = validarDuplicadosIdUnico(createRows, preguntasById);
 
     setRowsToCreate(createRows);
+    setDuplicadosIdUnico(duplicados);
+
     setMapInfo((mi) =>
       mi
         ? {
@@ -543,6 +715,7 @@ export default function ImportarRespuestasExcelModal({
     setBaseColMap([]);
     setManualMap({});
     setPreviewRows([]);
+    setDuplicadosIdUnico([]);
 
     const f = e.target.files?.[0];
     if (!f) return;
@@ -560,7 +733,6 @@ export default function ImportarRespuestasExcelModal({
       if (!keys.length) throw new Error("No detecté encabezados en la primera fila.");
 
       const colMap = keys.map((col) => {
-        // GPS latitud
         if (isGpsLatitudeColumn(col)) {
           return {
             col,
@@ -569,12 +741,11 @@ export default function ImportarRespuestasExcelModal({
             etiqueta: gpsPreguntaId ? "COORDENADAS GPS (latitud)" : null,
             via: gpsPreguntaId ? "gps_latitude_to_json" : "gps_latitude_no_question",
             excelNorm: normKey(col),
-            lookupNorm: normKey(col),
+            lookupNorm: canonicalKey(col),
             candidates: [],
           };
         }
 
-        // GPS longitud
         if (isGpsLongitudeColumn(col)) {
           return {
             col,
@@ -583,7 +754,7 @@ export default function ImportarRespuestasExcelModal({
             etiqueta: gpsPreguntaId ? "COORDENADAS GPS (longitud)" : null,
             via: gpsPreguntaId ? "gps_longitude_to_json" : "gps_longitude_no_question",
             excelNorm: normKey(col),
-            lookupNorm: normKey(col),
+            lookupNorm: canonicalKey(col),
             candidates: [],
           };
         }
@@ -598,17 +769,18 @@ export default function ImportarRespuestasExcelModal({
             etiqueta: q?.etiqueta || `#${explicitId}`,
             via: "header_id",
             excelNorm: normKey(col),
-            lookupNorm: normKey(col),
+            lookupNorm: canonicalKey(col),
             candidates: [],
           };
         }
 
         const variants = buildNormalizedVariants(col);
+        const canonCol = canonicalKey(col);
 
         let byLabel = null;
         let matchedVariant = null;
 
-        for (const v of variants) {
+        for (const v of [canonCol, ...variants]) {
           const found = preguntaIdByEtiqueta.get(v);
           if (found && preguntasById.has(found)) {
             byLabel = found;
@@ -621,6 +793,7 @@ export default function ImportarRespuestasExcelModal({
           const q = preguntasById.get(byLabel);
           const excelNorm = normKey(col);
           const aliasDirect = ALIAS[excelNorm] || excelNorm;
+          const canon = canonicalKey(col);
 
           return {
             col,
@@ -628,13 +801,15 @@ export default function ImportarRespuestasExcelModal({
             id_pregunta: byLabel,
             etiqueta: q?.etiqueta || q?.titulo || col,
             via:
-              matchedVariant && matchedVariant !== excelNorm
-                ? matchedVariant === aliasDirect
-                  ? "alias_etiqueta"
-                  : "normalizado_etiqueta"
-                : "etiqueta",
+              matchedVariant === canon
+                ? "canonica_etiqueta"
+                : matchedVariant && matchedVariant !== excelNorm
+                  ? matchedVariant === aliasDirect
+                    ? "alias_etiqueta"
+                    : "normalizado_etiqueta"
+                  : "etiqueta",
             excelNorm,
-            lookupNorm: matchedVariant || excelNorm,
+            lookupNorm: matchedVariant || canon,
             candidates: [],
           };
         }
@@ -648,12 +823,13 @@ export default function ImportarRespuestasExcelModal({
           etiqueta: null,
           via: candidates.length ? "no_match_suggested" : "no_match",
           excelNorm: normKey(col),
-          lookupNorm: normKey(col),
+          lookupNorm: canonicalKey(col),
           candidates,
         };
       });
 
       const createRows = buildCreateRows(rows, colMap);
+      const duplicados = validarDuplicadosIdUnico(createRows, preguntasById);
 
       setExcelRows(rows);
       setBaseColMap(colMap);
@@ -664,6 +840,7 @@ export default function ImportarRespuestasExcelModal({
         totalCreates: createRows.length,
       });
       setRowsToCreate(createRows);
+      setDuplicadosIdUnico(duplicados);
     } catch (e2) {
       setErr(e2.message || "Error al leer el Excel.");
     }
@@ -694,6 +871,11 @@ export default function ImportarRespuestasExcelModal({
       return;
     }
 
+    if (duplicadosIdUnico.length) {
+      setErr("Hay valores repetidos en columnas marcadas como ID único dentro del Excel.");
+      return;
+    }
+
     setErr("");
     setRunning(true);
     setResult(null);
@@ -704,8 +886,6 @@ export default function ImportarRespuestasExcelModal({
 
     for (const row of rowsToCreate) {
       try {
-        console.log("ROW A ENVIAR:", row);
-
         await apiSend(API_URL, authHeaders, `/informes`, "POST", {
           id_proyecto: row.id_proyecto,
           id_plantilla: row.id_plantilla,
@@ -716,18 +896,17 @@ export default function ImportarRespuestasExcelModal({
         ok += 1;
       } catch (ex) {
         fail += 1;
-        errors.push({
-          fila_excel: row.rowIndex,
-          id_proyecto: row.id_proyecto,
-          id_plantilla: row.id_plantilla,
-          id_link: row.id_link,
-          error: ex?.message || "Error",
-        });
+        const errFmt = formatBackendImportError(ex, row, preguntasById);
+        errors.push(errFmt);
       }
     }
 
     setRunning(false);
-    setResult({ ok, fail, errors: errors.slice(0, 30) });
+    setResult({
+      ok,
+      fail,
+      errors: errors.slice(0, 100),
+    });
   }
 
   const anyNoMatch = !!mapInfo?.colMap?.some((x) => !x.ok);
@@ -770,6 +949,19 @@ export default function ImportarRespuestasExcelModal({
                 El Excel <b>no necesita</b> columna <code>id_informe</code>.
               </div>
             </Alert>
+
+            {preguntasIdUnico.length ? (
+              <Alert variant="secondary" className="mb-3">
+                <div className="fw-semibold mb-1">Preguntas con ID único</div>
+                <div className="small">
+                  {(preguntasIdUnico || []).map((q) => (
+                    <div key={q.id_pregunta}>
+                      #{q.id_pregunta} — {q.etiqueta || q.titulo}
+                    </div>
+                  ))}
+                </div>
+              </Alert>
+            ) : null}
 
             {Number(idProyecto) > 0 ? (
               <Alert variant="secondary" className="mb-3">
@@ -833,6 +1025,39 @@ export default function ImportarRespuestasExcelModal({
               </Alert>
             ) : null}
 
+            {duplicadosIdUnico.length ? (
+              <Alert variant="danger" className="mt-3">
+                <div className="fw-semibold mb-2">Duplicados detectados en campos ID único</div>
+                <div className="small mb-2">
+                  Corregí estos valores en el Excel antes de importar.
+                </div>
+                <div className="table-responsive">
+                  <Table bordered size="sm" className="mb-0">
+                    <thead>
+                      <tr>
+                        <th>Pregunta</th>
+                        <th>Valor repetido</th>
+                        <th>Fila 1</th>
+                        <th>Fila 2</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {duplicadosIdUnico.slice(0, 50).map((d, i) => (
+                        <tr key={`${d.id_pregunta}-${i}`}>
+                          <td>
+                            #{d.id_pregunta} — {d.etiqueta}
+                          </td>
+                          <td>{String(d.valor ?? "")}</td>
+                          <td>{d.fila_excel_1}</td>
+                          <td>{d.fila_excel_2}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </div>
+              </Alert>
+            ) : null}
+
             {mapInfo ? (
               <div className="mt-3">
                 <div className="d-flex flex-wrap gap-2 align-items-center">
@@ -848,6 +1073,9 @@ export default function ImportarRespuestasExcelModal({
                   ) : (
                     <Badge bg="warning" text="dark">No detecté pregunta GPS</Badge>
                   )}
+                  {preguntasIdUnico.length ? (
+                    <Badge bg="dark">ID único: {preguntasIdUnico.length}</Badge>
+                  ) : null}
                 </div>
 
                 {anyNoMatch ? (
@@ -879,6 +1107,8 @@ export default function ImportarRespuestasExcelModal({
                                 ? String(c.id_pregunta)
                                 : "";
 
+                          const preguntaActual = c?.id_pregunta ? preguntasById.get(Number(c.id_pregunta)) : null;
+
                           return (
                             <tr key={c.col}>
                               <td>{c.col}</td>
@@ -892,7 +1122,14 @@ export default function ImportarRespuestasExcelModal({
                                 )}
                               </td>
                               <td>{c.id_pregunta ?? "-"}</td>
-                              <td>{c.etiqueta ?? "-"}</td>
+                              <td>
+                                {c.etiqueta ?? "-"}
+                                {preguntaActual?.id_unico ? (
+                                  <div className="mt-1">
+                                    <Badge bg="dark">ID único</Badge>
+                                  </div>
+                                ) : null}
+                              </td>
                               <td className="text-muted small">{c.via}</td>
 
                               <td>
@@ -916,11 +1153,16 @@ export default function ImportarRespuestasExcelModal({
                                     return cand.length ? (
                                       <>
                                         <option value="" disabled>─────────────</option>
-                                        {cand.map((opt) => (
-                                          <option key={opt.id_pregunta} value={String(opt.id_pregunta)}>
-                                            #{opt.id_pregunta} — {opt.etiqueta} (≈{Math.round(opt.score * 100)}%)
-                                          </option>
-                                        ))}
+                                        {cand.map((opt) => {
+                                          const q = preguntasById.get(Number(opt.id_pregunta));
+                                          return (
+                                            <option key={opt.id_pregunta} value={String(opt.id_pregunta)}>
+                                              #{opt.id_pregunta} — {opt.etiqueta}
+                                              {q?.id_unico ? " [ID único]" : ""}
+                                              {" "} (≈{Math.round(opt.score * 100)}%)
+                                            </option>
+                                          );
+                                        })}
                                       </>
                                     ) : null;
                                   })()}
@@ -931,6 +1173,7 @@ export default function ImportarRespuestasExcelModal({
                                       .map((q) => ({
                                         id: Number(q.id_pregunta),
                                         label: q.etiqueta || q.titulo || `#${q.id_pregunta}`,
+                                        id_unico: !!q.id_unico,
                                       }))
                                       .filter((x) => Number.isFinite(x.id))
                                       .filter((x) => x.id === current || !usedPreguntaIds.has(x.id))
@@ -941,7 +1184,7 @@ export default function ImportarRespuestasExcelModal({
                                         <option value="" disabled>─────────────</option>
                                         {all.map((q) => (
                                           <option key={q.id} value={String(q.id)}>
-                                            #{q.id} — {q.label}
+                                            #{q.id} — {q.label}{q.id_unico ? " [ID único]" : ""}
                                           </option>
                                         ))}
                                       </>
@@ -974,10 +1217,49 @@ export default function ImportarRespuestasExcelModal({
                 <div>
                   Informes creados: {result.ok} — Fallos: {result.fail}
                 </div>
+
+                {result?.errors?.some((e) => Number(e.status) === 409) ? (
+                  <Alert variant="danger" className="mt-2 mb-0">
+                    Hay filas que no se importaron porque contienen valores ya existentes en campos marcados como <b>ID único</b>.
+                  </Alert>
+                ) : null}
+
                 {result.errors?.length ? (
-                  <pre className="mt-2 mb-0" style={{ maxHeight: 160, overflow: "auto" }}>
-                    {JSON.stringify(result.errors, null, 2)}
-                  </pre>
+                  <div className="mt-3">
+                    <div className="fw-semibold mb-2">Detalle de errores</div>
+
+                    <div className="table-responsive">
+                      <Table bordered size="sm" className="mb-0">
+                        <thead>
+                          <tr>
+                            <th>Fila Excel</th>
+                            <th>Error</th>
+                            <th>Detalle</th>
+                            <th>Estado</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.errors.map((er, i) => (
+                            <tr key={`${er.fila_excel}-${i}`}>
+                              <td>{er.fila_excel ?? "-"}</td>
+                              <td>{er.error || "-"}</td>
+                              <td>{er.detalle_corto || "-"}</td>
+                              <td>{er.status || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </div>
+
+                    <details className="mt-2">
+                      <summary className="small text-muted" style={{ cursor: "pointer" }}>
+                        Ver detalle técnico
+                      </summary>
+                      <pre className="mt-2 mb-0" style={{ maxHeight: 220, overflow: "auto" }}>
+                        {JSON.stringify(result.errors, null, 2)}
+                      </pre>
+                    </details>
+                  </div>
                 ) : null}
               </Alert>
             ) : null}
@@ -999,7 +1281,13 @@ export default function ImportarRespuestasExcelModal({
         <Button
           variant="primary"
           onClick={ejecutar}
-          disabled={running || !rowsToCreate.length || !idPlantilla || !proyectoDestinoFinal}
+          disabled={
+            running ||
+            !rowsToCreate.length ||
+            !idPlantilla ||
+            !proyectoDestinoFinal ||
+            !!duplicadosIdUnico.length
+          }
         >
           {running ? (
             <>

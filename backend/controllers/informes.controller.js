@@ -1213,13 +1213,19 @@ async function createPregunta(req, res) {
     obligatorio = false,
     orden = 1,
     permite_foto = false,
+    id_unico = false,
     visible_if,
     required_if,
     hide_if,
   } = req.body;
 
-  if (!etiqueta?.trim()) return res.status(400).json({ ok: false, error: "La etiqueta es obligatoria" });
-  if (!tipo?.trim()) return res.status(400).json({ ok: false, error: "El tipo es obligatorio" });
+  if (!etiqueta?.trim()) {
+    return res.status(400).json({ ok: false, error: "La etiqueta es obligatoria" });
+  }
+
+  if (!tipo?.trim()) {
+    return res.status(400).json({ ok: false, error: "El tipo es obligatorio" });
+  }
 
   const tipoNorm = String(tipo).trim().toLowerCase();
 
@@ -1227,6 +1233,7 @@ async function createPregunta(req, res) {
     permite_foto = true;
     opciones = null;
     opciones_json = null;
+    id_unico = false; // opcional pero recomendable
   }
 
   const opcionesInput = opciones_json !== undefined ? opciones_json : opciones;
@@ -1250,6 +1257,7 @@ async function createPregunta(req, res) {
 
   const secId = asPositiveInt(idSeccion, 0);
   const newOrden = asPositiveInt(orden, 1);
+  const idUnicoBool = !!id_unico;
 
   const client = await pool.connect();
   try {
@@ -1273,10 +1281,34 @@ async function createPregunta(req, res) {
 
     const { rows } = await client.query(
       `INSERT INTO ema.informe_pregunta
-        (id_seccion, etiqueta, tipo, opciones_json, obligatorio, orden, permite_foto, visible_if, required_if, hide_if)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        (
+          id_seccion,
+          etiqueta,
+          tipo,
+          opciones_json,
+          obligatorio,
+          orden,
+          permite_foto,
+          id_unico,
+          visible_if,
+          required_if,
+          hide_if
+        )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [secId, etiqueta.trim(), tipo.trim(), opcionesJson, !!obligatorio, newOrden, !!permite_foto, visibleIfJson, requiredIfJson, hideIfJson]
+      [
+        secId,
+        etiqueta.trim(),
+        tipo.trim(),
+        opcionesJson,
+        !!obligatorio,
+        newOrden,
+        !!permite_foto,
+        idUnicoBool,
+        visibleIfJson,
+        requiredIfJson,
+        hideIfJson,
+      ]
     );
 
     await client.query("COMMIT");
@@ -1284,7 +1316,11 @@ async function createPregunta(req, res) {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("createPregunta error:", err);
-    if (String(err?.code) === "23505") return res.status(409).json({ ok: false, error: "Conflicto de orden. Reintente." });
+
+    if (String(err?.code) === "23505") {
+      return res.status(409).json({ ok: false, error: "Conflicto de orden. Reintente." });
+    }
+
     return res.status(500).json({ ok: false, error: "Error al crear pregunta" });
   } finally {
     client.release();
@@ -1303,6 +1339,7 @@ async function updatePregunta(req, res) {
     obligatorio,
     orden,
     permite_foto,
+    id_unico,
     id_seccion,
     visible_if,
     required_if,
@@ -1310,14 +1347,20 @@ async function updatePregunta(req, res) {
   } = req.body;
 
   const pregId = asPositiveInt(idPregunta, 0);
-  if (!pregId) return res.status(400).json({ ok: false, error: "idPregunta inválido" });
+  if (!pregId) {
+    return res.status(400).json({ ok: false, error: "idPregunta inválido" });
+  }
 
-  const tipoNorm = tipo !== undefined && tipo !== null ? String(tipo).trim().toLowerCase() : null;
+  const tipoNorm =
+    tipo !== undefined && tipo !== null
+      ? String(tipo).trim().toLowerCase()
+      : null;
 
   if (tipoNorm === "imagen") {
     permite_foto = true;
     opciones = null;
     opciones_json = null;
+    id_unico = false; // opcional pero recomendable
   }
 
   const opcionesInput = opciones_json !== undefined ? opciones_json : opciones;
@@ -1356,6 +1399,7 @@ async function updatePregunta(req, res) {
         FOR UPDATE`,
       [pregId]
     );
+
     if (!cur.rowCount) {
       await client.query("ROLLBACK");
       return res.status(404).json({ ok: false, error: "Pregunta no encontrada" });
@@ -1369,9 +1413,22 @@ async function updatePregunta(req, res) {
         ? asPositiveInt(id_seccion, oldSeccion)
         : oldSeccion;
 
-    await client.query(`SELECT id_pregunta FROM ema.informe_pregunta WHERE id_seccion = $1 FOR UPDATE`, [oldSeccion]);
+    await client.query(
+      `SELECT id_pregunta
+         FROM ema.informe_pregunta
+        WHERE id_seccion = $1
+        FOR UPDATE`,
+      [oldSeccion]
+    );
+
     if (newSeccion !== oldSeccion) {
-      await client.query(`SELECT id_pregunta FROM ema.informe_pregunta WHERE id_seccion = $1 FOR UPDATE`, [newSeccion]);
+      await client.query(
+        `SELECT id_pregunta
+           FROM ema.informe_pregunta
+          WHERE id_seccion = $1
+          FOR UPDATE`,
+        [newSeccion]
+      );
     }
 
     if (newSeccion === oldSeccion && newOrden !== undefined && newOrden !== oldOrden) {
@@ -1439,7 +1496,7 @@ async function updatePregunta(req, res) {
 
     if (obligatorio !== undefined) {
       sets.push(`obligatorio = $${sets.length + 1}`);
-      params.push(obligatorio);
+      params.push(!!obligatorio);
     }
 
     if (newSeccion !== oldSeccion) {
@@ -1459,7 +1516,12 @@ async function updatePregunta(req, res) {
 
     if (permite_foto !== undefined) {
       sets.push(`permite_foto = $${sets.length + 1}`);
-      params.push(permite_foto);
+      params.push(!!permite_foto);
+    }
+
+    if (id_unico !== undefined) {
+      sets.push(`id_unico = $${sets.length + 1}`);
+      params.push(!!id_unico);
     }
 
     if (visibleIfJson !== undefined) {
@@ -1497,7 +1559,11 @@ async function updatePregunta(req, res) {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("updatePregunta error:", err);
-    if (String(err?.code) === "23505") return res.status(409).json({ ok: false, error: "Conflicto de orden. Reintente." });
+
+    if (String(err?.code) === "23505") {
+      return res.status(409).json({ ok: false, error: "Conflicto de orden. Reintente." });
+    }
+
     return res.status(500).json({ ok: false, error: "Error al actualizar pregunta" });
   } finally {
     client.release();
@@ -1691,426 +1757,543 @@ async function deletePregunta(req, res) {
 
 /* ───────────────────────────────────────── INFORMES LLENADOS ───────────────────────────────────────── */
 
-/**
- * ✅ Regla final de visibilidad:
- * - secVisible = evalCond(sec_visible_if) (si no hay => true)
- * - qHidden   = evalCond(q.hide_if)       (si no hay => false)
- * - qVisible  = evalCond(q.visible_if)    (si no hay => true)
- * - isVisible = secVisible && !qHidden && qVisible
- */
-function computeVisibility(q, answersObj) {
-  const secVisible = q.sec_visible_if ? evalCond(q.sec_visible_if, answersObj) : true;
-  const qHidden = q.hide_if ? evalCond(q.hide_if, answersObj) : false;
-  const qVisibleByRule = q.visible_if ? evalCond(q.visible_if, answersObj) : true;
-  return secVisible && !qHidden && qVisibleByRule;
+  /**
+   * ✅ Regla final de visibilidad:
+   * - secVisible = evalCond(sec_visible_if) (si no hay => true)
+   * - qHidden   = evalCond(q.hide_if)       (si no hay => false)
+   * - qVisible  = evalCond(q.visible_if)    (si no hay => true)
+   * - isVisible = secVisible && !qHidden && qVisible
+   */
+  function computeVisibility(q, answersObj) {
+    const secVisible = q.sec_visible_if ? evalCond(q.sec_visible_if, answersObj) : true;
+    const qHidden = q.hide_if ? evalCond(q.hide_if, answersObj) : false;
+    const qVisibleByRule = q.visible_if ? evalCond(q.visible_if, answersObj) : true;
+    return secVisible && !qHidden && qVisibleByRule;
+  }
+
+  function normalizeUniqueValue(v) {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) {
+    return v.map((x) => normalizeUniqueValue(x)).join("|");
+  }
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v).trim().toLowerCase();
+    } catch {
+      return String(v).trim().toLowerCase();
+    }
+  }
+  return String(v).trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// POST /api/informes (crear)
-async function crearInforme(req, res) {
-  const { id_plantilla, id_proyecto, titulo, respuestas } = req.body;
+  function extractComparableAnswerValue(row) {
+    if (row?.valor_texto !== null && row?.valor_texto !== undefined && row?.valor_texto !== "") {
+      return row.valor_texto;
+    }
 
-  const idPlantilla = Number(id_plantilla);
-  if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
-    return res.status(400).json({ ok: false, error: "id_plantilla inválido" });
+    if (row?.valor_bool !== null && row?.valor_bool !== undefined) {
+      return row.valor_bool;
+    }
+
+    if (row?.valor_json !== null && row?.valor_json !== undefined) {
+      return row.valor_json;
+    }
+
+    return null;
   }
 
-  const idProyecto = id_proyecto ? Number(id_proyecto) : null;
-  if (id_proyecto && (!Number.isFinite(idProyecto) || idProyecto <= 0)) {
-    return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
-  }
+  async function validarPreguntasIdUnico({
+    client,
+    idPlantilla,
+    preguntasById,
+    visibleSet,
+    respuestasObj,
+    excludeInformeId = null,
+  }) {
+    const errores = [];
 
-  let respuestasObj = {};
-  try {
-    if (respuestas) {
-      respuestasObj = typeof respuestas === "string" ? JSON.parse(respuestas) : respuestas;
-      if (!respuestasObj || typeof respuestasObj !== "object" || Array.isArray(respuestasObj)) {
-        respuestasObj = {};
-      }
-    }
-  } catch {
-    respuestasObj = {};
-  }
-
-  const files = req.files || {};
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    // ✅ IMPORTANTE: incluir opciones_json (semaforo)
-    const qRes = await client.query(
-      `
-      SELECT
-        q.id_pregunta, q.etiqueta, q.tipo, q.obligatorio, q.permite_foto,
-        q.opciones_json,
-        q.visible_if, q.required_if, q.hide_if,
-        s.visible_if AS sec_visible_if
-      FROM ema.informe_pregunta q
-      JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-      WHERE s.id_plantilla = $1
-      ORDER BY s.orden, q.orden
-      `,
-      [idPlantilla]
-    );
-
-    const preguntas = qRes.rows || [];
-    const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
-
-    // build label->id lookup for respuestas that may come by etiqueta
-    const labelToId = {};
-    for (const q of preguntas) {
-      const key = String(q.etiqueta || q.titulo || "").trim().toLowerCase();
-      if (key) labelToId[key] = Number(q.id_pregunta);
-    }
-
-    // ✅ palette semáforo (global por plantilla)
-    const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
-
-    // pre-normalize answersForRules to numeric ids (labels allowed)
-    const answersForRules = {};
-    for (const [k, v] of Object.entries(respuestasObj || {})) {
-      let idNum = Number(k);
-      if (!Number.isFinite(idNum) || idNum <= 0) {
-        const key = String(k || "").trim().toLowerCase();
-        idNum = labelToId[key] || NaN;
-      }
-      if (Number.isFinite(idNum) && idNum > 0) answersForRules[idNum] = v;
-    }
-
-    const visibleSet = new Set();
-    const requiredSet = new Set();
-    const invalid = [];
-
-    for (const q of preguntas) {
-      const qid = Number(q.id_pregunta);
-
-      const isVisible = computeVisibility(q, answersForRules);
-      if (isVisible) visibleSet.add(qid);
-
-      const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
-      const isRequired = isVisible && (!!q.obligatorio || requiredByRule);
-      if (isRequired) requiredSet.add(qid);
-    }
-
-    // ✅ required no-imagen
-    for (const qid of requiredSet) {
-      const q = preguntasById.get(qid);
+    for (const qid of visibleSet) {
+      const q = preguntasById.get(Number(qid));
       if (!q) continue;
-
-      if (String(q.tipo).toLowerCase() === "imagen") continue;
+      if (!q.id_unico) continue;
 
       const raw = _getAnswerValueFromObj(respuestasObj, qid);
       const val = _coerceValue(raw);
 
-      if (raw === undefined || isEmptyAnswer(val)) {
-        invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required" });
+      if (raw === undefined || isEmptyAnswer(val)) continue;
+
+      const valorNormalizado = normalizeUniqueValue(val);
+      if (!valorNormalizado) continue;
+
+      const params = [Number(idPlantilla), Number(qid)];
+      let sql = `
+        SELECT
+          r.id_informe,
+          r.id_pregunta,
+          r.valor_texto,
+          r.valor_bool,
+          r.valor_json
+        FROM ema.informe_respuesta r
+        JOIN ema.informe i ON i.id_informe = r.id_informe
+        WHERE i.id_plantilla = $1
+          AND r.id_pregunta = $2
+      `;
+
+      if (excludeInformeId) {
+        params.push(Number(excludeInformeId));
+        sql += ` AND r.id_informe <> $3`;
       }
-    }
 
-    // ✅ required imagen (en create: debe venir archivo)
-    for (const qid of requiredSet) {
-      const q = preguntasById.get(qid);
-      if (!q) continue;
-      if (String(q.tipo).toLowerCase() !== "imagen") continue;
+      const dupRes = await client.query(sql, params);
 
-      const field = `fotos_${qid}`;
-      const tieneArchivos = !!files?.[field];
-      if (!tieneArchivos) {
-        invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
-      }
-    }
-
-    if (invalid.length) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        ok: false,
-        error: "Faltan respuestas obligatorias (incluye condicionales)",
-        detalles: invalid,
+      const repetido = (dupRes.rows || []).find((row) => {
+        const existente = extractComparableAnswerValue(row);
+        const existenteNorm = normalizeUniqueValue(existente);
+        return existenteNorm && existenteNorm === valorNormalizado;
       });
+
+      if (repetido) {
+        errores.push({
+          id_pregunta: Number(qid),
+          etiqueta: q?.etiqueta || null,
+          valor: val,
+          reason: "id_unico",
+        });
+      }
     }
 
-    // ✅ crear informe
-    const infRes = await client.query(
-      `
-      INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
-      VALUES ($1, $2, $3)
-      RETURNING *
-      `,
-      [idPlantilla, idProyecto, titulo || null]
-    );
+    if (errores.length) {
+      const e = new Error("Hay valores duplicados en campos marcados como ID único");
+      e.statusCode = 409;
+      e.details = errores;
+      throw e;
+    }
+  }
 
-    const informe = infRes.rows[0];
-    const idInforme = informe.id_informe;
+  // POST /api/informes (crear)
+  async function crearInforme(req, res) {
+    const { id_plantilla, id_proyecto, titulo, respuestas } = req.body;
 
-    // ✅ guardar respuestas (solo visibles)
-    for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
-      const idPregunta = Number(idPreguntaStr);
-      if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+    const idPlantilla = Number(id_plantilla);
+    if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+      return res.status(400).json({ ok: false, error: "id_plantilla inválido" });
+    }
 
-      const q = preguntasById.get(idPregunta);
-      if (!q) continue;
-      if (!visibleSet.has(idPregunta)) continue;
+    const idProyecto = id_proyecto ? Number(id_proyecto) : null;
+    if (id_proyecto && (!Number.isFinite(idProyecto) || idProyecto <= 0)) {
+      return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
+    }
 
-      // ✅ Normalización por tipo (FIX SELECT)
-      const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
+    let respuestasObj = {};
+    try {
+      if (respuestas) {
+        respuestasObj = typeof respuestas === "string" ? JSON.parse(respuestas) : respuestas;
+        if (!respuestasObj || typeof respuestasObj !== "object" || Array.isArray(respuestasObj)) {
+          respuestasObj = {};
+        }
+      }
+    } catch {
+      respuestasObj = {};
+    }
 
-      let valorTexto = null;
-      let valorBool = null;
-      let valorJson = null;
+    const files = req.files || {};
 
-      // ✅ semáforo: guardar {nombre, hex} estable
-      if (String(q.tipo || "").trim().toLowerCase() === "semaforo") {
-        const obj = semaforoToObj(valor, semaforoPaletteMap);
-        if (obj && obj.hex) {
-          valorTexto = obj.nombre || null;
-          valorJson = { nombre: obj.nombre || null, hex: obj.hex };
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // ✅ IMPORTANTE: incluir id_unico + opciones_json (semaforo)
+      const qRes = await client.query(
+        `
+        SELECT
+          q.id_pregunta,
+          q.etiqueta,
+          q.tipo,
+          q.obligatorio,
+          q.permite_foto,
+          q.id_unico,
+          q.opciones_json,
+          q.visible_if,
+          q.required_if,
+          q.hide_if,
+          s.visible_if AS sec_visible_if
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ORDER BY s.orden, q.orden
+        `,
+        [idPlantilla]
+      );
+
+      const preguntas = qRes.rows || [];
+      const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
+
+      const labelToId = {};
+      for (const q of preguntas) {
+        const key = String(q.etiqueta || q.titulo || "").trim().toLowerCase();
+        if (key) labelToId[key] = Number(q.id_pregunta);
+      }
+
+      const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
+
+      const answersForRules = {};
+      for (const [k, v] of Object.entries(respuestasObj || {})) {
+        let idNum = Number(k);
+        if (!Number.isFinite(idNum) || idNum <= 0) {
+          const key = String(k || "").trim().toLowerCase();
+          idNum = labelToId[key] || NaN;
+        }
+        if (Number.isFinite(idNum) && idNum > 0) answersForRules[idNum] = v;
+      }
+
+      const visibleSet = new Set();
+      const requiredSet = new Set();
+      const invalid = [];
+
+      for (const q of preguntas) {
+        const qid = Number(q.id_pregunta);
+
+        const isVisible = computeVisibility(q, answersForRules);
+        if (isVisible) visibleSet.add(qid);
+
+        const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
+        const isRequired = isVisible && (!!q.obligatorio || requiredByRule);
+        if (isRequired) requiredSet.add(qid);
+      }
+
+      // ✅ required no-imagen
+      for (const qid of requiredSet) {
+        const q = preguntasById.get(qid);
+        if (!q) continue;
+
+        if (String(q.tipo).toLowerCase() === "imagen") continue;
+
+        const raw = _getAnswerValueFromObj(respuestasObj, qid);
+        const val = _coerceValue(raw);
+
+        if (raw === undefined || isEmptyAnswer(val)) {
+          invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required" });
+        }
+      }
+
+      // ✅ required imagen (en create: debe venir archivo)
+      for (const qid of requiredSet) {
+        const q = preguntasById.get(qid);
+        if (!q) continue;
+        if (String(q.tipo).toLowerCase() !== "imagen") continue;
+
+        const field = `fotos_${qid}`;
+        const tieneArchivos = !!files?.[field];
+        if (!tieneArchivos) {
+          invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
+        }
+      }
+
+      if (invalid.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "Faltan respuestas obligatorias (incluye condicionales)",
+          detalles: invalid,
+        });
+      }
+
+      // ✅ validar ID único antes de crear
+      await validarPreguntasIdUnico({
+        client,
+        idPlantilla,
+        preguntasById,
+        visibleSet,
+        respuestasObj,
+        excludeInformeId: null,
+      });
+
+      // ✅ crear informe
+      const infRes = await client.query(
+        `
+        INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
+        VALUES ($1, $2, $3)
+        RETURNING *
+        `,
+        [idPlantilla, idProyecto, titulo || null]
+      );
+
+      const informe = infRes.rows[0];
+      const idInforme = informe.id_informe;
+
+      // ✅ guardar respuestas (solo visibles)
+      for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
+        const idPregunta = Number(idPreguntaStr);
+        if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+
+        const q = preguntasById.get(idPregunta);
+        if (!q) continue;
+        if (!visibleSet.has(idPregunta)) continue;
+
+        const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
+
+        let valorTexto = null;
+        let valorBool = null;
+        let valorJson = null;
+
+        if (String(q.tipo || "").trim().toLowerCase() === "semaforo") {
+          const obj = semaforoToObj(valor, semaforoPaletteMap);
+          if (obj && obj.hex) {
+            valorTexto = obj.nombre || null;
+            valorJson = { nombre: obj.nombre || null, hex: obj.hex };
+          } else {
+            const t = toJsonbOrText(valor);
+            valorTexto = t.valor_texto;
+            valorBool = t.valor_bool;
+            valorJson = t.valor_json;
+          }
         } else {
           const t = toJsonbOrText(valor);
           valorTexto = t.valor_texto;
           valorBool = t.valor_bool;
           valorJson = t.valor_json;
         }
-      } else {
-        const t = toJsonbOrText(valor);
-        valorTexto = t.valor_texto;
-        valorBool = t.valor_bool;
-        valorJson = t.valor_json;
-      }
-
-      await client.query(
-        `
-        INSERT INTO ema.informe_respuesta
-          (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
-        `,
-        [idInforme, idPregunta, valorTexto, valorBool, valorJson]
-      );
-    }
-
-    // ✅ subir fotos segura
-    const uploadsRoot = path.join(__dirname, "..", "uploads");
-    const baseDir = path.join(
-      uploadsRoot,
-      "proyectos",
-      String(idProyecto || "sin_proyecto"),
-      "informes",
-      String(idInforme)
-    );
-    await fs.promises.mkdir(baseDir, { recursive: true });
-
-    for (const [fieldName, fileOrFiles] of Object.entries(files)) {
-      if (!fieldName.startsWith("fotos_")) continue;
-
-      const idPregunta = Number(fieldName.replace("fotos_", ""));
-      if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
-
-      const q = preguntasById.get(idPregunta);
-      if (!q) continue;
-      if (!visibleSet.has(idPregunta)) continue;
-
-      const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
-      if (!permite) continue;
-
-      const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-      let ordenFoto = 1;
-
-      for (const f of archivos) {
-        const safeName = sanitizeFilename(f.name || "foto.jpg");
-        const safeExt = pickSafeImageExt(safeName, f.mimetype);
-        if (!safeExt) throw new Error("Tipo de archivo no permitido (solo jpg/png/webp)");
-
-        const nombreArchivo = `preg_${idPregunta}_foto_${ordenFoto}${safeExt}`;
-        const destinoAbs = path.join(baseDir, nombreArchivo);
-
-        const finalAbs = await safeSaveUpload(f, destinoAbs);
-        const destinoRel = path.relative(uploadsRoot, finalAbs).replace(/\\/g, "/");
 
         await client.query(
           `
-          INSERT INTO ema.informe_foto
-            (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
-          VALUES ($1, $2, $3, $4, $5)
+          INSERT INTO ema.informe_respuesta
+            (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+          VALUES ($1, $2, $3, $4, $5::jsonb)
           `,
-          [idInforme, idPregunta, null, destinoRel, ordenFoto]
+          [idInforme, idPregunta, valorTexto, valorBool, valorJson]
         );
-
-        ordenFoto++;
       }
-    }
 
-    await client.query("COMMIT");
-    return res.status(201).json({ ok: true, id_informe: idInforme });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("crearInforme error:", err);
-    return res.status(500).json({ ok: false, error: err?.message || "Error al crear informe" });
-  } finally {
-    client.release();
-  }
-}
+      // ✅ subir fotos segura
+      const uploadsRoot = path.join(__dirname, "..", "uploads");
+      const baseDir = path.join(
+        uploadsRoot,
+        "proyectos",
+        String(idProyecto || "sin_proyecto"),
+        "informes",
+        String(idInforme)
+      );
+      await fs.promises.mkdir(baseDir, { recursive: true });
 
-// GET /api/informes/:id (detalle)
-async function getInforme(req, res) {
-  const { id } = req.params;
-  try {
-    const infRes = await pool.query(
-      `SELECT i.*, p.nombre AS nombre_plantilla
-       FROM ema.informe i
-       JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-       WHERE i.id_informe = $1`,
-      [id]
-    );
-    if (!infRes.rowCount) return res.status(404).json({ ok: false, error: "Informe no encontrado" });
-    const informe = infRes.rows[0];
+      for (const [fieldName, fileOrFiles] of Object.entries(files)) {
+        if (!fieldName.startsWith("fotos_")) continue;
 
-    const { rows: secciones } = await pool.query(
-      `SELECT *
-       FROM ema.informe_seccion
-       WHERE id_plantilla = $1
-       ORDER BY orden`,
-      [informe.id_plantilla]
-    );
+        const idPregunta = Number(fieldName.replace("fotos_", ""));
+        if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
 
-    const { rows: preguntas } = await pool.query(
-      `SELECT q.*
-       FROM ema.informe_pregunta q
-       JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-       WHERE s.id_plantilla = $1
-       ORDER BY s.orden, q.orden`,
-      [informe.id_plantilla]
-    );
+        const q = preguntasById.get(idPregunta);
+        if (!q) continue;
+        if (!visibleSet.has(idPregunta)) continue;
 
-    const { rows: respuestas } = await pool.query(
-      `SELECT r.*, q.id_seccion
-       FROM ema.informe_respuesta r
-       JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
-       WHERE r.id_informe = $1`,
-      [id]
-    );
+        const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
+        if (!permite) continue;
 
-    const { rows: fotos } = await pool.query(
-      `SELECT *
-       FROM ema.informe_foto
-       WHERE id_informe = $1
-       ORDER BY orden`,
-      [id]
-    );
+        const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+        let ordenFoto = 1;
 
-    return res.json({ ok: true, informe, secciones, preguntas, respuestas, fotos });
-  } catch (err) {
-    console.error("getInforme error:", err);
-    return res.status(500).json({ ok: false, error: "Error al obtener informe" });
-  }
-}
+        for (const f of archivos) {
+          const safeName = sanitizeFilename(f.name || "foto.jpg");
+          const safeExt = pickSafeImageExt(safeName, f.mimetype);
+          if (!safeExt) throw new Error("Tipo de archivo no permitido (solo jpg/png/webp)");
 
-// GET /api/informes/:id/pdf
-async function generarPdf(req, res) {
-  const { id } = req.params;
-  try {
-    const infRes = await pool.query(
-      `SELECT i.*, p.nombre AS nombre_plantilla
-       FROM ema.informe i
-       JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-       WHERE i.id_informe = $1`,
-      [id]
-    );
-    if (!infRes.rowCount) return res.status(404).send("Informe no encontrado");
-    const informe = infRes.rows[0];
+          const nombreArchivo = `preg_${idPregunta}_foto_${ordenFoto}${safeExt}`;
+          const destinoAbs = path.join(baseDir, nombreArchivo);
 
-    const { rows: secciones } = await pool.query(
-      `SELECT *
-       FROM ema.informe_seccion
-       WHERE id_plantilla = $1
-       ORDER BY orden`,
-      [informe.id_plantilla]
-    );
+          const finalAbs = await safeSaveUpload(f, destinoAbs);
+          const destinoRel = path.relative(uploadsRoot, finalAbs).replace(/\\/g, "/");
 
-    const { rows: preguntas } = await pool.query(
-      `SELECT q.*
-       FROM ema.informe_pregunta q
-       JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-       WHERE s.id_plantilla = $1
-       ORDER BY s.orden, q.orden`,
-      [informe.id_plantilla]
-    );
+          await client.query(
+            `
+            INSERT INTO ema.informe_foto
+              (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
+            VALUES ($1, $2, $3, $4, $5)
+            `,
+            [idInforme, idPregunta, null, destinoRel, ordenFoto]
+          );
 
-    const { rows: respuestas } = await pool.query(
-      `SELECT r.*, q.id_seccion
-       FROM ema.informe_respuesta r
-       JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
-       WHERE r.id_informe = $1`,
-      [id]
-    );
-
-    const { rows: fotos } = await pool.query(
-      `SELECT * FROM ema.informe_foto
-       WHERE id_informe = $1
-       ORDER BY orden`,
-      [id]
-    );
-
-    const respuestasMap = {};
-    for (const r of respuestas) {
-      let val = r.valor_texto;
-
-      if (r.valor_bool !== null && r.valor_bool !== undefined) {
-        val = r.valor_bool ? "Sí" : "No";
-      } else if (r.valor_json !== null && r.valor_json !== undefined) {
-        try {
-          const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-          val = Array.isArray(parsed) ? parsed.join(", ") : String(parsed);
-        } catch {
-          val = String(r.valor_json);
+          ordenFoto++;
         }
       }
 
-      respuestasMap[r.id_pregunta] = val || "-";
+      await client.query("COMMIT");
+      return res.status(201).json({ ok: true, id_informe: idInforme });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("crearInforme error:", err);
+
+      const status = Number(err?.statusCode) || 500;
+      return res.status(status).json({
+        ok: false,
+        error: err?.message || "Error al crear informe",
+        ...(err?.details ? { detalles: err.details } : {}),
+      });
+    } finally {
+      client.release();
     }
+  }
 
-    const uploadsRoot = path.join(__dirname, "..", "uploads");
-
-    const fotosPorPregunta = {};
-    for (const f of fotos) {
-      if (!f.id_pregunta) continue;
-
-      const abs = path.join(uploadsRoot, String(f.ruta_archivo || "").replace(/\//g, path.sep));
-      const dataUri = fileToDataUri(abs);
-      if (!dataUri) continue;
-
-      if (!fotosPorPregunta[f.id_pregunta]) fotosPorPregunta[f.id_pregunta] = [];
-      fotosPorPregunta[f.id_pregunta].push({ descripcion: f.descripcion, dataUri });
-    }
-
-    const html = htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotosPorPregunta);
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    });
-
+  // GET /api/informes/:id (detalle)
+  async function getInforme(req, res) {
+    const { id } = req.params;
     try {
-      const page = await browser.newPage();
-      await page.emulateMediaType("screen");
-      await page.setContent(html, { waitUntil: "load" });
+      const infRes = await pool.query(
+        `SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_informe = $1`,
+        [id]
+      );
+      if (!infRes.rowCount) return res.status(404).json({ ok: false, error: "Informe no encontrado" });
+      const informe = infRes.rows[0];
 
-      const pdfBuffer = await page.pdf({
-        format: "A4",
-        printBackground: true,
-        margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
+      const { rows: secciones } = await pool.query(
+        `SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ORDER BY orden`,
+        [informe.id_plantilla]
+      );
+
+      const { rows: preguntas } = await pool.query(
+        `SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ORDER BY s.orden, q.orden`,
+        [informe.id_plantilla]
+      );
+
+      const { rows: respuestas } = await pool.query(
+        `SELECT r.*, q.id_seccion
+        FROM ema.informe_respuesta r
+        JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
+        WHERE r.id_informe = $1`,
+        [id]
+      );
+
+      const { rows: fotos } = await pool.query(
+        `SELECT *
+        FROM ema.informe_foto
+        WHERE id_informe = $1
+        ORDER BY orden`,
+        [id]
+      );
+
+      return res.json({ ok: true, informe, secciones, preguntas, respuestas, fotos });
+    } catch (err) {
+      console.error("getInforme error:", err);
+      return res.status(500).json({ ok: false, error: "Error al obtener informe" });
+    }
+  }
+
+  // GET /api/informes/:id/pdf
+  async function generarPdf(req, res) {
+    const { id } = req.params;
+    try {
+      const infRes = await pool.query(
+        `SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_informe = $1`,
+        [id]
+      );
+      if (!infRes.rowCount) return res.status(404).send("Informe no encontrado");
+      const informe = infRes.rows[0];
+
+      const { rows: secciones } = await pool.query(
+        `SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ORDER BY orden`,
+        [informe.id_plantilla]
+      );
+
+      const { rows: preguntas } = await pool.query(
+        `SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ORDER BY s.orden, q.orden`,
+        [informe.id_plantilla]
+      );
+
+      const { rows: respuestas } = await pool.query(
+        `SELECT r.*, q.id_seccion
+        FROM ema.informe_respuesta r
+        JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
+        WHERE r.id_informe = $1`,
+        [id]
+      );
+
+      const { rows: fotos } = await pool.query(
+        `SELECT * FROM ema.informe_foto
+        WHERE id_informe = $1
+        ORDER BY orden`,
+        [id]
+      );
+
+      const respuestasMap = {};
+      for (const r of respuestas) {
+        let val = r.valor_texto;
+
+        if (r.valor_bool !== null && r.valor_bool !== undefined) {
+          val = r.valor_bool ? "Sí" : "No";
+        } else if (r.valor_json !== null && r.valor_json !== undefined) {
+          try {
+            const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
+            val = Array.isArray(parsed) ? parsed.join(", ") : String(parsed);
+          } catch {
+            val = String(r.valor_json);
+          }
+        }
+
+        respuestasMap[r.id_pregunta] = val || "-";
+      }
+
+      const uploadsRoot = path.join(__dirname, "..", "uploads");
+
+      const fotosPorPregunta = {};
+      for (const f of fotos) {
+        if (!f.id_pregunta) continue;
+
+        const abs = path.join(uploadsRoot, String(f.ruta_archivo || "").replace(/\//g, path.sep));
+        const dataUri = fileToDataUri(abs);
+        if (!dataUri) continue;
+
+        if (!fotosPorPregunta[f.id_pregunta]) fotosPorPregunta[f.id_pregunta] = [];
+        fotosPorPregunta[f.id_pregunta].push({ descripcion: f.descripcion, dataUri });
+      }
+
+      const html = htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotosPorPregunta);
+
+      const browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
       });
 
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="Informe_${id}.pdf"`);
-      res.setHeader("Content-Length", pdfBuffer.length);
-      return res.end(pdfBuffer);
-    } finally {
-      await browser.close();
+      try {
+        const page = await browser.newPage();
+        await page.emulateMediaType("screen");
+        await page.setContent(html, { waitUntil: "load" });
+
+        const pdfBuffer = await page.pdf({
+          format: "A4",
+          printBackground: true,
+          margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
+        });
+
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename="Informe_${id}.pdf"`);
+        res.setHeader("Content-Length", pdfBuffer.length);
+        return res.end(pdfBuffer);
+      } finally {
+        await browser.close();
+      }
+    } catch (err) {
+      console.error("generarPdf informe error:", err);
+      return res.status(500).send("Error al generar PDF");
     }
-  } catch (err) {
-    console.error("generarPdf informe error:", err);
-    return res.status(500).send("Error al generar PDF");
   }
-}
 
   /* ───────────────────────────────────────────────────────────────
     GET /api/informes/proyecto/:idProyecto/por-plantilla
@@ -2248,833 +2431,843 @@ async function generarPdf(req, res) {
   ─────────────────────────────────────────────────────────────── */
   async function getInformesPuntosGeojson(req, res) {
     const { idProyecto } = req.params;
-    const { plantilla, informe } = req.query;
+      const { plantilla, informe } = req.query;
 
-    try {
-      const idP = Number(idProyecto);
-      if (!Number.isFinite(idP) || idP <= 0) {
-        return res.status(400).json({ ok: false, error: "idProyecto inválido" });
-      }
-
-      const params = [idP];
-      let whereExtra = "";
-
-      // filtro por plantilla
-      if (plantilla != null && String(plantilla).trim() !== "") {
-        const idPlant = Number(plantilla);
-        if (!Number.isFinite(idPlant) || idPlant <= 0) {
-          return res.status(400).json({ ok: false, error: "plantilla inválida" });
+      try {
+        const idP = Number(idProyecto);
+        if (!Number.isFinite(idP) || idP <= 0) {
+          return res.status(400).json({ ok: false, error: "idProyecto inválido" });
         }
-        params.push(idPlant);
-        whereExtra += ` AND i.id_plantilla = $${params.length} `;
-      }
 
-      // filtro por informe
-      if (informe != null && String(informe).trim() !== "") {
-        const idInf = Number(informe);
-        if (!Number.isFinite(idInf) || idInf <= 0) {
-          return res.status(400).json({ ok: false, error: "informe inválido" });
+        const params = [idP];
+        let whereExtra = "";
+
+        // filtro por plantilla
+        if (plantilla != null && String(plantilla).trim() !== "") {
+          const idPlant = Number(plantilla);
+          if (!Number.isFinite(idPlant) || idPlant <= 0) {
+            return res.status(400).json({ ok: false, error: "plantilla inválida" });
+          }
+          params.push(idPlant);
+          whereExtra += ` AND i.id_plantilla = $${params.length} `;
         }
-        params.push(idInf);
-        whereExtra += ` AND i.id_informe = $${params.length} `;
-      }
 
-      const { rows } = await pool.query(
-        `
-        SELECT
-          i.id_informe,
-          i.id_proyecto,
-          i.id_plantilla,
-          i.titulo,
-          i.fecha_creado,
+        // filtro por informe
+        if (informe != null && String(informe).trim() !== "") {
+          const idInf = Number(informe);
+          if (!Number.isFinite(idInf) || idInf <= 0) {
+            return res.status(400).json({ ok: false, error: "informe inválido" });
+          }
+          params.push(idInf);
+          whereExtra += ` AND i.id_informe = $${params.length} `;
+        }
 
-          p.nombre AS nombre_plantilla,
+        const { rows } = await pool.query(
+          `
+          SELECT
+            i.id_informe,
+            i.id_proyecto,
+            i.id_plantilla,
+            i.titulo,
+            i.fecha_creado,
 
-          MAX(
-            CASE
-              WHEN UPPER(q.etiqueta) LIKE '%LAT%' OR UPPER(q.etiqueta) LIKE '%LATITUD%'
-              THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
-            END
-          ) AS lat_raw,
+            p.nombre AS nombre_plantilla,
 
-          MAX(
-            CASE
-              WHEN UPPER(q.etiqueta) LIKE '%LON%'
-                OR UPPER(q.etiqueta) LIKE '%LONG%'
-                OR UPPER(q.etiqueta) LIKE '%LONGITUD%'
-              THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
-            END
-          ) AS lng_raw,
+            MAX(
+              CASE
+                WHEN UPPER(q.etiqueta) LIKE '%LAT%' OR UPPER(q.etiqueta) LIKE '%LATITUD%'
+                THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
+              END
+            ) AS lat_raw,
 
-          MAX(
-            CASE
-              WHEN UPPER(q.etiqueta) LIKE '%UBICAC%'
-                OR UPPER(q.etiqueta) LIKE '%UBICACION%'
-                OR UPPER(q.etiqueta) LIKE '%MAPA%'
-                OR LOWER(TRIM(q.tipo)) IN ('mapa','coordenadas','coordenada')
-              THEN r.valor_json::text
-            END
-          ) AS ubic_map_json_text,
+            MAX(
+              CASE
+                WHEN UPPER(q.etiqueta) LIKE '%LON%'
+                  OR UPPER(q.etiqueta) LIKE '%LONG%'
+                  OR UPPER(q.etiqueta) LIKE '%LONGITUD%'
+                THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
+              END
+            ) AS lng_raw,
 
-          MAX(
-            CASE
-              WHEN UPPER(q.etiqueta) LIKE '%UBICAC%'
-                OR UPPER(q.etiqueta) LIKE '%UBICACION%'
-                OR UPPER(q.etiqueta) LIKE '%MAPA%'
-                OR LOWER(TRIM(q.tipo)) IN ('mapa','coordenadas','coordenada')
-              THEN r.valor_texto
-            END
-          ) AS ubic_map_text,
+            MAX(
+              CASE
+                WHEN UPPER(q.etiqueta) LIKE '%UBICAC%'
+                  OR UPPER(q.etiqueta) LIKE '%UBICACION%'
+                  OR UPPER(q.etiqueta) LIKE '%MAPA%'
+                  OR LOWER(TRIM(q.tipo)) IN ('mapa','coordenadas','coordenada')
+                THEN r.valor_json::text
+              END
+            ) AS ubic_map_json_text,
 
-          MAX(
-            CASE
-              WHEN LOWER(TRIM(q.tipo)) = 'semaforo'
-                OR UPPER(q.etiqueta) LIKE '%SEMAFORO%'
-              THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
-            END
-          ) AS semaforo_raw
+            MAX(
+              CASE
+                WHEN UPPER(q.etiqueta) LIKE '%UBICAC%'
+                  OR UPPER(q.etiqueta) LIKE '%UBICACION%'
+                  OR UPPER(q.etiqueta) LIKE '%MAPA%'
+                  OR LOWER(TRIM(q.tipo)) IN ('mapa','coordenadas','coordenada')
+                THEN r.valor_texto
+              END
+            ) AS ubic_map_text,
 
-        FROM ema.informe i
-        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-        JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
-        JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
-        WHERE i.id_proyecto = $1
-        ${whereExtra}
-        GROUP BY
-          i.id_informe, i.id_proyecto, i.id_plantilla, i.titulo, i.fecha_creado, p.nombre
-        ORDER BY i.fecha_creado DESC, i.id_informe DESC
-        `,
-        params
-      );
+            MAX(
+              CASE
+                WHEN LOWER(TRIM(q.tipo)) = 'semaforo'
+                  OR UPPER(q.etiqueta) LIKE '%SEMAFORO%'
+                THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
+              END
+            ) AS semaforo_raw
 
-      const toNum = (v) => {
-        if (v == null) return null;
-        const s = String(v).trim().replace(",", ".");
-        const n = Number(s);
-        return Number.isFinite(n) ? n : null;
-      };
+          FROM ema.informe i
+          JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+          JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
+          JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
+          WHERE i.id_proyecto = $1
+          ${whereExtra}
+          GROUP BY
+            i.id_informe, i.id_proyecto, i.id_plantilla, i.titulo, i.fecha_creado, p.nombre
+          ORDER BY i.fecha_creado DESC, i.id_informe DESC
+          `,
+          params
+        );
 
-      const isLatLng = (lat, lng) =>
-      lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+        const toNum = (v) => {
+          if (v == null) return null;
+          const s = String(v).trim().replace(",", ".");
+          const n = Number(s);
+          return Number.isFinite(n) ? n : null;
+        };
 
-      const parseLatLng = (latRaw, lngRaw, ubicRaw) => {
-        // 1) si hay ubic (json o texto), intentamos parsear primero
-        if (ubicRaw) {
-          const s = String(ubicRaw).trim();
-          if (s) {
-            // a) JSON
-            try {
-              const j = JSON.parse(s);
+        const isLatLng = (lat, lng) =>
+        lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
 
-              // array: puede venir [lat,lng] o [lng,lat]
-              if (Array.isArray(j) && j.length >= 2) {
-                const a = toNum(j[0]);
-                const b = toNum(j[1]);
+        const parseLatLng = (latRaw, lngRaw, ubicRaw) => {
+          // 1) si hay ubic (json o texto), intentamos parsear primero
+          if (ubicRaw) {
+            const s = String(ubicRaw).trim();
+            if (s) {
+              // a) JSON
+              try {
+                const j = JSON.parse(s);
 
-                // primero [lat,lng]
-                if (isLatLng(a, b)) return { lat: a, lng: b };
-                // si no, probamos [lng,lat]
-                if (isLatLng(b, a)) return { lat: b, lng: a };
-              }
+                // array: puede venir [lat,lng] o [lng,lat]
+                if (Array.isArray(j) && j.length >= 2) {
+                  const a = toNum(j[0]);
+                  const b = toNum(j[1]);
 
-              // objeto {lat,lng} o variantes
-              if (j && typeof j === "object") {
-                const lat = toNum(j.lat ?? j.latitude);
-                const lng = toNum(j.lng ?? j.lon ?? j.longitude);
-                if (isLatLng(lat, lng)) return { lat, lng };
+                  // primero [lat,lng]
+                  if (isLatLng(a, b)) return { lat: a, lng: b };
+                  // si no, probamos [lng,lat]
+                  if (isLatLng(b, a)) return { lat: b, lng: a };
+                }
 
-                // por si viniera invertido en keys raras
-                const lat2 = toNum(j.lng ?? j.lon ?? j.longitude);
-                const lng2 = toNum(j.lat ?? j.latitude);
-                if (isLatLng(lat2, lng2)) return { lat: lat2, lng: lng2 };
-              }
-            } catch {
-              // b) fallback: texto que contenga "num,num" aunque tenga [] o comillas
-              const m = s.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
-              if (m) {
-                const a = toNum(m[1]);
-                const b = toNum(m[2]);
-                if (isLatLng(a, b)) return { lat: a, lng: b };
-                if (isLatLng(b, a)) return { lat: b, lng: a };
+                // objeto {lat,lng} o variantes
+                if (j && typeof j === "object") {
+                  const lat = toNum(j.lat ?? j.latitude);
+                  const lng = toNum(j.lng ?? j.lon ?? j.longitude);
+                  if (isLatLng(lat, lng)) return { lat, lng };
+
+                  // por si viniera invertido en keys raras
+                  const lat2 = toNum(j.lng ?? j.lon ?? j.longitude);
+                  const lng2 = toNum(j.lat ?? j.latitude);
+                  if (isLatLng(lat2, lng2)) return { lat: lat2, lng: lng2 };
+                }
+              } catch {
+                // b) fallback: texto que contenga "num,num" aunque tenga [] o comillas
+                const m = s.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+                if (m) {
+                  const a = toNum(m[1]);
+                  const b = toNum(m[2]);
+                  if (isLatLng(a, b)) return { lat: a, lng: b };
+                  if (isLatLng(b, a)) return { lat: b, lng: a };
+                }
               }
             }
           }
-        }
 
-        // 2) fallback por lat/lng sueltos
-        const lat1 = toNum(latRaw);
-        const lng1 = toNum(lngRaw);
-        if (isLatLng(lat1, lng1)) return { lat: lat1, lng: lng1 };
-        if (isLatLng(lng1, lat1)) return { lat: lng1, lng: lat1 };
+          // 2) fallback por lat/lng sueltos
+          const lat1 = toNum(latRaw);
+          const lng1 = toNum(lngRaw);
+          if (isLatLng(lat1, lng1)) return { lat: lat1, lng: lng1 };
+          if (isLatLng(lng1, lat1)) return { lat: lng1, lng: lat1 };
 
-        return null;
-      };
+          return null;
+        };
 
-      const normalizeSemaforo = (raw) => {
-        if (raw == null) return { color: null, label: null };
+        const normalizeSemaforo = (raw) => {
+          if (raw == null) return { color: null, label: null };
 
-        const s = String(raw).trim();
-        if (!s) return { color: null, label: null };
+          const s = String(raw).trim();
+          if (!s) return { color: null, label: null };
 
-        try {
-          const j = JSON.parse(s);
+          try {
+            const j = JSON.parse(s);
 
-          if (j && typeof j === "object" && !Array.isArray(j)) {
-            const color = j.color ?? j.hex ?? j.value ?? j.valor ?? null;
-            const label = j.label ?? j.text ?? j.nombre ?? j.name ?? null;
-            return {
-              color: color != null ? String(color).trim() : null,
-              label: label != null ? String(label).trim() : null,
-            };
+            if (j && typeof j === "object" && !Array.isArray(j)) {
+              const color = j.color ?? j.hex ?? j.value ?? j.valor ?? null;
+              const label = j.label ?? j.text ?? j.nombre ?? j.name ?? null;
+              return {
+                color: color != null ? String(color).trim() : null,
+                label: label != null ? String(label).trim() : null,
+              };
+            }
+
+            if (Array.isArray(j) && j.length >= 1) {
+              const a = j.map((x) => (x == null ? "" : String(x).trim()));
+              const maybeHex = a.find((x) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(x));
+              const maybeLabel = a.find((x) => x && x !== maybeHex);
+              return { color: maybeHex || null, label: maybeLabel || null };
+            }
+          } catch {}
+
+          const parts = s.split("|").map((x) => x.trim()).filter(Boolean);
+          if (parts.length >= 1) {
+            const hex = parts.find((x) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(x)) || null;
+            const label = parts.find((x) => x && x !== hex) || null;
+            return { color: hex || (label ? label : null), label };
           }
 
-          if (Array.isArray(j) && j.length >= 1) {
-            const a = j.map((x) => (x == null ? "" : String(x).trim()));
-            const maybeHex = a.find((x) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(x));
-            const maybeLabel = a.find((x) => x && x !== maybeHex);
-            return { color: maybeHex || null, label: maybeLabel || null };
-          }
-        } catch {}
+          return { color: s, label: null };
+        };
 
-        const parts = s.split("|").map((x) => x.trim()).filter(Boolean);
-        if (parts.length >= 1) {
-          const hex = parts.find((x) => /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(x)) || null;
-          const label = parts.find((x) => x && x !== hex) || null;
-          return { color: hex || (label ? label : null), label };
-        }
+        const features = [];
 
-        return { color: s, label: null };
-      };
-
-      const features = [];
-
-      for (const r of rows) {
-        if (Number(r.id_plantilla) === 12) {
-  }
-
-      const ubicRaw = r.ubic_map_json_text ?? r.ubic_map_text;
-      const parsed = parseLatLng(r.lat_raw, r.lng_raw, ubicRaw);
-      if (!parsed) continue;
-
-      const { lat, lng } = parsed;
-      if (lat < -90 || lat > 90) continue;
-      if (lng < -180 || lng > 180) continue;
-
-      const sem = normalizeSemaforo(r.semaforo_raw);
-
-      features.push({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [lng, lat] },
-        properties: {
-          id_informe: Number(r.id_informe),
-          id_proyecto: Number(r.id_proyecto),
-
-          // ✅ lo que pediste:
-          id_plantilla: Number(r.id_plantilla),
-          nombre_plantilla: r.nombre_plantilla,
-
-          // (compat) si ya usabas "plantilla" en el front:
-          plantilla: r.nombre_plantilla,
-
-          titulo: r.titulo,
-          fecha_creado: r.fecha_creado,
-          lat,
-          lng,
-          semaforo_color: sem.color,
-          semaforo_label: sem.label,
-        },
-      });
+        for (const r of rows) {
+          if (Number(r.id_plantilla) === 12) {
     }
 
-    return res.json({ ok: true, type: "FeatureCollection", features });
-  } catch (err) {
-    console.error("getInformesPuntosGeojson error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.detail || err?.message || "Error al generar puntos (GeoJSON) de informes",
-    });
-  }
-}
+        const ubicRaw = r.ubic_map_json_text ?? r.ubic_map_text;
+        const parsed = parseLatLng(r.lat_raw, r.lng_raw, ubicRaw);
+        if (!parsed) continue;
 
-// PUT /api/informes/:id
-async function actualizarInforme(req, res) {
-  const { id } = req.params;
-  const { titulo, respuestas, delete_fotos_json } = req.body;
+        const { lat, lng } = parsed;
+        if (lat < -90 || lat > 90) continue;
+        if (lng < -180 || lng > 180) continue;
 
-  const idInforme = Number(id);
-  if (!Number.isFinite(idInforme) || idInforme <= 0) {
-    return res.status(400).json({ ok: false, error: "ID inválido" });
-  }
+        const sem = normalizeSemaforo(r.semaforo_raw);
 
-  let respuestasObj = undefined;
-  if (respuestas !== undefined) {
-    try {
-      respuestasObj =
-        typeof respuestas === "string" ? JSON.parse(respuestas || "{}") : respuestas || {};
-      if (!respuestasObj || typeof respuestasObj !== "object") respuestasObj = {};
-    } catch {
-      respuestasObj = {};
-    }
-  }
-  // if the client sent keys that are question labels instead of ids, we
-  // will resolve them later when iterating sobre preguntas
+        features.push({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [lng, lat] },
+          properties: {
+            id_informe: Number(r.id_informe),
+            id_proyecto: Number(r.id_proyecto),
 
-  let deleteIds = [];
-  try {
-    if (delete_fotos_json) {
-      deleteIds =
-        typeof delete_fotos_json === "string"
-          ? JSON.parse(delete_fotos_json)
-          : delete_fotos_json;
-      if (!Array.isArray(deleteIds)) deleteIds = [];
-      deleteIds = deleteIds
-        .map((x) => Number(x))
-        .filter((n) => Number.isFinite(n) && n > 0);
-    }
-  } catch {
-    deleteIds = [];
-  }
+            // ✅ lo que pediste:
+            id_plantilla: Number(r.id_plantilla),
+            nombre_plantilla: r.nombre_plantilla,
 
-  const files = req.files || {};
-  const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
+            // (compat) si ya usabas "plantilla" en el front:
+            plantilla: r.nombre_plantilla,
 
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const infRes = await client.query(
-      "SELECT * FROM ema.informe WHERE id_informe = $1 FOR UPDATE",
-      [idInforme]
-    );
-    if (!infRes.rowCount) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Informe no encontrado" });
-    }
-    const informe = infRes.rows[0];
-
-    if (titulo !== undefined) {
-      await client.query(
-        `
-        UPDATE ema.informe
-           SET titulo = COALESCE($1, titulo)
-         WHERE id_informe = $2
-        `,
-        [titulo || null, idInforme]
-      );
-    }
-
-    // ✅ incluir opciones_json
-    const qRes = await client.query(
-      `
-      SELECT
-        q.id_pregunta,
-        q.etiqueta,
-        q.tipo,
-        q.obligatorio,
-        q.permite_foto,
-        q.opciones_json,
-        q.visible_if,
-        q.required_if,
-        q.hide_if,
-        s.id_seccion,
-        s.titulo AS seccion_titulo,
-        s.orden AS seccion_orden,
-        s.visible_if AS sec_visible_if
-      FROM ema.informe_pregunta q
-      JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-      WHERE s.id_plantilla = $1
-      ORDER BY s.orden, q.orden
-      `,
-      [Number(informe.id_plantilla)]
-    );
-
-    const preguntas = qRes.rows || [];
-    const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
-
-    // Build quick lookup from normalized etiqueta -> id
-    const labelToId = {};
-    for (const q of preguntas) {
-      const key = String(q.etiqueta || q.titulo || "").trim().toLowerCase();
-      if (key) labelToId[key] = Number(q.id_pregunta);
-    }
-
-    const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
-
-    // normalize answersForRules using numeric ids (accept either id or label)
-    const answersForRules = {};
-    if (respuestasObj !== undefined) {
-      for (const [k, v] of Object.entries(respuestasObj || {})) {
-        let idNum = Number(k);
-        if (!Number.isFinite(idNum) || idNum <= 0) {
-          const key = String(k || "").trim().toLowerCase();
-          idNum = labelToId[key] || NaN;
-        }
-        if (Number.isFinite(idNum) && idNum > 0) {
-          answersForRules[idNum] = v;
-        }
-      }
-    }
-
-    const visibleSet = new Set();
-    const requiredSet = new Set();
-
-    for (const q of preguntas) {
-      const qid = Number(q.id_pregunta);
-
-      const isVisible = computeVisibility(q, answersForRules);
-      if (isVisible) visibleSet.add(qid);
-
-      const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
-      const isRequired = isVisible && (!!q.obligatorio || requiredByRule);
-      if (isRequired) requiredSet.add(qid);
-    }
-
-    // ✅ VALIDACIÓN REQUIRED
-    if (respuestasObj !== undefined) {
-      const invalid = [];
-
-      // 1) required no-imagen
-      for (const qid of requiredSet) {
-        const q = preguntasById.get(qid);
-        if (!q) continue;
-        if (String(q.tipo).toLowerCase() === "imagen") continue;
-
-        const raw = _getAnswerValueFromObj(respuestasObj, qid);
-        const val = _coerceValue(raw);
-
-        if (raw === undefined || isEmptyAnswer(val)) {
-          invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required" });
-        }
-      }
-
-      // 2) required imagen: actuales - borradas + uploads
-      for (const qid of requiredSet) {
-        const q = preguntasById.get(qid);
-        if (!q) continue;
-        if (String(q.tipo).toLowerCase() !== "imagen") continue;
-
-        const curFotos = await client.query(
-          `
-          SELECT id_foto
-            FROM ema.informe_foto
-           WHERE id_informe = $1 AND id_pregunta = $2
-          `,
-          [idInforme, qid]
-        );
-
-        const actuales = (curFotos.rows || []).map((r) => Number(r.id_foto));
-        const borradas = new Set(deleteIds);
-
-        const quedanDespuesDeBorrar = actuales.filter((fid) => !borradas.has(fid)).length;
-
-        const field = `fotos_${qid}`;
-        const newUploads = files?.[field]
-          ? (Array.isArray(files[field]) ? files[field].length : 1)
-          : 0;
-
-        const totalFinal = quedanDespuesDeBorrar + newUploads;
-
-        if (totalFinal <= 0) {
-          invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
-        }
-      }
-
-      if (invalid.length) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          ok: false,
-          error: "Faltan respuestas obligatorias (incluye condicionales)",
-          detalles: invalid,
+            titulo: r.titulo,
+            fecha_creado: r.fecha_creado,
+            lat,
+            lng,
+            semaforo_color: sem.color,
+            semaforo_label: sem.label,
+          },
         });
       }
+
+      return res.json({ ok: true, type: "FeatureCollection", features });
+    } catch (err) {
+      console.error("getInformesPuntosGeojson error:", err);
+      return res.status(500).json({
+        ok: false,
+        error: err?.detail || err?.message || "Error al generar puntos (GeoJSON) de informes",
+      });
+    }
+  }
+
+  // PUT /api/informes/:id
+  async function actualizarInforme(req, res) {
+    const { id } = req.params;
+    const { titulo, respuestas, delete_fotos_json } = req.body;
+
+    const idInforme = Number(id);
+    if (!Number.isFinite(idInforme) || idInforme <= 0) {
+      return res.status(400).json({ ok: false, error: "ID inválido" });
     }
 
-    // ✅ BORRADO DE FOTOS (DB + FS)
-    if (deleteIds.length) {
-      const { rows: fotosDel } = await client.query(
-        `
-        SELECT id_foto, ruta_archivo
-          FROM ema.informe_foto
-         WHERE id_informe = $1 AND id_foto = ANY($2::int[])
-        `,
-        [idInforme, deleteIds]
-      );
-
-      await client.query(
-        `
-        DELETE FROM ema.informe_foto
-         WHERE id_informe = $1 AND id_foto = ANY($2::int[])
-        `,
-        [idInforme, deleteIds]
-      );
-
-      for (const f of fotosDel) {
-        try {
-          const abs = path.resolve(
-            path.join(uploadsRoot, String(f.ruta_archivo || "").replace(/\//g, path.sep))
-          );
-          if (abs.startsWith(uploadsRoot + path.sep)) {
-            await fs.promises.unlink(abs).catch(() => {});
-          }
-        } catch {}
+    let respuestasObj = undefined;
+    if (respuestas !== undefined) {
+      try {
+        respuestasObj =
+          typeof respuestas === "string" ? JSON.parse(respuestas || "{}") : respuestas || {};
+        if (!respuestasObj || typeof respuestasObj !== "object") respuestasObj = {};
+      } catch {
+        respuestasObj = {};
       }
     }
 
-    // ✅ REEMPLAZO DE RESPUESTAS (solo visibles)
-    if (respuestasObj !== undefined) {
-      await client.query("DELETE FROM ema.informe_respuesta WHERE id_informe = $1", [idInforme]);
+    let deleteIds = [];
+    try {
+      if (delete_fotos_json) {
+        deleteIds =
+          typeof delete_fotos_json === "string"
+            ? JSON.parse(delete_fotos_json)
+            : delete_fotos_json;
+        if (!Array.isArray(deleteIds)) deleteIds = [];
+        deleteIds = deleteIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0);
+      }
+    } catch {
+      deleteIds = [];
+    }
 
-      for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
-        let idPregunta = Number(idPreguntaStr);
-        if (!Number.isFinite(idPregunta) || idPregunta <= 0) {
-          const key = String(idPreguntaStr || "").trim().toLowerCase();
-          idPregunta = labelToId[key] || NaN;
+    const files = req.files || {};
+    const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const infRes = await client.query(
+        "SELECT * FROM ema.informe WHERE id_informe = $1 FOR UPDATE",
+        [idInforme]
+      );
+      if (!infRes.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ ok: false, error: "Informe no encontrado" });
+      }
+      const informe = infRes.rows[0];
+
+      if (titulo !== undefined) {
+        await client.query(
+          `
+          UPDATE ema.informe
+            SET titulo = COALESCE($1, titulo)
+          WHERE id_informe = $2
+          `,
+          [titulo || null, idInforme]
+        );
+      }
+
+      // ✅ incluir id_unico + opciones_json
+      const qRes = await client.query(
+        `
+        SELECT
+          q.id_pregunta,
+          q.etiqueta,
+          q.tipo,
+          q.obligatorio,
+          q.permite_foto,
+          q.id_unico,
+          q.opciones_json,
+          q.visible_if,
+          q.required_if,
+          q.hide_if,
+          s.id_seccion,
+          s.titulo AS seccion_titulo,
+          s.orden AS seccion_orden,
+          s.visible_if AS sec_visible_if
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ORDER BY s.orden, q.orden
+        `,
+        [Number(informe.id_plantilla)]
+      );
+
+      const preguntas = qRes.rows || [];
+      const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
+
+      const labelToId = {};
+      for (const q of preguntas) {
+        const key = String(q.etiqueta || q.titulo || "").trim().toLowerCase();
+        if (key) labelToId[key] = Number(q.id_pregunta);
+      }
+
+      const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
+
+      const answersForRules = {};
+      if (respuestasObj !== undefined) {
+        for (const [k, v] of Object.entries(respuestasObj || {})) {
+          let idNum = Number(k);
+          if (!Number.isFinite(idNum) || idNum <= 0) {
+            const key = String(k || "").trim().toLowerCase();
+            idNum = labelToId[key] || NaN;
+          }
+          if (Number.isFinite(idNum) && idNum > 0) {
+            answersForRules[idNum] = v;
+          }
         }
-        if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+      }
 
-        const q = preguntasById.get(idPregunta);
-        if (!q) continue;
-        if (!visibleSet.has(idPregunta)) continue;
+      const visibleSet = new Set();
+      const requiredSet = new Set();
 
-        // ✅ Normalización por tipo (FIX SELECT)
-        const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
+      for (const q of preguntas) {
+        const qid = Number(q.id_pregunta);
 
-        let valorTexto = null;
-        let valorBool = null;
-        let valorJson = null;
+        const isVisible = computeVisibility(q, answersForRules);
+        if (isVisible) visibleSet.add(qid);
 
-        if (String(q.tipo || "").trim().toLowerCase() === "semaforo") {
-          const obj = semaforoToObj(valor, semaforoPaletteMap);
-          if (obj && obj.hex) {
-            valorTexto = obj.nombre || null;
-            valorJson = { nombre: obj.nombre || null, hex: obj.hex };
+        const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
+        const isRequired = isVisible && (!!q.obligatorio || requiredByRule);
+        if (isRequired) requiredSet.add(qid);
+      }
+
+      // ✅ VALIDACIÓN REQUIRED
+      if (respuestasObj !== undefined) {
+        const invalid = [];
+
+        for (const qid of requiredSet) {
+          const q = preguntasById.get(qid);
+          if (!q) continue;
+          if (String(q.tipo).toLowerCase() === "imagen") continue;
+
+          const raw = _getAnswerValueFromObj(respuestasObj, qid);
+          const val = _coerceValue(raw);
+
+          if (raw === undefined || isEmptyAnswer(val)) {
+            invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required" });
+          }
+        }
+
+        for (const qid of requiredSet) {
+          const q = preguntasById.get(qid);
+          if (!q) continue;
+          if (String(q.tipo).toLowerCase() !== "imagen") continue;
+
+          const curFotos = await client.query(
+            `
+            SELECT id_foto
+              FROM ema.informe_foto
+            WHERE id_informe = $1 AND id_pregunta = $2
+            `,
+            [idInforme, qid]
+          );
+
+          const actuales = (curFotos.rows || []).map((r) => Number(r.id_foto));
+          const borradas = new Set(deleteIds);
+
+          const quedanDespuesDeBorrar = actuales.filter((fid) => !borradas.has(fid)).length;
+
+          const field = `fotos_${qid}`;
+          const newUploads = files?.[field]
+            ? (Array.isArray(files[field]) ? files[field].length : 1)
+            : 0;
+
+          const totalFinal = quedanDespuesDeBorrar + newUploads;
+
+          if (totalFinal <= 0) {
+            invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
+          }
+        }
+
+        if (invalid.length) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            ok: false,
+            error: "Faltan respuestas obligatorias (incluye condicionales)",
+            detalles: invalid,
+          });
+        }
+
+        // ✅ validar ID único excluyendo el mismo informe
+        await validarPreguntasIdUnico({
+          client,
+          idPlantilla: Number(informe.id_plantilla),
+          preguntasById,
+          visibleSet,
+          respuestasObj,
+          excludeInformeId: idInforme,
+        });
+      }
+
+      // ✅ BORRADO DE FOTOS (DB + FS)
+      if (deleteIds.length) {
+        const { rows: fotosDel } = await client.query(
+          `
+          SELECT id_foto, ruta_archivo
+            FROM ema.informe_foto
+          WHERE id_informe = $1 AND id_foto = ANY($2::int[])
+          `,
+          [idInforme, deleteIds]
+        );
+
+        await client.query(
+          `
+          DELETE FROM ema.informe_foto
+          WHERE id_informe = $1 AND id_foto = ANY($2::int[])
+          `,
+          [idInforme, deleteIds]
+        );
+
+        for (const f of fotosDel) {
+          try {
+            const abs = path.resolve(
+              path.join(uploadsRoot, String(f.ruta_archivo || "").replace(/\//g, path.sep))
+            );
+            if (abs.startsWith(uploadsRoot + path.sep)) {
+              await fs.promises.unlink(abs).catch(() => {});
+            }
+          } catch {}
+        }
+      }
+
+      // ✅ REEMPLAZO DE RESPUESTAS (solo visibles)
+      if (respuestasObj !== undefined) {
+        await client.query("DELETE FROM ema.informe_respuesta WHERE id_informe = $1", [idInforme]);
+
+        for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
+          let idPregunta = Number(idPreguntaStr);
+          if (!Number.isFinite(idPregunta) || idPregunta <= 0) {
+            const key = String(idPreguntaStr || "").trim().toLowerCase();
+            idPregunta = labelToId[key] || NaN;
+          }
+          if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+
+          const q = preguntasById.get(idPregunta);
+          if (!q) continue;
+          if (!visibleSet.has(idPregunta)) continue;
+
+          const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
+
+          let valorTexto = null;
+          let valorBool = null;
+          let valorJson = null;
+
+          if (String(q.tipo || "").trim().toLowerCase() === "semaforo") {
+            const obj = semaforoToObj(valor, semaforoPaletteMap);
+            if (obj && obj.hex) {
+              valorTexto = obj.nombre || null;
+              valorJson = { nombre: obj.nombre || null, hex: obj.hex };
+            } else {
+              const t = toJsonbOrText(valor);
+              valorTexto = t.valor_texto;
+              valorBool = t.valor_bool;
+              valorJson = t.valor_json;
+            }
           } else {
             const t = toJsonbOrText(valor);
             valorTexto = t.valor_texto;
             valorBool = t.valor_bool;
             valorJson = t.valor_json;
           }
-        } else {
-          const t = toJsonbOrText(valor);
-          valorTexto = t.valor_texto;
-          valorBool = t.valor_bool;
-          valorJson = t.valor_json;
+
+          await client.query(
+            `
+            INSERT INTO ema.informe_respuesta
+              (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            `,
+            [idInforme, idPregunta, valorTexto, valorBool, valorJson]
+          );
         }
-
-        await client.query(
-          `
-          INSERT INTO ema.informe_respuesta
-            (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
-          VALUES ($1, $2, $3, $4, $5::jsonb)
-          `,
-          [idInforme, idPregunta, valorTexto, valorBool, valorJson]
-        );
       }
-    }
 
-    // ✅ SUBIDA DE FOTOS SEGURA
-    const baseDir = path.join(
-      uploadsRoot,
-      "proyectos",
-      String(informe.id_proyecto || "sin_proyecto"),
-      "informes",
-      String(idInforme)
-    );
-    await fs.promises.mkdir(baseDir, { recursive: true });
-
-    for (const [fieldName, fileOrFiles] of Object.entries(files)) {
-      if (!fieldName.startsWith("fotos_")) continue;
-
-      const idPregunta = Number(fieldName.replace("fotos_", ""));
-      if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
-
-      const q = preguntasById.get(idPregunta);
-      if (!q) continue;
-
-      if (!visibleSet.has(idPregunta)) continue;
-
-      const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
-      if (!permite) continue;
-
-      const last = await client.query(
-        `
-        SELECT COALESCE(MAX(orden),0) AS max_orden
-          FROM ema.informe_foto
-         WHERE id_informe = $1 AND id_pregunta = $2
-        `,
-        [idInforme, idPregunta]
+      // ✅ SUBIDA DE FOTOS SEGURA
+      const baseDir = path.join(
+        uploadsRoot,
+        "proyectos",
+        String(informe.id_proyecto || "sin_proyecto"),
+        "informes",
+        String(idInforme)
       );
-      let ordenFoto = Number(last.rows?.[0]?.max_orden || 0) + 1;
+      await fs.promises.mkdir(baseDir, { recursive: true });
 
-      const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-      for (const f of archivos) {
-        const safeName = sanitizeFilename(f.name || "foto.jpg");
-        const safeExt = pickSafeImageExt(safeName, f.mimetype);
-        if (!safeExt) throw new Error("Tipo de archivo no permitido (solo jpg/png/webp)");
+      for (const [fieldName, fileOrFiles] of Object.entries(files)) {
+        if (!fieldName.startsWith("fotos_")) continue;
 
-        const nombreArchivo = `preg_${idPregunta}_foto_${ordenFoto}${safeExt}`;
-        const destinoAbs = path.join(baseDir, nombreArchivo);
+        const idPregunta = Number(fieldName.replace("fotos_", ""));
+        if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
 
-        const finalAbs = await safeSaveUpload(f, destinoAbs);
-        const destinoRel = path.relative(uploadsRoot, finalAbs).replace(/\\/g, "/");
+        const q = preguntasById.get(idPregunta);
+        if (!q) continue;
 
-        await client.query(
+        if (!visibleSet.has(idPregunta)) continue;
+
+        const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
+        if (!permite) continue;
+
+        const last = await client.query(
           `
-          INSERT INTO ema.informe_foto
-            (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
-          VALUES ($1, $2, $3, $4, $5)
+          SELECT COALESCE(MAX(orden),0) AS max_orden
+            FROM ema.informe_foto
+          WHERE id_informe = $1 AND id_pregunta = $2
           `,
-          [idInforme, idPregunta, null, destinoRel, ordenFoto]
+          [idInforme, idPregunta]
         );
+        let ordenFoto = Number(last.rows?.[0]?.max_orden || 0) + 1;
 
-        ordenFoto++;
+        const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+        for (const f of archivos) {
+          const safeName = sanitizeFilename(f.name || "foto.jpg");
+          const safeExt = pickSafeImageExt(safeName, f.mimetype);
+          if (!safeExt) throw new Error("Tipo de archivo no permitido (solo jpg/png/webp)");
+
+          const nombreArchivo = `preg_${idPregunta}_foto_${ordenFoto}${safeExt}`;
+          const destinoAbs = path.join(baseDir, nombreArchivo);
+
+          const finalAbs = await safeSaveUpload(f, destinoAbs);
+          const destinoRel = path.relative(uploadsRoot, finalAbs).replace(/\\/g, "/");
+
+          await client.query(
+            `
+            INSERT INTO ema.informe_foto
+              (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
+            VALUES ($1, $2, $3, $4, $5)
+            `,
+            [idInforme, idPregunta, null, destinoRel, ordenFoto]
+          );
+
+          ordenFoto++;
+        }
       }
-    }
 
-    await client.query("COMMIT");
-    return res.json({ ok: true });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("actualizarInforme error:", err);
-    return res.status(500).json({ ok: false, error: err?.message || "Error al actualizar informe" });
-  } finally {
-    client.release();
-  }
-}
-
-/* ───────────────────────────────────────────────────────────────
-   5) DELETE /api/informes/:id/fotos/:idFoto
-─────────────────────────────────────────────────────────────── */
-async function deleteInformeFoto(req, res) {
-  const idInforme = Number(req.params.id);
-  const idFoto = Number(req.params.idFoto);
-
-  if (!idInforme || !idFoto) return res.status(400).json({ ok: false, error: "Parámetros inválidos" });
-
-  const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const r = await client.query(
-      `SELECT id_foto, ruta_archivo
-       FROM ema.informe_foto
-       WHERE id_foto = $1 AND id_informe = $2
-       FOR UPDATE`,
-      [idFoto, idInforme]
-    );
-
-    if (!r.rowCount) {
+      await client.query("COMMIT");
+      return res.json({ ok: true });
+    } catch (err) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Foto no encontrada" });
-    }
+      console.error("actualizarInforme error:", err);
 
-    const ruta = r.rows[0].ruta_archivo;
-    const cleaned = String(ruta || "").replace(/^uploads[\\/]/i, "");
-    const abs = path.resolve(path.join(uploadsRoot, cleaned));
-
-    await client.query(`DELETE FROM ema.informe_foto WHERE id_foto = $1 AND id_informe = $2`, [idFoto, idInforme]);
-    await client.query("COMMIT");
-
-    if (abs.startsWith(uploadsRoot + path.sep)) {
-      fs.promises.unlink(abs).catch(() => {});
-    }
-    return res.json({ ok: true });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("deleteInformeFoto error:", err);
-    return res.status(500).json({ ok: false, error: "Error al eliminar foto" });
-  } finally {
-    client.release();
-  }
-}
-
-/* ───────────────────────────────────────────────────────────────
-   6) DELETE /api/informes/:id
-─────────────────────────────────────────────────────────────── */
-async function deleteInforme(req, res) {
-  const idInforme = Number(req.params.id);
-
-  if (!Number.isFinite(idInforme) || idInforme <= 0) {
-    return res.status(400).json({ ok: false, error: "ID inválido" });
-  }
-
-  const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
-  const client = await pool.connect();
-  let fotosRows = [];
-
-  try {
-    await client.query("BEGIN");
-
-    const inf = await client.query(
-      `SELECT id_informe, id_proyecto
-         FROM ema.informe
-        WHERE id_informe = $1
-        FOR UPDATE`,
-      [idInforme]
-    );
-
-    if (!inf.rowCount) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Informe no encontrado" });
-    }
-
-    const fotos = await client.query(`SELECT ruta_archivo FROM ema.informe_foto WHERE id_informe = $1`, [idInforme]);
-    fotosRows = fotos.rows || [];
-
-    await client.query(`DELETE FROM ema.informe_foto WHERE id_informe = $1`, [idInforme]);
-    await client.query(`DELETE FROM ema.informe_respuesta WHERE id_informe = $1`, [idInforme]);
-
-    const del = await client.query(`DELETE FROM ema.informe WHERE id_informe = $1`, [idInforme]);
-
-    await client.query("COMMIT");
-
-    for (const f of fotosRows) {
-      try {
-        const ruta = String(f?.ruta_archivo || "").trim();
-        if (!ruta) continue;
-
-        const cleaned = ruta.replace(/^uploads[\\/]/i, "");
-        const abs = path.resolve(path.join(uploadsRoot, cleaned));
-        if (!abs.startsWith(uploadsRoot + path.sep)) continue;
-
-        await fs.promises.unlink(abs).catch(() => {});
-      } catch {}
-    }
-
-    return res.json({ ok: true, deleted: del.rowCount });
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {}
-    console.error("deleteInforme error:", err);
-
-    if (err?.code === "23503") {
-      return res.status(409).json({
+      const status = Number(err?.statusCode) || 500;
+      return res.status(status).json({
         ok: false,
-        error: err?.detail || "No se puede eliminar: existen registros relacionados.",
-        code: "FK_VIOLATION",
+        error: err?.message || "Error al actualizar informe",
+        ...(err?.details ? { detalles: err.details } : {}),
       });
+    } finally {
+      client.release();
+    }
+  }
+
+  /* ───────────────────────────────────────────────────────────────
+    5) DELETE /api/informes/:id/fotos/:idFoto
+  ─────────────────────────────────────────────────────────────── */
+  async function deleteInformeFoto(req, res) {
+    const idInforme = Number(req.params.id);
+    const idFoto = Number(req.params.idFoto);
+
+    if (!idInforme || !idFoto) return res.status(400).json({ ok: false, error: "Parámetros inválidos" });
+
+    const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const r = await client.query(
+        `SELECT id_foto, ruta_archivo
+        FROM ema.informe_foto
+        WHERE id_foto = $1 AND id_informe = $2
+        FOR UPDATE`,
+        [idFoto, idInforme]
+      );
+
+      if (!r.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ ok: false, error: "Foto no encontrada" });
+      }
+
+      const ruta = r.rows[0].ruta_archivo;
+      const cleaned = String(ruta || "").replace(/^uploads[\\/]/i, "");
+      const abs = path.resolve(path.join(uploadsRoot, cleaned));
+
+      await client.query(`DELETE FROM ema.informe_foto WHERE id_foto = $1 AND id_informe = $2`, [idFoto, idInforme]);
+      await client.query("COMMIT");
+
+      if (abs.startsWith(uploadsRoot + path.sep)) {
+        fs.promises.unlink(abs).catch(() => {});
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error("deleteInformeFoto error:", err);
+      return res.status(500).json({ ok: false, error: "Error al eliminar foto" });
+    } finally {
+      client.release();
+    }
+  }
+
+  /* ───────────────────────────────────────────────────────────────
+    6) DELETE /api/informes/:id
+  ─────────────────────────────────────────────────────────────── */
+  async function deleteInforme(req, res) {
+    const idInforme = Number(req.params.id);
+
+    if (!Number.isFinite(idInforme) || idInforme <= 0) {
+      return res.status(400).json({ ok: false, error: "ID inválido" });
     }
 
-    return res.status(500).json({
-      ok: false,
-      error: err?.detail || err?.message || "Error al eliminar informe",
-    });
-  } finally {
-    client.release();
+    const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
+    const client = await pool.connect();
+    let fotosRows = [];
+
+    try {
+      await client.query("BEGIN");
+
+      const inf = await client.query(
+        `SELECT id_informe, id_proyecto
+          FROM ema.informe
+          WHERE id_informe = $1
+          FOR UPDATE`,
+        [idInforme]
+      );
+
+      if (!inf.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ ok: false, error: "Informe no encontrado" });
+      }
+
+      const fotos = await client.query(`SELECT ruta_archivo FROM ema.informe_foto WHERE id_informe = $1`, [idInforme]);
+      fotosRows = fotos.rows || [];
+
+      await client.query(`DELETE FROM ema.informe_foto WHERE id_informe = $1`, [idInforme]);
+      await client.query(`DELETE FROM ema.informe_respuesta WHERE id_informe = $1`, [idInforme]);
+
+      const del = await client.query(`DELETE FROM ema.informe WHERE id_informe = $1`, [idInforme]);
+
+      await client.query("COMMIT");
+
+      for (const f of fotosRows) {
+        try {
+          const ruta = String(f?.ruta_archivo || "").trim();
+          if (!ruta) continue;
+
+          const cleaned = ruta.replace(/^uploads[\\/]/i, "");
+          const abs = path.resolve(path.join(uploadsRoot, cleaned));
+          if (!abs.startsWith(uploadsRoot + path.sep)) continue;
+
+          await fs.promises.unlink(abs).catch(() => {});
+        } catch {}
+      }
+
+      return res.json({ ok: true, deleted: del.rowCount });
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+      console.error("deleteInforme error:", err);
+
+      if (err?.code === "23503") {
+        return res.status(409).json({
+          ok: false,
+          error: err?.detail || "No se puede eliminar: existen registros relacionados.",
+          code: "FK_VIOLATION",
+        });
+      }
+
+      return res.status(500).json({
+        ok: false,
+        error: err?.detail || err?.message || "Error al eliminar informe",
+      });
+    } finally {
+      client.release();
+    }
   }
-}
 
-/* ───────────────────────── SHARE LINKS (PRIVADO) ───────────────────────── */
-function buildPublicUrl(req, token) {
-  const baseRaw = process.env.PUBLIC_FORM_BASE_URL || "";
-  const base = String(baseRaw).trim().replace(/\/+$/, "");
-  if (base) return `${base}/${token}`;
-  return `${req.protocol}://${req.get("host")}/api/informes-public/${token}`;
-}
-
-async function createShareLink(req, res) {
-  try {
-    const { id_plantilla, id_proyecto = null, titulo = null, expira_en, minutos = 60, max_envios = null } = req.body;
-    if (!id_plantilla) return res.status(400).json({ ok: false, error: "id_plantilla es obligatorio" });
-
-    const token = crypto.randomBytes(32).toString("hex");
-    const userId = req.user?.id ?? req.user?.id_user ?? null;
-
-    let expira;
-    if (expira_en) expira = new Date(expira_en);
-    else expira = new Date(Date.now() + Number(minutos) * 60 * 1000);
-    if (Number.isNaN(expira.getTime())) return res.status(400).json({ ok: false, error: "expira_en inválido" });
-
-    const { rows } = await pool.query(
-      `INSERT INTO ema.informe_share_link
-        (id_plantilla, id_proyecto, token, titulo, expira_en, max_envios, creado_por)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       RETURNING *`,
-      [
-        Number(id_plantilla),
-        id_proyecto ? Number(id_proyecto) : null,
-        token,
-        titulo,
-        expira,
-        max_envios != null && max_envios !== "" ? Number(max_envios) : null,
-        userId,
-      ]
-    );
-
-    const publicUrl = buildPublicUrl(req, token);
-    return res.status(201).json({ ok: true, share: rows[0], publicUrl });
-  } catch (err) {
-    console.error("createShareLink error:", err);
-    return res.status(500).json({ ok: false, error: "Error al crear share link" });
+  /* ───────────────────────── SHARE LINKS (PRIVADO) ───────────────────────── */
+  function buildPublicUrl(req, token) {
+    const baseRaw = process.env.PUBLIC_FORM_BASE_URL || "";
+    const base = String(baseRaw).trim().replace(/\/+$/, "");
+    if (base) return `${base}/${token}`;
+    return `${req.protocol}://${req.get("host")}/api/informes-public/${token}`;
   }
-}
 
-async function listShareLinksByPlantilla(req, res) {
-  try {
-    const { idPlantilla } = req.params;
+  async function createShareLink(req, res) {
+    try {
+      const { id_plantilla, id_proyecto = null, titulo = null, expira_en, minutos = 60, max_envios = null } = req.body;
+      if (!id_plantilla) return res.status(400).json({ ok: false, error: "id_plantilla es obligatorio" });
 
-    const { rows } = await pool.query(
-      `SELECT *
-       FROM ema.informe_share_link
-       WHERE id_plantilla = $1
-       ORDER BY abierto_desde DESC, id_share DESC`,
-      [Number(idPlantilla)]
-    );
+      const token = crypto.randomBytes(32).toString("hex");
+      const userId = req.user?.id ?? req.user?.id_user ?? null;
 
-    const links = rows.map((r) => ({ ...r, publicUrl: buildPublicUrl(req, r.token) }));
-    return res.json({ ok: true, links });
-  } catch (err) {
-    console.error("listShareLinksByPlantilla error:", err);
-    return res.status(500).json({ ok: false, error: "Error al listar links" });
+      let expira;
+      if (expira_en) expira = new Date(expira_en);
+      else expira = new Date(Date.now() + Number(minutos) * 60 * 1000);
+      if (Number.isNaN(expira.getTime())) return res.status(400).json({ ok: false, error: "expira_en inválido" });
+
+      const { rows } = await pool.query(
+        `INSERT INTO ema.informe_share_link
+          (id_plantilla, id_proyecto, token, titulo, expira_en, max_envios, creado_por)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *`,
+        [
+          Number(id_plantilla),
+          id_proyecto ? Number(id_proyecto) : null,
+          token,
+          titulo,
+          expira,
+          max_envios != null && max_envios !== "" ? Number(max_envios) : null,
+          userId,
+        ]
+      );
+
+      const publicUrl = buildPublicUrl(req, token);
+      return res.status(201).json({ ok: true, share: rows[0], publicUrl });
+    } catch (err) {
+      console.error("createShareLink error:", err);
+      return res.status(500).json({ ok: false, error: "Error al crear share link" });
+    }
   }
-}
 
-async function closeShareLink(req, res) {
-  try {
+  async function listShareLinksByPlantilla(req, res) {
+    try {
+      const { idPlantilla } = req.params;
+
+      const { rows } = await pool.query(
+        `SELECT *
+        FROM ema.informe_share_link
+        WHERE id_plantilla = $1
+        ORDER BY abierto_desde DESC, id_share DESC`,
+        [Number(idPlantilla)]
+      );
+
+      const links = rows.map((r) => ({ ...r, publicUrl: buildPublicUrl(req, r.token) }));
+      return res.json({ ok: true, links });
+    } catch (err) {
+      console.error("listShareLinksByPlantilla error:", err);
+      return res.status(500).json({ ok: false, error: "Error al listar links" });
+    }
+  }
+
+  async function closeShareLink(req, res) {
+    try {
+      const { idShare } = req.params;
+      const userId = req.user?.id ?? req.user?.id_user ?? null;
+
+      const { rows } = await pool.query(
+        `UPDATE ema.informe_share_link
+        SET cerrado_en = now(),
+            cerrado_por = $2
+        WHERE id_share = $1
+          AND cerrado_en IS NULL
+        RETURNING *`,
+        [Number(idShare), userId]
+      );
+
+      if (!rows.length) return res.status(404).json({ ok: false, error: "Link no encontrado o ya cerrado" });
+      return res.json({ ok: true, link: rows[0] });
+    } catch (err) {
+      console.error("closeShareLink error:", err);
+      return res.status(500).json({ ok: false, error: "Error al cerrar link" });
+    }
+  }
+
+  async function eliminarShareLink(req, res) {
     const { idShare } = req.params;
-    const userId = req.user?.id ?? req.user?.id_user ?? null;
+    const sid = Number(idShare);
+    if (!sid) return res.status(400).json({ ok: false, error: "idShare inválido" });
 
-    const { rows } = await pool.query(
-      `UPDATE ema.informe_share_link
-       SET cerrado_en = now(),
-           cerrado_por = $2
-       WHERE id_share = $1
-         AND cerrado_en IS NULL
-       RETURNING *`,
-      [Number(idShare), userId]
-    );
+    try {
+      const r = await pool.query(
+        `DELETE FROM ema.informe_share_link
+        WHERE id_share = $1
+        RETURNING id_share`,
+        [sid]
+      );
 
-    if (!rows.length) return res.status(404).json({ ok: false, error: "Link no encontrado o ya cerrado" });
-    return res.json({ ok: true, link: rows[0] });
-  } catch (err) {
-    console.error("closeShareLink error:", err);
-    return res.status(500).json({ ok: false, error: "Error al cerrar link" });
+      if (!r.rowCount) return res.status(404).json({ ok: false, error: "Link no encontrado" });
+      return res.json({ ok: true, id_share: r.rows[0].id_share });
+    } catch (e) {
+      console.error("eliminarShareLink:", e);
+      return res.status(500).json({ ok: false, error: "Error eliminando link" });
+    }
   }
-}
-
-async function eliminarShareLink(req, res) {
-  const { idShare } = req.params;
-  const sid = Number(idShare);
-  if (!sid) return res.status(400).json({ ok: false, error: "idShare inválido" });
-
-  try {
-    const r = await pool.query(
-      `DELETE FROM ema.informe_share_link
-       WHERE id_share = $1
-       RETURNING id_share`,
-      [sid]
-    );
-
-    if (!r.rowCount) return res.status(404).json({ ok: false, error: "Link no encontrado" });
-    return res.json({ ok: true, id_share: r.rows[0].id_share });
-  } catch (e) {
-    console.error("eliminarShareLink:", e);
-    return res.status(500).json({ ok: false, error: "Error eliminando link" });
-  }
-}
 
 /* ───────────────────────── SHARE LINKS (PÚBLICO) ───────────────────────── */
 async function _getValidShareByToken(token) {
@@ -4680,6 +4873,266 @@ async function buscarRespuestasProyecto(req, res) {
   }
 }
 
+function remapCondIds(cond, idMap) {
+  if (!cond || typeof cond !== "object") return cond;
+
+  if (Array.isArray(cond)) {
+    return cond.map((x) => remapCondIds(x, idMap));
+  }
+
+  const out = { ...cond };
+
+  if (out.id_pregunta !== undefined && out.id_pregunta !== null) {
+    const oldId = Number(out.id_pregunta);
+    if (Number.isFinite(oldId) && idMap.has(oldId)) {
+      out.id_pregunta = idMap.get(oldId);
+    }
+  }
+
+  if (Array.isArray(out.all)) {
+    out.all = out.all.map((x) => remapCondIds(x, idMap));
+  }
+
+  if (Array.isArray(out.any)) {
+    out.any = out.any.map((x) => remapCondIds(x, idMap));
+  }
+
+  return out;
+}
+
+// POST /api/informes/plantillas/:id/duplicar
+async function duplicarPlantilla(req, res) {
+  const { id } = req.params;
+  const idPlantilla = Number(id);
+
+  if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+    return res.status(400).json({ ok: false, error: "ID de plantilla inválido" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // 1) leer plantilla original
+    const plantillaRes = await client.query(
+      `
+      SELECT *
+      FROM ema.informe_plantilla
+      WHERE id_plantilla = $1
+      `,
+      [idPlantilla]
+    );
+
+    if (!plantillaRes.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ ok: false, error: "Plantilla no encontrada" });
+    }
+
+    const plantillaOriginal = plantillaRes.rows[0];
+
+    // 2) crear nueva plantilla
+    const nuevoNombre = `${plantillaOriginal.nombre} (Copia)`;
+
+    const nuevaPlantillaRes = await client.query(
+      `
+      INSERT INTO ema.informe_plantilla
+        (nombre, descripcion, activo, id_creador, proyectos_permitidos, usuarios_compartidos)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+      `,
+      [
+        nuevoNombre,
+        plantillaOriginal.descripcion || null,
+        plantillaOriginal.activo !== false,
+        plantillaOriginal.id_creador || null,
+        plantillaOriginal.proyectos_permitidos || null,
+        plantillaOriginal.usuarios_compartidos || null,
+      ]
+    );
+
+    const nuevaPlantilla = nuevaPlantillaRes.rows[0];
+
+    // 3) leer secciones originales
+    const seccionesRes = await client.query(
+      `
+      SELECT *
+      FROM ema.informe_seccion
+      WHERE id_plantilla = $1
+      ORDER BY orden, id_seccion
+      `,
+      [idPlantilla]
+    );
+
+    const seccionesOriginales = seccionesRes.rows || [];
+
+    // 4) copiar secciones
+    const seccionIdMap = new Map();
+
+    for (const sec of seccionesOriginales) {
+      const insSec = await client.query(
+        `
+        INSERT INTO ema.informe_seccion
+          (id_plantilla, titulo, orden, visible_if)
+        VALUES ($1, $2, $3, $4)
+        RETURNING *
+        `,
+        [
+          nuevaPlantilla.id_plantilla,
+          sec.titulo,
+          sec.orden,
+          sec.visible_if || null,
+        ]
+      );
+
+      const nuevaSec = insSec.rows[0];
+      seccionIdMap.set(Number(sec.id_seccion), Number(nuevaSec.id_seccion));
+    }
+
+    // 5) leer preguntas originales
+    const preguntasRes = await client.query(
+      `
+      SELECT q.*, s.id_seccion AS old_id_seccion
+      FROM ema.informe_pregunta q
+      JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+      WHERE s.id_plantilla = $1
+      ORDER BY s.orden, q.orden, q.id_pregunta
+      `,
+      [idPlantilla]
+    );
+
+    const preguntasOriginales = preguntasRes.rows || [];
+
+    // 6) copiar preguntas primero sin remapear condiciones
+    const preguntaIdMap = new Map();
+    const preguntasNuevasPendientes = [];
+
+    for (const preg of preguntasOriginales) {
+      const newSeccionId = seccionIdMap.get(Number(preg.id_seccion));
+      if (!newSeccionId) continue;
+
+      const insPreg = await client.query(
+        `
+        INSERT INTO ema.informe_pregunta
+          (
+            id_seccion,
+            etiqueta,
+            tipo,
+            opciones_json,
+            obligatorio,
+            orden,
+            permite_foto,
+            id_unico,
+            visible_if,
+            required_if,
+            hide_if
+          )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        RETURNING *
+        `,
+        [
+          newSeccionId,
+          preg.etiqueta,
+          preg.tipo,
+          preg.opciones_json || null,
+          !!preg.obligatorio,
+          preg.orden,
+          !!preg.permite_foto,
+          !!preg.id_unico,
+          preg.visible_if || null,
+          preg.required_if || null,
+          preg.hide_if || null,
+        ]
+      );
+
+      const nuevaPreg = insPreg.rows[0];
+
+      preguntaIdMap.set(Number(preg.id_pregunta), Number(nuevaPreg.id_pregunta));
+
+      preguntasNuevasPendientes.push({
+        old: preg,
+        neu: nuevaPreg,
+      });
+    }
+
+    // 7) remapear condiciones de preguntas
+    for (const item of preguntasNuevasPendientes) {
+      const oldPreg = item.old;
+      const newPreg = item.neu;
+
+      const visibleIfRemap = remapCondIds(oldPreg.visible_if, preguntaIdMap);
+      const requiredIfRemap = remapCondIds(oldPreg.required_if, preguntaIdMap);
+      const hideIfRemap = remapCondIds(oldPreg.hide_if, preguntaIdMap);
+
+      await client.query(
+        `
+        UPDATE ema.informe_pregunta
+        SET
+          visible_if = $1,
+          required_if = $2,
+          hide_if = $3
+        WHERE id_pregunta = $4
+        `,
+        [
+          visibleIfRemap ? JSON.stringify(visibleIfRemap) : null,
+          requiredIfRemap ? JSON.stringify(requiredIfRemap) : null,
+          hideIfRemap ? JSON.stringify(hideIfRemap) : null,
+          newPreg.id_pregunta,
+        ]
+      );
+    }
+
+    // 8) remapear visible_if de secciones también
+    const nuevasSeccionesRes = await client.query(
+      `
+      SELECT *
+      FROM ema.informe_seccion
+      WHERE id_plantilla = $1
+      ORDER BY orden, id_seccion
+      `,
+      [nuevaPlantilla.id_plantilla]
+    );
+
+    const nuevasSecciones = nuevasSeccionesRes.rows || [];
+
+    for (const oldSec of seccionesOriginales) {
+      const newSecId = seccionIdMap.get(Number(oldSec.id_seccion));
+      const newSec = nuevasSecciones.find((s) => Number(s.id_seccion) === Number(newSecId));
+      if (!newSec) continue;
+
+      const visibleIfRemap = remapCondIds(oldSec.visible_if, preguntaIdMap);
+
+      await client.query(
+        `
+        UPDATE ema.informe_seccion
+        SET visible_if = $1
+        WHERE id_seccion = $2
+        `,
+        [
+          visibleIfRemap ? JSON.stringify(visibleIfRemap) : null,
+          newSec.id_seccion,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      ok: true,
+      plantilla: nuevaPlantilla,
+      id_plantilla: nuevaPlantilla.id_plantilla,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("duplicarPlantilla error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Error al duplicar plantilla",
+    });
+  } finally {
+    client.release();
+  }
+}
+
 /* ───────────────────────── EXPORTS ───────────────────────── */
 module.exports = {
   // Plantillas
@@ -4690,6 +5143,7 @@ module.exports = {
   deletePlantilla,
   hardDeletePlantilla,
   listAllPlantillasByProyecto,
+  duplicarPlantilla,
 
   // Secciones
   createSeccion,

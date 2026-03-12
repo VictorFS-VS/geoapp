@@ -6,6 +6,8 @@
 // ✅ Soporta: .shp+.dbf+.shx (seleccionados juntos), .zip, .kml, .kmz (y opcional .geojson/.json)
 // ✅ REGLA: si estás en "terreno" el nombre debe contener TERRENO; si estás en "mejora" debe contener MEJORA/MEJORAS
 // ✅ Preview muestra si hay SHP incompletos y si el nombre NO cumple la regla del tipo
+// ✅ Importación Excel con mapeo de URLs públicas de imágenes para CI propietario / adicional
+// ✅ Vista previa pequeña de imágenes importadas
 
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
@@ -137,8 +139,8 @@ export default function Expedientes() {
   // docs existentes (ema.tumba) para expediente
   const [docs, setDocs] = useState([]);
   const [docsCI, setDocsCI] = useState([]);
-  const [docsCIPareja, setDocsCIPareja] = useState([]);
-  const ciSubcarpetas = useMemo(() => new Set(["ci", "ci_pareja"]), []);
+  const [docsCIAdicional, setDocsCIAdicional] = useState([]);
+  const ciSubcarpetas = useMemo(() => new Set(["ci", "ci_adicional"]), []);
 
   const [planoGeoCache, setPlanoGeoCache] = useState({});
   const [planoGeoLoading, setPlanoGeoLoading] = useState(false);
@@ -160,6 +162,10 @@ export default function Expedientes() {
     id_tramo: null,
     id_sub_tramo: null,
     codigo_censo: "",
+    ci_propietario_frente_url: "",
+    ci_propietario_dorso_url: "",
+    ci_adicional_frente_url: "",
+    ci_adicional_dorso_url: "",
   });
 
   // Catálogos Censales
@@ -170,8 +176,8 @@ export default function Expedientes() {
   const [uploadFiles, setUploadFiles] = useState([]);
   const [ciFrente, setCiFrente] = useState(null);
   const [ciDorso, setCiDorso] = useState(null);
-  const [ciParejaFrente, setCiParejaFrente] = useState(null);
-  const [ciParejaDorso, setCiParejaDorso] = useState(null);
+  const [ciAdicionalFrente, setCiAdicionalFrente] = useState(null);
+  const [ciAdicionalDorso, setCiAdicionalDorso] = useState(null);
   const [subcarpeta, setSubcarpeta] = useState("");
 
   // carpeta activa (mejora | terreno)
@@ -311,6 +317,10 @@ export default function Expedientes() {
     id_tramo: normalizePositiveId(row.id_tramo),
     id_sub_tramo: normalizePositiveId(row.id_sub_tramo),
     codigo_censo: row.codigo_censo || "",
+    ci_propietario_frente_url: row.ci_propietario_frente_url || "",
+    ci_propietario_dorso_url: row.ci_propietario_dorso_url || "",
+    ci_adicional_frente_url: row.ci_adicional_frente_url || "",
+    ci_adicional_dorso_url: row.ci_adicional_dorso_url || "",
   });
 
   const mergeRow = (nextRow) => {
@@ -382,9 +392,9 @@ export default function Expedientes() {
 
   function canEditKey(key) {
     const st = etapas?.[key];
-    if (st?.ok) return true; // si ya está ok, puede editar obs
+    if (st?.ok) return true;
     const pending = firstPendingKey();
-    return pending === key; // solo el primero pendiente
+    return pending === key;
   }
 
   async function loadEtapas(idExp, tipo) {
@@ -428,7 +438,6 @@ export default function Expedientes() {
     for (const f of polyFiles) {
       const ext = extLower(f.name);
 
-      // single: zip/kml/kmz/rar o convertibles
       if (isArchiveExt(ext) || isConvertibleExt(ext)) {
         const b = baseUpper(f.name);
         singles.push({
@@ -442,7 +451,6 @@ export default function Expedientes() {
         continue;
       }
 
-      // triad: shp/dbf/shx
       if (isSHPPartExt(ext)) {
         const b = baseUpper(f.name);
         const bn = normalizeBaseForMatch(b);
@@ -478,22 +486,14 @@ export default function Expedientes() {
       if (s.kind === "triad") {
         if (!matchesTipoRule(s.base, tipoCarpeta)) bad.push({ kind: "triad", name: s.base });
       } else {
-        if (!matchesTipoRule(s.file?.name, tipoCarpeta))
+        if (!matchesTipoRule(s.file?.name, tipoCarpeta)) {
           bad.push({ kind: "single", name: s.file?.name || "archivo" });
+        }
       }
     }
     return bad;
   }, [polySets, tipoCarpeta]);
 
-  /**
-   * ✅ SUBIR POLÍGONO (SHP triad / ZIP / KML / KMZ / GeoJSON) POR MANTENIMIENTO
-   * - middleware uploadShapefiles espera campo 'files'
-   * - manda id_expediente
-   * - manda defaultTabla repetido por cada SINGLE (ZIP/KML/KMZ/GeoJSON) para ruteo determinístico
-   * - manda mapping (baseNorm -> tablaDestino) por si tu backend ya lo soporta
-   * - ✅ valida regla de nombre según tipoCarpeta
-   * - ✅ SOLO marca etapa plano_georef si backend devuelve ok=true e inserted>0
-   */
   async function subirPoligono() {
     if (!current) return;
 
@@ -505,40 +505,29 @@ export default function Expedientes() {
       return alert("Tenés sets SHP incompletos. Completá .shp + .dbf + .shx o subí un ZIP/KMZ.");
     }
 
-    // ✅ Regla nombre por tipo
     if (polyRuleViolations.length) {
       const need = tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA o MEJORAS";
       return alert(
         `Regla de nombre:\n` +
-        `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.\n\n` +
-        `No cumplen:\n- ${polyRuleViolations.map((x) => x.name).join("\n- ")}`
+          `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.\n\n` +
+          `No cumplen:\n- ${polyRuleViolations.map((x) => x.name).join("\n- ")}`
       );
     }
 
     setPolyBusy(true);
     try {
       const fd = new FormData();
-
-      // 👇 IMPORTANTE: tu middleware usa req.files.files => fieldName = "files"
       polyFiles.forEach((f) => fd.append("files", f));
-
-      // ✅ tu controller lee id_expediente del body
       fd.append("id_expediente", String(current.id_expediente));
 
-      // ✅ tabla destino determinística por tipoCarpeta
       const tablaDestino = tipoCarpeta === "mejora" ? "ema.bloque_mejoras" : "ema.bloque_terreno";
-
-      // ✅ defaultTabla repetido por cada SINGLE
       const singles = polySets.filter((s) => s.kind === "single");
       for (const _s of singles) fd.append("defaultTabla", tablaDestino);
 
-      // ✅ mapping por baseNorm (opcional, pero ayuda)
       const mapping = {};
       for (const s of polySets) mapping[s.baseNorm] = tablaDestino;
       fd.append("mapping", JSON.stringify(mapping));
 
-      // ✅ respuesta esperada (ideal):
-      // { ok:true, inserted: N, ... }  ó  { success:true, count:N }
       const resp = await apiForm(`${API}/mantenimiento/upload/${idProyecto}`, "POST", fd);
 
       const ok = resp?.ok === true || resp?.success === true || resp?.status === "ok";
@@ -553,14 +542,17 @@ export default function Expedientes() {
         throw new Error(resp?.message || "No se insertaron geometrías. No se marcará la etapa.");
       }
 
-      // ✅ recién aquí marcamos el check
       await setEtapa("plano_georef", true, etapas?.plano_georef?.obs || "");
-
       await loadEtapas(current.id_expediente, tipoCarpeta);
+
       setPlanoGeoCache((prev) => ({
         ...prev,
-        [current.id_expediente]: { ...(prev[current.id_expediente] || { mejora: null, terreno: null }), [tipoCarpeta]: null },
+        [current.id_expediente]: {
+          ...(prev[current.id_expediente] || { mejora: null, terreno: null }),
+          [tipoCarpeta]: null,
+        },
       }));
+
       await loadPlanoGeo(current.id_expediente, tipoCarpeta, true);
       setPolyFiles([]);
 
@@ -603,10 +595,16 @@ export default function Expedientes() {
     { key: "gps", label: "GPS", type: "text" },
     { key: "tecnico", label: "Técnico", type: "text" },
     { key: "codigo_exp", label: "Código expediente", type: "text" },
+    { key: "codigo_censo", label: "Código censo", type: "text" },
     { key: "propietario_nombre", label: "Propietario nombre", type: "text" },
     { key: "propietario_ci", label: "Propietario CI", type: "text" },
     { key: "tramo", label: "Tramo", type: "text" },
     { key: "subtramo", label: "Subtramo", type: "text" },
+
+    { key: "ci_propietario_frente_url", label: "CI Propietario Frente URL", type: "text" },
+    { key: "ci_propietario_dorso_url", label: "CI Propietario Dorso URL", type: "text" },
+    { key: "ci_adicional_frente_url", label: "CI Adicional Frente URL", type: "text" },
+    { key: "ci_adicional_dorso_url", label: "CI Adicional Dorso URL", type: "text" },
   ];
 
   const [showImport, setShowImport] = useState(false);
@@ -628,23 +626,121 @@ export default function Expedientes() {
 
   function guessMapping(headers) {
     const H = headers.map((h) => ({ raw: h, n: norm(h) }));
+
     const pick = (...cands) => {
       for (const c of cands) {
         const cn = norm(c);
-        const hit = H.find((x) => x.n === cn) || H.find((x) => x.n.includes(cn));
-        if (hit) return hit.raw;
+        const exact = H.find((x) => x.n === cn);
+        if (exact) return exact.raw;
+
+        const partial = H.find((x) => x.n.includes(cn));
+        if (partial) return partial.raw;
       }
       return "";
     };
+
     return {
-      fecha_relevamiento: pick("fecha", "fecha relevamiento", "fecha_relevamiento"),
-      gps: pick("gps", "coordenadas", "ubicacion"),
-      tecnico: pick("tecnico", "técnico", "inspector"),
-      codigo_exp: pick("codigo", "codigo exp", "codigo expediente", "codigo_exp"),
-      propietario_nombre: pick("propietario", "nombre propietario", "propietario nombre", "propietario_nombre"),
-      propietario_ci: pick("ci", "c i", "cedula", "cedula identidad", "propietario ci", "propietario_ci"),
-      tramo: pick("tramo"),
-      subtramo: pick("subtramo", "sub tramo", "sub_tramo"),
+      fecha_relevamiento: pick(
+        "Datos_Relevamiento_Fecha",
+        "fecha",
+        "fecha relevamiento",
+        "fecha_relevamiento"
+      ),
+
+      gps: pick(
+        "Datos_Relevamiento_Ubicación",
+        "Datos_Relevamiento_Ubicacion",
+        "ubicacion",
+        "ubicación",
+        "gps",
+        "coordenadas"
+      ),
+
+      tecnico: pick(
+        "Datos_Relevamiento_Técnico_Encargado",
+        "Datos_Relevamiento_Tecnico_Encargado",
+        "tecnico encargado",
+        "técnico encargado",
+        "tecnico",
+        "técnico",
+        "inspector"
+      ),
+
+      codigo_exp: pick(
+        "Datos_del_Expediente_Código_Expediente_Notificación",
+        "Datos_del_Expediente_Codigo_Expediente_Notificacion",
+        "codigo expediente notificacion",
+        "código expediente notificación",
+        "codigo exp",
+        "codigo expediente"
+      ),
+
+      codigo_censo: pick(
+        "Datos_del_Expediente_Código_Censo_socioeconómico_carga_posterior",
+        "Datos_del_Expediente_Codigo_Censo_socioeconomico_carga_posterior",
+        "codigo censo socioeconomico carga posterior",
+        "código censo socioeconómico carga posterior",
+        "codigo censo"
+      ),
+
+      propietario_nombre: pick(
+        "Datos_del_Expediente_Nombre_Propietario",
+        "nombre propietario",
+        "propietario nombre",
+        "propietario"
+      ),
+
+      propietario_ci: pick(
+        "Datos_del_Expediente_Número_C.I._Propietario",
+        "Datos_del_Expediente_Numero_C_I_Propietario",
+        "numero ci propietario",
+        "número ci propietario",
+        "propietario ci",
+        "cedula propietario"
+      ),
+
+      tramo: pick(
+        "Datos_del_Expediente_Tramo",
+        "tramo"
+      ),
+
+      subtramo: pick(
+        "Datos_del_Expediente_Subtramo_1",
+        "subtramo 1",
+        "subtramo"
+      ),
+
+      ci_propietario_frente_url: pick(
+        "Fotos:Datos_del_Expediente_C.I_Propietario_Frente",
+        "Fotos Datos del Expediente C I Propietario Frente",
+        "fotos datos del expediente ci propietario frente",
+        "ci propietario frente",
+        "cedula propietario frente"
+      ),
+
+      ci_propietario_dorso_url: pick(
+        "Fotos:Datos_del_Expediente_C.I._Propietario_Dorso",
+        "Fotos Datos del Expediente C I Propietario Dorso",
+        "fotos datos del expediente ci propietario dorso",
+        "ci propietario dorso",
+        "cedula propietario dorso"
+      ),
+
+      ci_adicional_frente_url: pick(
+        "Fotos:Datos_del_Expediente_C.I_Adicional_Frente",
+        "Fotos Datos del Expediente C I Adicional Frente",
+        "fotos datos del expediente ci adicional frente",
+        "ci adicional frente",
+        "cedula adicional frente"
+      ),
+
+      ci_adicional_dorso_url: pick(
+        "Fotos:Datos_del_Expediente_C.I._Adicional_Dorso",
+        "Fotos Datos del Expediente C I Adicional Dorso",
+        "fotos datos del expediente ci adicional dorso",
+        "ci adicional dorso",
+        "cedula adicional dorso"
+      ),
     };
   }
 
@@ -665,7 +761,17 @@ export default function Expedientes() {
       return `${y}-${m}-${d}`;
     }
     const s = String(v).trim();
+
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+    const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m1) {
+      const dd = String(m1[1]).padStart(2, "0");
+      const mm = String(m1[2]).padStart(2, "0");
+      const yyyy = m1[3];
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
     return s;
   }
 
@@ -718,7 +824,9 @@ export default function Expedientes() {
   function buildMappedPayload() {
     const errs = [];
     const required = ["codigo_exp", "propietario_nombre"];
-    for (const k of required) if (!mapCols[k]) errs.push(`Falta mapear: ${k}`);
+    for (const k of required) {
+      if (!mapCols[k]) errs.push(`Falta mapear: ${k}`);
+    }
     if (errs.length) return { ok: false, errs };
 
     const mapped = excelRows.map((r) => {
@@ -727,6 +835,7 @@ export default function Expedientes() {
       for (const f of EXP_FIELDS) {
         const col = mapCols[f.key];
         const val = col ? r[col] : "";
+
         if (f.key === "fecha_relevamiento") {
           const ymd = excelDateToYMD(val);
           obj[f.key] = ymd ? ymd : todayYMD();
@@ -734,6 +843,7 @@ export default function Expedientes() {
           obj[f.key] = String(val ?? "").trim() || null;
         }
       }
+
       return obj;
     });
 
@@ -815,12 +925,12 @@ export default function Expedientes() {
   };
 
   const loadCIDocs = async (idExp) => {
-    const [titular, pareja] = await Promise.all([
+    const [titular, adicional] = await Promise.all([
       loadDocsBySubcarpeta(idExp, "ci"),
-      loadDocsBySubcarpeta(idExp, "ci_pareja"),
+      loadDocsBySubcarpeta(idExp, "ci_adicional"),
     ]);
     setDocsCI(titular);
-    setDocsCIPareja(pareja);
+    setDocsCIAdicional(adicional);
   };
 
   const loadTramosCensales = async () => {
@@ -901,10 +1011,7 @@ export default function Expedientes() {
       return;
     }
 
-    const found = rows.find(
-      (r) => Number(r.id_expediente) === expId
-    );
-
+    const found = rows.find((r) => Number(r.id_expediente) === expId);
     if (!found) return;
 
     didAutoOpenRef.current = true;
@@ -913,7 +1020,6 @@ export default function Expedientes() {
       searchParams.delete("expId");
       setSearchParams(searchParams, { replace: true });
     });
-
   }, [rows, searchParams, setSearchParams]);
 
   // =========================
@@ -924,7 +1030,7 @@ export default function Expedientes() {
     setCurrent(null);
     setDocs([]);
     setDocsCI([]);
-    setDocsCIPareja([]);
+    setDocsCIAdicional([]);
     setSubcarpeta("");
 
     setTipoCarpeta("mejora");
@@ -942,13 +1048,17 @@ export default function Expedientes() {
       id_tramo: null,
       id_sub_tramo: null,
       codigo_censo: "",
+      ci_propietario_frente_url: "",
+      ci_propietario_dorso_url: "",
+      ci_adicional_frente_url: "",
+      ci_adicional_dorso_url: "",
     });
 
     setUploadFiles([]);
     setCiFrente(null);
     setCiDorso(null);
-    setCiParejaFrente(null);
-    setCiParejaDorso(null);
+    setCiAdicionalFrente(null);
+    setCiAdicionalDorso(null);
 
     setPolyFiles([]);
     setDbiCodigo("");
@@ -974,8 +1084,8 @@ export default function Expedientes() {
     setUploadFiles([]);
     setCiFrente(null);
     setCiDorso(null);
-    setCiParejaFrente(null);
-    setCiParejaDorso(null);
+    setCiAdicionalFrente(null);
+    setCiAdicionalDorso(null);
 
     setPolyFiles([]);
     setDbiCodigo("");
@@ -1004,8 +1114,8 @@ export default function Expedientes() {
     setUploadFiles([]);
     setCiFrente(null);
     setCiDorso(null);
-    setCiParejaFrente(null);
-    setCiParejaDorso(null);
+    setCiAdicionalFrente(null);
+    setCiAdicionalDorso(null);
 
     setPolyFiles([]);
     setDbiCodigo("");
@@ -1079,24 +1189,24 @@ export default function Expedientes() {
     await loadCIDocs(current.id_expediente);
   };
 
-  const uploadCIPareja = async () => {
+  const uploadCIAdicional = async () => {
     if (!current) return;
-    if (!ciParejaFrente && !ciParejaDorso) {
-      alert("Seleccioná CI pareja frente y/o dorso.");
+    if (!ciAdicionalFrente && !ciAdicionalDorso) {
+      alert("Seleccioná CI adicional frente y/o dorso.");
       return;
     }
     const fd = new FormData();
-    if (ciParejaFrente) fd.append("ci_frente", ciParejaFrente);
-    if (ciParejaDorso) fd.append("ci_dorso", ciParejaDorso);
-    fd.append("subcarpeta", "ci_pareja");
+    if (ciAdicionalFrente) fd.append("ci_frente", ciAdicionalFrente);
+    if (ciAdicionalDorso) fd.append("ci_dorso", ciAdicionalDorso);
+    fd.append("subcarpeta", "ci_adicional");
 
     await apiForm(
-      `${API}/expedientes/${current.id_expediente}/ci/upload?subcarpeta=${encodeURIComponent("ci_pareja")}`,
+      `${API}/expedientes/${current.id_expediente}/ci/upload?subcarpeta=${encodeURIComponent("ci_adicional")}`,
       "POST",
       fd
     );
-    setCiParejaFrente(null);
-    setCiParejaDorso(null);
+    setCiAdicionalFrente(null);
+    setCiAdicionalDorso(null);
     await loadDocs(current.id_expediente);
     await loadCIDocs(current.id_expediente);
   };
@@ -1143,6 +1253,62 @@ export default function Expedientes() {
     anchor.click();
     document.body.removeChild(anchor);
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
+
+  function isPublicImageUrl(value) {
+    const s = String(value || "").trim().toLowerCase();
+    return (
+      (s.startsWith("http://") || s.startsWith("https://")) &&
+      (s.endsWith(".jpg") ||
+        s.endsWith(".jpeg") ||
+        s.endsWith(".png") ||
+        s.endsWith(".webp") ||
+        s.endsWith(".gif") ||
+        s.endsWith(".bmp"))
+    );
+  }
+
+  const renderImportedImageBox = (url, title) => {
+    const cleanUrl = String(url || "").trim();
+    if (!cleanUrl) return null;
+
+    const img = isPublicImageUrl(cleanUrl);
+
+    return (
+      <div className="border rounded p-2 mt-2" style={{ background: "#fff" }}>
+        <div className="small fw-semibold mb-2">{title}</div>
+
+        {img ? (
+          <>
+            <a href={cleanUrl} target="_blank" rel="noreferrer">
+              <img
+                src={cleanUrl}
+                alt={title}
+                style={{
+                  width: "100%",
+                  maxWidth: 180,
+                  height: 120,
+                  objectFit: "cover",
+                  border: "1px solid #ddd",
+                  borderRadius: 6,
+                  display: "block",
+                  background: "#f8f9fa",
+                }}
+              />
+            </a>
+            <div className="mt-2">
+              <a href={cleanUrl} target="_blank" rel="noreferrer" className="small">
+                Ver imagen completa
+              </a>
+            </div>
+          </>
+        ) : (
+          <a href={cleanUrl} target="_blank" rel="noreferrer" className="small">
+            Abrir archivo
+          </a>
+        )}
+      </div>
+    );
   };
 
   const docsBySubcarpeta = useMemo(() => {
@@ -1326,8 +1492,8 @@ export default function Expedientes() {
                   {loading
                     ? "Cargando..."
                     : filtersActive
-                    ? "No se encontraron expedientes con los filtros actuales"
-                    : "Sin expedientes"}
+                      ? "No se encontraron expedientes con los filtros actuales"
+                      : "Sin expedientes"}
                 </td>
               </tr>
             )}
@@ -1453,7 +1619,7 @@ export default function Expedientes() {
                         setForm({
                           ...form,
                           id_tramo: tramoId,
-                          id_sub_tramo: null, // resetear al cambiar tramo
+                          id_sub_tramo: null,
                         });
                       }}
                     >
@@ -1511,9 +1677,11 @@ export default function Expedientes() {
                     />
                   </Form.Group>
                 </Col>
+
                 <div className="text-muted small mt-2">
                   * La descripción de tramo se resolverá dinámicamente al guardar; el input libre fue depreciado.
                 </div>
+
                 {(onlyMejoraActive || onlyTerrenoActive || legacyBothActive) && (
                   <div className="mt-2">
                     {legacyBothActive && (
@@ -1548,34 +1716,35 @@ export default function Expedientes() {
               <br />
               * Regla de nombre: <b>Terreno</b> ⇒ debe contener <b>TERRENO</b>; <b>Mejora</b> ⇒ debe contener <b>MEJORA/MEJORAS</b>.
             </div>
+
             <Col md={12}>
               <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
                 <h5 className="mb-0">Elaboración de carpetas</h5>
 
-                  <div className="btn-group">
-                    <Button
-                      variant={tipoCarpeta === "mejora" ? "primary" : "outline-primary"}
-                      disabled={!current || onlyTerrenoActive}
-                      onClick={async () => {
-                        setTipoCarpeta("mejora");
-                        setPolyFiles([]); // ✅ evita mezclar archivos del otro tipo
-                        if (current) await loadEtapas(current.id_expediente, "mejora");
-                      }}
-                    >
-                      Mejora
-                    </Button>
-                    <Button
-                      variant={tipoCarpeta === "terreno" ? "primary" : "outline-primary"}
-                      disabled={!current || onlyMejoraActive}
-                      onClick={async () => {
-                        setTipoCarpeta("terreno");
-                        setPolyFiles([]); // ✅ evita mezclar archivos del otro tipo
-                        if (current) await loadEtapas(current.id_expediente, "terreno");
-                      }}
-                    >
-                      Terreno
-                    </Button>
-                  </div>
+                <div className="btn-group">
+                  <Button
+                    variant={tipoCarpeta === "mejora" ? "primary" : "outline-primary"}
+                    disabled={!current || onlyTerrenoActive}
+                    onClick={async () => {
+                      setTipoCarpeta("mejora");
+                      setPolyFiles([]);
+                      if (current) await loadEtapas(current.id_expediente, "mejora");
+                    }}
+                  >
+                    Mejora
+                  </Button>
+                  <Button
+                    variant={tipoCarpeta === "terreno" ? "primary" : "outline-primary"}
+                    disabled={!current || onlyMejoraActive}
+                    onClick={async () => {
+                      setTipoCarpeta("terreno");
+                      setPolyFiles([]);
+                      if (current) await loadEtapas(current.id_expediente, "terreno");
+                    }}
+                  >
+                    Terreno
+                  </Button>
+                </div>
               </div>
 
               {!current && (
@@ -1665,7 +1834,6 @@ export default function Expedientes() {
                                     </Button>
                                   </div>
 
-                                  {/* Preview */}
                                   {polyFiles.length > 0 && (
                                     <div className="small">
                                       {polyInvalidTriads && (
@@ -1693,7 +1861,6 @@ export default function Expedientes() {
                                         Seleccionados: <b>{polyFiles.length}</b>
                                       </div>
 
-                                      {/* mini listado sets */}
                                       <div className="mt-1">
                                         {polySets.map((s) => {
                                           const okName =
@@ -1886,6 +2053,7 @@ export default function Expedientes() {
                               />
                             </Form.Group>
                           </Col>
+
                           <Col md={12}>
                             <Form.Group>
                               <Form.Label>C.I. Titular Dorso</Form.Label>
@@ -1897,6 +2065,7 @@ export default function Expedientes() {
                               />
                             </Form.Group>
                           </Col>
+
                           <Col md={12} className="text-end">
                             {!readonly && (
                               <Button variant="outline-success" onClick={uploadCI}>
@@ -1904,6 +2073,7 @@ export default function Expedientes() {
                               </Button>
                             )}
                           </Col>
+
                           <Col md={12}>
                             {docsCI.length ? (
                               <Table bordered size="sm" className="mt-2">
@@ -1949,6 +2119,11 @@ export default function Expedientes() {
                             ) : (
                               <div className="text-muted small mt-2">Sin C.I. titular cargada</div>
                             )}
+
+                            <div className="d-flex flex-wrap gap-2 mt-2">
+                              {renderImportedImageBox(form.ci_propietario_frente_url, "CI Propietario Frente (Excel)")}
+                              {renderImportedImageBox(form.ci_propietario_dorso_url, "CI Propietario Dorso (Excel)")}
+                            </div>
                           </Col>
                         </Row>
                       </div>
@@ -1956,39 +2131,42 @@ export default function Expedientes() {
 
                     <Col md={6}>
                       <div className="border rounded p-3 h-100">
-                        <div className="fw-semibold mb-2">C.I. Pareja</div>
+                        <div className="fw-semibold mb-2">C.I. Adicional</div>
                         <Row className="g-2">
                           <Col md={12}>
                             <Form.Group>
-                              <Form.Label>C.I. Pareja Frente</Form.Label>
+                              <Form.Label>C.I. Adicional Frente</Form.Label>
                               <Form.Control
                                 type="file"
                                 accept="image/*"
                                 disabled={readonly}
-                                onChange={(e) => setCiParejaFrente(e.target.files?.[0] || null)}
+                                onChange={(e) => setCiAdicionalFrente(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
                           </Col>
+
                           <Col md={12}>
                             <Form.Group>
-                              <Form.Label>C.I. Pareja Dorso</Form.Label>
+                              <Form.Label>C.I. Adicional Dorso</Form.Label>
                               <Form.Control
                                 type="file"
                                 accept="image/*"
                                 disabled={readonly}
-                                onChange={(e) => setCiParejaDorso(e.target.files?.[0] || null)}
+                                onChange={(e) => setCiAdicionalDorso(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
                           </Col>
+
                           <Col md={12} className="text-end">
                             {!readonly && (
-                              <Button variant="outline-success" onClick={uploadCIPareja}>
-                                Subir CI pareja
+                              <Button variant="outline-success" onClick={uploadCIAdicional}>
+                                Subir CI adicional
                               </Button>
                             )}
                           </Col>
+
                           <Col md={12}>
-                            {docsCIPareja.length ? (
+                            {docsCIAdicional.length ? (
                               <Table bordered size="sm" className="mt-2">
                                 <thead>
                                   <tr>
@@ -1998,8 +2176,8 @@ export default function Expedientes() {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {docsCIPareja.map((d) => (
-                                    <tr key={`ci-pareja-${d.id_archivo}`}>
+                                  {docsCIAdicional.map((d) => (
+                                    <tr key={`ci-adicional-${d.id_archivo}`}>
                                       <td>{d.nombre_archivo}</td>
                                       <td>{d.fecha}</td>
                                       <td>
@@ -2011,13 +2189,13 @@ export default function Expedientes() {
                                           >
                                             Ver
                                           </Button>
-                                            <Button
-                                              variant="outline-primary"
-                                              size="sm"
-                                              onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
-                                            >
-                                              Descargar
-                                            </Button>
+                                          <Button
+                                            variant="outline-primary"
+                                            size="sm"
+                                            onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
+                                          >
+                                            Descargar
+                                          </Button>
                                           {!readonly && (
                                             <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
                                               Eliminar
@@ -2030,73 +2208,78 @@ export default function Expedientes() {
                                 </tbody>
                               </Table>
                             ) : (
-                              <div className="text-muted small mt-2">Sin C.I. pareja cargada</div>
+                              <div className="text-muted small mt-2">Sin C.I. adicional cargada</div>
                             )}
+
+                            <div className="d-flex flex-wrap gap-2 mt-2">
+                              {renderImportedImageBox(form.ci_adicional_frente_url, "CI Adicional Frente (Excel)")}
+                              {renderImportedImageBox(form.ci_adicional_dorso_url, "CI Adicional Dorso (Excel)")}
+                            </div>
                           </Col>
                         </Row>
                       </div>
                     </Col>
                   </Row>
 
-                    <div className="mt-3">
-                      <h6 className="mb-2">Cargados (otros)</h6>
+                  <div className="mt-3">
+                    <h6 className="mb-2">Cargados (otros)</h6>
 
-                      <div className="d-flex flex-wrap gap-2 mb-2">
-                        <Badge bg="secondary">Total: {otherDocs.length}</Badge>
-                        <Badge bg="secondary">Subcarpetas: {Object.keys(otherDocsBySubcarpeta).length}</Badge>
-                      </div>
-
-                      <Table bordered size="sm" className="mt-2">
-                        <thead>
-                          <tr>
-                            <th>Subcarpeta</th>
-                            <th>Archivo</th>
-                            <th>Fecha</th>
-                            <th style={{ width: 200 }}>Acciones</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {!otherDocs.length && (
-                            <tr>
-                              <td colSpan={4} className="text-center text-muted">
-                                Sin documentos adicionales
-                              </td>
-                            </tr>
-                          )}
-
-                          {otherDocs.map((d) => (
-                            <tr key={`other-${d.id_archivo}`}>
-                              <td>{d.subcarpeta || ""}</td>
-                              <td>{d.nombre_archivo}</td>
-                              <td>{d.fecha}</td>
-                              <td>
-                                <div className="btn-group">
-                                  <Button
-                                    variant="outline-secondary"
-                                    size="sm"
-                                    onClick={() => viewDoc(d.id_archivo)}
-                                  >
-                                    Ver
-                                  </Button>
-                                  <Button
-                                    variant="outline-primary"
-                                    size="sm"
-                                    onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
-                                  >
-                                    Descargar
-                                  </Button>
-                                  {!readonly && (
-                                    <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
-                                      Eliminar
-                                    </Button>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </Table>
+                    <div className="d-flex flex-wrap gap-2 mb-2">
+                      <Badge bg="secondary">Total: {otherDocs.length}</Badge>
+                      <Badge bg="secondary">Subcarpetas: {Object.keys(otherDocsBySubcarpeta).length}</Badge>
                     </div>
+
+                    <Table bordered size="sm" className="mt-2">
+                      <thead>
+                        <tr>
+                          <th>Subcarpeta</th>
+                          <th>Archivo</th>
+                          <th>Fecha</th>
+                          <th style={{ width: 200 }}>Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!otherDocs.length && (
+                          <tr>
+                            <td colSpan={4} className="text-center text-muted">
+                              Sin documentos adicionales
+                            </td>
+                          </tr>
+                        )}
+
+                        {otherDocs.map((d) => (
+                          <tr key={`other-${d.id_archivo}`}>
+                            <td>{d.subcarpeta || ""}</td>
+                            <td>{d.nombre_archivo}</td>
+                            <td>{d.fecha}</td>
+                            <td>
+                              <div className="btn-group">
+                                <Button
+                                  variant="outline-secondary"
+                                  size="sm"
+                                  onClick={() => viewDoc(d.id_archivo)}
+                                >
+                                  Ver
+                                </Button>
+                                <Button
+                                  variant="outline-primary"
+                                  size="sm"
+                                  onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
+                                >
+                                  Descargar
+                                </Button>
+                                {!readonly && (
+                                  <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
+                                    Eliminar
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </div>
                 </>
               ) : (
                 <div className="text-muted">Primero guardá el expediente para poder subir documentos.</div>
@@ -2161,7 +2344,8 @@ export default function Expedientes() {
                 Filas detectadas: <b>{excelRows.length}</b>
               </div>
               <div className="text-muted small">
-                Tip: asegurá encabezados en la primera fila del Excel. <br />
+                Tip: asegurá encabezados en la primera fila del Excel.
+                <br />
                 * Si la fecha viene vacía, se usa <b>HOY</b>.
               </div>
             </Col>
@@ -2189,7 +2373,9 @@ export default function Expedientes() {
                 </Table>
               </div>
 
-              <div className="mt-2 text-muted small">* Se muestran solo 8 columnas para que entre en pantalla.</div>
+              <div className="mt-2 text-muted small">
+                * Se muestran solo 8 columnas para que entre en pantalla.
+              </div>
             </Col>
           </Row>
         </Modal.Body>

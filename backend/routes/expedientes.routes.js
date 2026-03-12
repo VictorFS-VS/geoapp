@@ -11,7 +11,7 @@ const { requirePerm } = require("../middlewares/requirePerm");
 router.post(
   "/import/:idProyecto",
   verifyToken,
-  requirePerm("expedientes.create"), // o "expedientes.upload"
+  requirePerm("expedientes.create"),
   ctrl.importExcel
 );
 
@@ -70,7 +70,7 @@ router.post(
   ctrl.subirDocs
 );
 
-// CI
+// CI titular / adicional
 router.post(
   "/:idExpediente/ci/upload",
   verifyToken,
@@ -147,15 +147,5 @@ router.post(
   requirePerm("expedientes.upload"),
   ctrl.subirDBI
 );
-
-// ======================================================
-// ❌ ELIMINADAS (YA NO USAMOS bloque_terreno/bloque_mejoras)
-// ======================================================
-//
-// router.get("/:idExpediente/terreno", ... ctrl.geojsonTerreno);
-// router.get("/:idExpediente/mejoras", ... ctrl.geojsonMejoras);
-//
-// router.post("/:idExpediente/mejoras/poligono", ... ctrl.subirPoligonoMejoras);
-// router.post("/:idExpediente/terreno/poligono", ... ctrl.subirPoligonoTerreno);
 
 module.exports = router;
