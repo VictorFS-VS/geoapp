@@ -148,6 +148,20 @@ router.post(
   ctrl.subirDBI
 );
 
+router.post(
+  "/:idExpediente/dbi/eventos",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.agregarDbiEvento
+);
+
+router.post(
+  "/:idExpediente/dbi/iniciar",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.iniciarDbi
+);
+
 // ======================================================
 // ❌ ELIMINADAS (YA NO USAMOS bloque_terreno/bloque_mejoras)
 // ======================================================

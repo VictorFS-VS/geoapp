@@ -59,6 +59,10 @@ desktop.ini
 **/.env
 **/.env.*
 **/.env*
+docs/
+
+**/.gitignore
+
 backend/ema-geoapp-ec4ee88497fd.json
 
 # =========================
@@ -77,6 +81,7 @@ backup/
 *.dll
 *.cmd
 *.bat
+*.txt
 
 # =========================
 # Temporales y uploads del sistema
