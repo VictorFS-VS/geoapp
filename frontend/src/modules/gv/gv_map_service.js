@@ -17,6 +17,8 @@ export async function fetchCatastroMap({ proyectoId, filters = {} }) {
     if (filters.hasDocs !== undefined && filters.hasDocs !== "") params.append("hasDocs", filters.hasDocs)
     if (filters.hasCI !== undefined && filters.hasCI !== "") params.append("hasCI", filters.hasCI)
     if (filters.hasDBI !== undefined && filters.hasDBI !== "") params.append("hasDBI", filters.hasDBI)
+    if (filters.fechaInicio) params.append("fechaInicio", filters.fechaInicio)
+    if (filters.fechaFin) params.append("fechaFin", filters.fechaFin)
 
     return await apiFetch(`/gv/catastro/map?${params.toString()}`)
 }

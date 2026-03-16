@@ -102,6 +102,15 @@ function nowLocalDateTimeInput() {
   )}`;
 }
 
+function ymdToIsoStart(ymd) {
+  if (!ymd) return "";
+  const s = String(ymd).trim();
+  if (!s) return "";
+  const d = new Date(`${s}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
 /* =========================
    ✅ Helpers polígono (Mantenimiento-like)
    ========================= */
@@ -436,6 +445,13 @@ export default function Expedientes() {
   const deleteConfirmOk = deleteConfirm.trim() === deleteToken;
 
   const etapasList = tipoCarpeta === "mejora" ? ETAPAS_MEJORA : ETAPAS_TERRENO;
+
+  function getEtapaFallbackIso() {
+    const relIso = ymdToIsoStart(current?.fecha_relevamiento);
+    if (relIso) return relIso;
+    const localNow = nowLocalDateTimeInput();
+    return datetimeLocalToIso(localNow);
+  }
 
   const hasActiveStages = (carpeta) => {
     if (!carpeta || typeof carpeta !== "object") return false;
@@ -1319,6 +1335,10 @@ export default function Expedientes() {
   };
 
   const save = async () => {
+    if (!form.fecha_relevamiento || !String(form.fecha_relevamiento).trim()) {
+      alert("Fecha relevamiento es obligatoria.");
+      return;
+    }
     if (mode === "crear") {
       const created = await apiJson(`${API}/expedientes`, "POST", form);
       setCurrent(created);
@@ -1798,8 +1818,13 @@ export default function Expedientes() {
                 <Form.Control
                   type="date"
                   value={form.fecha_relevamiento}
+                  required
                   disabled={readonly}
-                  onChange={(e) => setForm({ ...form, fecha_relevamiento: e.target.value })}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    setForm({ ...form, fecha_relevamiento: v });
+                  }}
                 />
               </Form.Group>
             </Col>
@@ -2167,8 +2192,7 @@ export default function Expedientes() {
                                   let nextDateIso = undefined;
 
                                   if (checked && !st?.date) {
-                                    const localNow = nowLocalDateTimeInput();
-                                    const iso = datetimeLocalToIso(localNow);
+                                    const iso = getEtapaFallbackIso();
                                     if (iso) {
                                       nextDateIso = iso;
                                       setEtapas((prev) => ({
@@ -2214,6 +2238,7 @@ export default function Expedientes() {
                                   type="datetime-local"
                                   value={stageDateLocal}
                                   disabled={disableDate}
+                                  required={!!st.ok}
                                   onChange={(ev) => {
                                     const local = ev.target.value;
                                     const iso = datetimeLocalToIso(local);
@@ -2224,11 +2249,20 @@ export default function Expedientes() {
                                   }}
                                   onBlur={(ev) => {
                                     const local = ev.target.value;
-                                    const iso = datetimeLocalToIso(local);
-                                    if (!iso) return;
-                                    if (!readonly) setEtapa(e.key, !!st.ok, st.obs || "", iso);
+                                    let iso = datetimeLocalToIso(local);
+                                    if (!iso && st?.ok) {
+                                      iso = getEtapaFallbackIso();
+                                      setEtapas((prev) => ({
+                                        ...prev,
+                                        [e.key]: { ...(prev?.[e.key] || {}), date: iso || (prev?.[e.key]?.date ?? null) },
+                                      }));
+                                    }
+                                    if (iso && !readonly) setEtapa(e.key, !!st.ok, st.obs || "", iso);
                                   }}
                                 />
+                              )}
+                              {!!st.ok && !stageDateLocal && !readonly && (
+                                <div className="text-danger small mt-1">Fecha requerida para etapa OK.</div>
                               )}
                             </td>
                             <td>

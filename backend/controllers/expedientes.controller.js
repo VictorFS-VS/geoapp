@@ -200,6 +200,22 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function parseToIsoOrNull(raw) {
+  if (!raw) return null;
+  const d = new Date(String(raw).trim());
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function parseYmdToIso(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const d = new Date(`${s}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 function normalizeStageEntry(entry) {
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     return {
@@ -253,7 +269,7 @@ function appendDbiEventIfNeeded(dbi, event) {
   const curr = normalizeDbiState(dbi);
   const normalizedEvent = {
     estado: event?.estado ? String(event.estado) : "",
-    fecha: event?.fecha || nowIso(),
+    fecha: parseToIsoOrNull(event?.fecha) || nowIso(),
     obs: typeof event?.obs === "string" ? event.obs : "",
   };
 
@@ -280,7 +296,7 @@ function normalizeTipo(tipo) {
 
 async function getProyectoByExpediente(idExpediente) {
   const q = await pool.query(
-    `SELECT id_proyecto, carpeta_mejora, carpeta_terreno, carpeta_dbi
+    `SELECT id_proyecto, fecha_relevamiento, carpeta_mejora, carpeta_terreno, carpeta_dbi
        FROM ema.expedientes
       WHERE id_expediente = $1`,
     [Number(idExpediente)]
@@ -333,10 +349,36 @@ function cleanStr(v) {
   return s === "" ? null : s;
 }
 
+function isYmd(v) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(v || "").trim());
+}
+
+function todayYMD() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function cleanDateYMD(v) {
   const s = String(v ?? "").trim();
-  if (!s) return null;
+  if (!s) {
+    const fallback = todayYMD();
+    console.warn(`[EXP IMPORT] fecha_relevamiento faltante; se asigna today (${fallback})`);
+    return fallback;
+  }
   return s;
+}
+
+function requireFechaRelevamiento(b) {
+  const raw = String(b?.fecha_relevamiento ?? "").trim();
+  if (!raw || !isYmd(raw)) {
+    const err = new Error("fecha_relevamiento es obligatoria y debe tener formato YYYY-MM-DD");
+    err.statusCode = 400;
+    throw err;
+  }
+  return raw;
 }
 
 async function resolveTramoInfo(b) {
@@ -447,6 +489,7 @@ exports.getOne = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const b = req.body || {};
+    const fechaRelevamiento = requireFechaRelevamiento(b);
     const resTramo = await resolveTramoInfo(b);
 
     const parteA = parseOptionalNonNegNumeric(b, "parte_a");
@@ -468,22 +511,18 @@ exports.create = async (req, res) => {
          id_tramo,
          id_sub_tramo,
          codigo_censo,
-         ci_propietario_frente_url,
-         ci_propietario_dorso_url,
-         ci_adicional_frente_url,
-         ci_adicional_dorso_url,
          parte_a,
          parte_b,
          premio_aplica
        )
        VALUES
        (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
        )
        RETURNING *`,
       [
         Number(b.id_proyecto),
-        b.fecha_relevamiento || null,
+        fechaRelevamiento,
         b.gps || null,
         b.tecnico || null,
         b.codigo_exp || null,
@@ -494,10 +533,6 @@ exports.create = async (req, res) => {
         resTramo.id_tramo,
         resTramo.id_sub_tramo,
         resTramo.codigo_censo,
-        b.ci_propietario_frente_url || null,
-        b.ci_propietario_dorso_url || null,
-        b.ci_adicional_frente_url || null,
-        b.ci_adicional_dorso_url || null,
         parteA.present ? parteA.value : null,
         parteB.present ? parteB.value : null,
         premioAplica.present ? premioAplica.value : false,
@@ -521,6 +556,7 @@ exports.update = async (req, res) => {
   try {
     const idExp = Number(req.params.idExpediente);
     const b = req.body || {};
+    const fechaRelevamiento = requireFechaRelevamiento(b);
     const resTramo = await resolveTramoInfo(b);
 
     const parteA = parseOptionalNonNegNumeric(b, "parte_a");
@@ -539,14 +575,10 @@ exports.update = async (req, res) => {
       "id_tramo=$9",
       "id_sub_tramo=$10",
       "codigo_censo=$11",
-      "ci_propietario_frente_url=$12",
-      "ci_propietario_dorso_url=$13",
-      "ci_adicional_frente_url=$14",
-      "ci_adicional_dorso_url=$15",
     ];
 
     const params = [
-      b.fecha_relevamiento || null,
+      fechaRelevamiento,
       b.gps || null,
       b.tecnico || null,
       b.codigo_exp || null,
@@ -557,13 +589,10 @@ exports.update = async (req, res) => {
       resTramo.id_tramo,
       resTramo.id_sub_tramo,
       resTramo.codigo_censo,
-      b.ci_propietario_frente_url || null,
-      b.ci_propietario_dorso_url || null,
-      b.ci_adicional_frente_url || null,
-      b.ci_adicional_dorso_url || null,
     ];
 
-    let idx = 16;
+    // reset to 12 because we removed 4 columns
+    let idx = 12;
 
     if (parteA.present) {
       sets.push(`parte_a=$${idx}`);
@@ -685,8 +714,9 @@ exports.setEtapa = async (req, res) => {
   let nextDate = previous.date || null;
   if (dateOverride) {
     nextDate = dateOverride;
-  } else if (!previous.ok && ok && !nextDate) {
-    nextDate = nowIso();
+  } else if (ok && !nextDate) {
+    const fallbackRelev = parseYmdToIso(rec?.fecha_relevamiento);
+    nextDate = fallbackRelev || nowIso();
   }
 
   const updated = {
@@ -1115,11 +1145,19 @@ exports.agregarDbiEvento = async (req, res) => {
   const rec = await ensureEtapas(idExp);
   if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
 
+  let fechaIso = null;
+  if (fechaRaw) {
+    fechaIso = parseToIsoOrNull(fechaRaw);
+    if (!fechaIso) {
+      return res.status(400).json({ message: "fecha invalida (debe ser ISO o Date parseable)" });
+    }
+  }
+
   let dbi = normalizeDbiState(rec.carpeta_dbi);
 
   const event = {
     estado: estadoRaw,
-    fecha: fechaRaw || nowIso(),
+    fecha: fechaIso || nowIso(),
     obs: obsRaw,
   };
 

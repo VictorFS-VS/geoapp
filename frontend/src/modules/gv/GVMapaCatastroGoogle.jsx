@@ -126,17 +126,19 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
                     const props = feature.properties || {};
                     const phaseIndex = Number(props.fase_index ?? 0);
                     const phaseTotal = Number(props.fase_total ?? 1);
-                    const tipo = String(props.tipo || 'mejora');
+                    const tipoRaw = String(props.tipo || '').toLowerCase();
+                    const isKnownTipo = tipoRaw === "mejora" || tipoRaw === "terreno";
+                    const tipo = tipoRaw || "sin_iniciar";
 
-                    const fillHex = getPhaseHex(phaseIndex, phaseTotal);
-                    const borderHex = getPhaseBorderHex(phaseIndex) || fillHex;
+                    const fillHex = isKnownTipo ? getPhaseHex(phaseIndex, phaseTotal) : "#9ca3af";
+                    const borderHex = isKnownTipo ? (getPhaseBorderHex(phaseIndex) || fillHex) : "#6b7280";
 
                     // Stats
                     totalFeatures++;
                     if (tipo === 'mejora') {
                         mejoraCnt++;
                         byFaseMejora[phaseIndex] = (byFaseMejora[phaseIndex] || 0) + 1;
-                    } else {
+                    } else if (tipo === 'terreno') {
                         terrenoCnt++;
                         byFaseTerreno[phaseIndex] = (byFaseTerreno[phaseIndex] || 0) + 1;
                     }

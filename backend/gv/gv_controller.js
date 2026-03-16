@@ -18,6 +18,10 @@ function parseIntOrUndef(v) {
     return Number.isFinite(n) ? n : undefined;
 }
 
+function isYmd(s) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
+}
+
 /**
  * Retorna las llaves ordenadas de las etapas según el tipo.
  */
@@ -54,46 +58,10 @@ function safeParseGeoJSON(maybeJson) {
     try { return JSON.parse(maybeJson); } catch { return null; }
 }
 
-/**
- * Helpers para inferir tipo por expediente
- */
-function normalizeOk(value) {
-    if (value === true || value === 1 || value === "1" || value === "true") return true;
-    return false;
-}
-
-function countTrueStages(carpetaObj) {
-    if (!carpetaObj || typeof carpetaObj !== "object") return 0;
-    let count = 0;
-    for (const key of Object.keys(carpetaObj)) {
-        if (carpetaObj[key] && normalizeOk(carpetaObj[key].ok)) {
-            count++;
-        }
-    }
-    return count;
-}
+const { inferTipoCarpeta } = require("./analytics_helpers");
 
 function inferTipoExpediente(row) {
-    const cm = row.carpeta_mejora || {};
-    const ct = row.carpeta_terreno || {};
-    const mejoraCount = countTrueStages(cm);
-    const terrenoCount = countTrueStages(ct);
-
-    if (mejoraCount > 0 && terrenoCount === 0) return "mejora";
-    if (terrenoCount > 0 && mejoraCount === 0) return "terreno";
-
-    if (mejoraCount > 0 && terrenoCount > 0) {
-        if (terrenoCount > mejoraCount) return "terreno";
-        return "mejora"; // empate => fallback a mejora
-    }
-
-    const cmKeys = Object.keys(cm);
-    const ctKeys = Object.keys(ct);
-
-    if (cmKeys.length >= 5 && ctKeys.length === 0) return "mejora";
-    if (ctKeys.length >= 7 && cmKeys.length === 0) return "terreno";
-
-    return "mejora";
+    return inferTipoCarpeta(row);
 }
 
 
@@ -101,6 +69,14 @@ async function catastroDashboard(req, res) {
     const proyectoId = parseInt(req.query.proyectoId || req.query.idProyecto);
     if (isNaN(proyectoId)) {
         return res.status(400).json({ ok: false, error: "INVALID_PROYECTO_ID" });
+    }
+    const fechaInicio = req.query.fechaInicio !== undefined ? String(req.query.fechaInicio).trim() : "";
+    const fechaFin = req.query.fechaFin !== undefined ? String(req.query.fechaFin).trim() : "";
+    if (fechaInicio && !isYmd(fechaInicio)) {
+        return res.status(400).json({ ok: false, error: "fechaInicio invalida (YYYY-MM-DD)" });
+    }
+    if (fechaFin && !isYmd(fechaFin)) {
+        return res.status(400).json({ ok: false, error: "fechaFin invalida (YYYY-MM-DD)" });
     }
 
     try {
@@ -117,10 +93,18 @@ async function catastroDashboard(req, res) {
         const project = proyRows[0];
         const dbTarget = project.catastro_target_total;
 
-        const { rows } = await pool.query(
-            "SELECT * FROM ema.expedientes WHERE id_proyecto=$1 ORDER BY created_at DESC",
-            [proyectoId]
-        );
+        const params = [proyectoId];
+        let sql = "SELECT * FROM ema.expedientes WHERE id_proyecto=$1";
+        if (fechaInicio) {
+            params.push(fechaInicio);
+            sql += ` AND fecha_relevamiento >= $${params.length}`;
+        }
+        if (fechaFin) {
+            params.push(fechaFin);
+            sql += ` AND fecha_relevamiento <= $${params.length}`;
+        }
+        sql += " ORDER BY created_at DESC";
+        const { rows } = await pool.query(sql, params);
 
         const ids = rows.map(r => r.id_expediente);
 
@@ -228,7 +212,9 @@ async function catastroDashboard(req, res) {
 
         const summaryList = rows.map((row) => {
             const tipoExp = inferTipoExpediente(row);
-            by_tipo[tipoExp]++;
+            if (by_tipo[tipoExp] !== undefined) {
+                by_tipo[tipoExp]++;
+            }
 
             const carpeta = tipoExp === "mejora" ? (row.carpeta_mejora || {}) : (row.carpeta_terreno || {});
             const stagesExp = tipoExp === "mejora" ? stagesMejora : stagesTerreno;
@@ -236,22 +222,27 @@ async function catastroDashboard(req, res) {
             let completed = 0;
             let invalid_sequence = false;
             let stopCounting = false;
+            const hasRelevamiento = !!row.fecha_relevamiento;
 
-            for (const key of stagesExp) {
-                const isOk = !!carpeta[key]?.ok;
-                if (isOk) {
-                    if (stopCounting) {
-                        invalid_sequence = true;
+            if (phases[tipoExp]) {
+                for (const key of stagesExp) {
+                    const isOk = !!carpeta[key]?.ok;
+                    if (isOk) {
+                        if (stopCounting) {
+                            invalid_sequence = true;
+                        } else {
+                            completed++;
+                        }
                     } else {
-                        completed++;
+                        stopCounting = true;
                     }
-                } else {
-                    stopCounting = true;
+                }
+
+                if (invalid_sequence) invalid_sequence_total++;
+                if (completed > 0 || hasRelevamiento) {
+                    phases[tipoExp].counts[completed]++;
                 }
             }
-
-            if (invalid_sequence) invalid_sequence_total++;
-            phases[tipoExp].counts[completed]++;
 
             let has_polygon = false;
             let has_point = false;
@@ -328,6 +319,15 @@ async function catastroMap(req, res) {
     const filtroTramo = req.query.tramo !== undefined ? String(req.query.tramo).trim() : undefined;
     const filtroSubtramo = req.query.subtramo !== undefined ? String(req.query.subtramo).trim() : undefined;
     const filtroQ = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
+    const fechaInicio = req.query.fechaInicio !== undefined ? String(req.query.fechaInicio).trim() : "";
+    const fechaFin = req.query.fechaFin !== undefined ? String(req.query.fechaFin).trim() : "";
+
+    if (fechaInicio && !isYmd(fechaInicio)) {
+        return res.status(400).json({ ok: false, error: "fechaInicio invalida (YYYY-MM-DD)" });
+    }
+    if (fechaFin && !isYmd(fechaFin)) {
+        return res.status(400).json({ ok: false, error: "fechaFin invalida (YYYY-MM-DD)" });
+    }
 
     const filtroFase = parseIntOrUndef(req.query.fase);
     const filtroFaseMin = parseIntOrUndef(req.query.faseMin);
@@ -350,20 +350,30 @@ async function catastroMap(req, res) {
 
         // 1. Obtener expedientes e inferir tipo individualmente
         const params = [proyectoId];
-        let sql = `SELECT id_expediente, tramo, subtramo, gps,
+        let sql = `SELECT id_expediente, tramo, subtramo, gps, fecha_relevamiento,
                     carpeta_mejora, carpeta_terreno, codigo_exp,
                     propietario_nombre, propietario_ci, codigo_censo, carpeta_dbi
              FROM ema.expedientes
              WHERE id_proyecto=$1`;
 
+        if (fechaInicio) {
+            params.push(fechaInicio);
+            sql += ` AND fecha_relevamiento >= $${params.length}`;
+        }
+        if (fechaFin) {
+            params.push(fechaFin);
+            sql += ` AND fecha_relevamiento <= $${params.length}`;
+        }
+
         if (filtroQ) {
             params.push(`%${filtroQ}%`);
+            const qIdx = params.length;
             sql += ` AND (` +
-                `propietario_nombre ILIKE $2 OR ` +
-                `propietario_ci ILIKE $2 OR ` +
-                `codigo_exp ILIKE $2 OR ` +
-                `codigo_censo ILIKE $2 OR ` +
-                `COALESCE(carpeta_dbi->>'codigo','') ILIKE $2` +
+                `propietario_nombre ILIKE $${qIdx} OR ` +
+                `propietario_ci ILIKE $${qIdx} OR ` +
+                `codigo_exp ILIKE $${qIdx} OR ` +
+                `codigo_censo ILIKE $${qIdx} OR ` +
+                `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${qIdx}` +
                 `)`;
         }
 

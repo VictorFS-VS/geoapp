@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { gvGetDashboard, gvGetExpedienteDocs, gvGetExpedienteEtapas, gvGetExpediente, gvGetTramosCensales, gvGetSubtramosCensales } from "./gv_service";
+import { gvGetDashboard, gvGetExpedienteDocs, gvGetExpedienteEtapas, gvGetExpediente, gvGetTramosCensales, gvGetSubtramosCensales, gvGetAvanceTemporal, gvGetDetalleTemporal, gvGetEconomico } from "./gv_service";
 import GVCharts from "./GVCharts";
 import GVMapaCatastroGoogle from "./GVMapaCatastroGoogle";
+import GVTemporalCharts from "./GVTemporalCharts";
+import GVEconomicPanel from "./GVEconomicPanel";
 import GvPhaseChip from "./GvPhaseChip";
 import { Link } from "react-router-dom";
 import GvExpedienteModal from "./GvExpedienteModal";
@@ -48,6 +50,33 @@ function formatPct01(p01) {
   return (clamped * 100).toFixed(1) + "%";
 }
 
+function toYmd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function addDays(d, days) {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function formatYmdToShort(ymd) {
+  const s = String(ymd || "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function humanizeTipo(tipo) {
+  const t = String(tipo || "").toLowerCase().trim();
+  if (t === "mejora") return "Mejora";
+  if (t === "terreno") return "Terreno";
+  if (t === "legacy") return "Legacy";
+  if (t === "sin_iniciar") return "Sin iniciar";
+  return t || "Sin iniciar";
+}
+
 export default function GVCatastroDashboard() {
   const { id } = useParams();
   const [data, setData] = useState(null);
@@ -64,7 +93,9 @@ export default function GVCatastroDashboard() {
     hasPolygon: "",
     hasDocs: "",
     hasCI: "",
-    hasDBI: ""
+    hasDBI: "",
+    fechaInicio: "",
+    fechaFin: ""
   };
 
   const [mapFilters, setMapFilters] = useState(initialFilters);
@@ -89,6 +120,25 @@ export default function GVCatastroDashboard() {
   const [modalShow, setModalShow] = useState(false);
   const [modalExpId, setModalExpId] = useState(null);
   const [modalSeedProps, setModalSeedProps] = useState(null);
+
+  // Temporal analytics state (local)
+  const today = new Date();
+  const [fechaInicio, setFechaInicio] = useState(toYmd(addDays(today, -30)));
+  const [fechaFin, setFechaFin] = useState(toYmd(today));
+  const [tempGranularidad, setTempGranularidad] = useState("semana");
+  const [tempSelectedCategoria, setTempSelectedCategoria] = useState("");
+  const [tempModoDetalle, setTempModoDetalle] = useState("fases");
+  const [tempAvance, setTempAvance] = useState(null);
+  const [tempDetalle, setTempDetalle] = useState(null);
+  const [tempLoadingAvance, setTempLoadingAvance] = useState(false);
+  const [tempLoadingDetalle, setTempLoadingDetalle] = useState(false);
+  const [tempErrorAvance, setTempErrorAvance] = useState("");
+  const [tempErrorDetalle, setTempErrorDetalle] = useState("");
+
+  // Economic panel state
+  const [ecoData, setEcoData] = useState(null);
+  const [ecoLoading, setEcoLoading] = useState(false);
+  const [ecoError, setEcoError] = useState("");
 
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
@@ -198,7 +248,7 @@ export default function GVCatastroDashboard() {
     async function fetchDashboard() {
       try {
         setLoading(true);
-        const result = await gvGetDashboard(id);
+        const result = await gvGetDashboard(id, { fechaInicio, fechaFin });
         setData(result);
       } catch (err) {
         setError(err.message || "Error al cargar dashboard GV");
@@ -210,7 +260,7 @@ export default function GVCatastroDashboard() {
     if (id) {
       fetchDashboard();
     }
-  }, [id]);
+  }, [id, fechaInicio, fechaFin]);
 
   useEffect(() => {
     if (!id) return;
@@ -218,6 +268,190 @@ export default function GVCatastroDashboard() {
       .then((resp) => setTramosCensales(Array.isArray(resp?.items) ? resp.items : []))
       .catch(() => setTramosCensales([]));
   }, [id]);
+
+  const selectedTramoId = (() => {
+    if (!mapFilters.tramo) return null;
+    const sel = tramosCensales.find((t) => String(t.descripcion) === mapFilters.tramo);
+    return sel?.id_proyecto_tramo || null;
+  })();
+
+  const selectedSubtramoId = (() => {
+    if (!mapFilters.subtramo) return null;
+    const sel = subtramosCensales.find((t) => String(t.descripcion) === mapFilters.subtramo);
+    return sel?.id_proyecto_subtramo || null;
+  })();
+
+  const selectedTipoFilter = mapFilters.tipo ? mapFilters.tipo : null;
+
+  const mapFilterBadges = [];
+  if (fechaInicio || fechaFin) {
+    mapFilterBadges.push(
+      `Rango: ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) mapFilterBadges.push(`Tramo: ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) mapFilterBadges.push(`Subtramo: ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) mapFilterBadges.push(`Tipo: ${humanizeTipo(mapFilters.tipo)}`);
+  if (mapFilters.q) mapFilterBadges.push(`Busqueda: ${mapFilters.q}`);
+
+  const anyMapFiltersActive = Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "");
+
+  const temporalFilterBadges = [];
+  if (fechaInicio || fechaFin) {
+    temporalFilterBadges.push(
+      `Rango ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) temporalFilterBadges.push(`Tramo ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) temporalFilterBadges.push(`Subtramo ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) temporalFilterBadges.push(`Tipo ${humanizeTipo(mapFilters.tipo)}`);
+
+  const temporalSecondaryBadges = [];
+  if (mapFilters.q) temporalSecondaryBadges.push(`Busqueda "${mapFilters.q}"`);
+
+  const economicoContext = [];
+  if (fechaInicio || fechaFin) {
+    economicoContext.push(
+      `Rango ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) economicoContext.push(`Tramo ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) economicoContext.push(`Subtramo ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) economicoContext.push(`Tipo ${humanizeTipo(mapFilters.tipo)}`);
+
+  const economicoParamsKey = JSON.stringify({
+    proyectoId: id,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+    tipo: selectedTipoFilter,
+  });
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setEcoLoading(true);
+    setEcoError("");
+    gvGetEconomico({
+      proyectoId: id,
+      fechaInicio,
+      fechaFin,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+      tipo: selectedTipoFilter || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setEcoData(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setEcoError(String(e?.message || e));
+        setEcoData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setEcoLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [economicoParamsKey, id]);
+
+  const temporalParamsKey = JSON.stringify({
+    proyectoId: id,
+    fechaInicio: fechaInicio,
+    fechaFin: fechaFin,
+    granularidad: tempGranularidad,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+  });
+
+  useEffect(() => {
+    if (!id || !fechaInicio || !fechaFin || !tempGranularidad) return;
+    let cancelled = false;
+    setTempLoadingAvance(true);
+    setTempErrorAvance("");
+    gvGetAvanceTemporal({
+      proyectoId: id,
+      fechaInicio: fechaInicio,
+      fechaFin: fechaFin,
+      granularidad: tempGranularidad,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setTempAvance(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setTempErrorAvance(String(e?.message || e));
+        setTempAvance(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTempLoadingAvance(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, temporalParamsKey]);
+
+  useEffect(() => {
+    const buckets = Array.isArray(tempAvance?.buckets) ? tempAvance.buckets : [];
+    const totalMejora = buckets.reduce((acc, b) => acc + (Number(b.mejora) || 0), 0);
+    const totalTerreno = buckets.reduce((acc, b) => acc + (Number(b.terreno) || 0), 0);
+    if (!tempSelectedCategoria) {
+      if (totalMejora > 0) setTempSelectedCategoria("mejora");
+      else if (totalTerreno > 0) setTempSelectedCategoria("terreno");
+    }
+  }, [tempAvance, tempSelectedCategoria]);
+
+  const detalleParamsKey = JSON.stringify({
+    proyectoId: id,
+    fechaInicio: fechaInicio,
+    fechaFin: fechaFin,
+    granularidad: tempGranularidad,
+    categoria: tempSelectedCategoria,
+    modo: tempModoDetalle,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+  });
+
+  useEffect(() => {
+    if (!id || !tempSelectedCategoria) {
+      setTempDetalle(null);
+      return;
+    }
+    let cancelled = false;
+    setTempLoadingDetalle(true);
+    setTempErrorDetalle("");
+    gvGetDetalleTemporal({
+      proyectoId: id,
+      fechaInicio: fechaInicio,
+      fechaFin: fechaFin,
+      granularidad: tempGranularidad,
+      categoria: tempSelectedCategoria,
+      modo: tempModoDetalle,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setTempDetalle(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setTempErrorDetalle(String(e?.message || e));
+        setTempDetalle(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTempLoadingDetalle(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, detalleParamsKey]);
+
+  useEffect(() => {
+    setMapFilters((prev) => ({
+      ...prev,
+      fechaInicio,
+      fechaFin,
+    }));
+  }, [fechaInicio, fechaFin]);
 
   useEffect(() => {
     if (qDebounceRef.current) {
@@ -391,15 +625,15 @@ export default function GVCatastroDashboard() {
               <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#198754" }}>
                 <h5 className="text-success mb-3">Cobertura</h5>
                 <div className="d-flex justify-content-between mb-2">
-                  <span className="gv-muted">Meta (Target)</span>
+                  <span className="gv-muted">Meta (Universo)</span>
                   <span className="gv-kpi text-dark">{hasDenom ? targetTotal : "—"}</span>
                 </div>
                 <div className="d-flex justify-content-between mb-2">
-                  <span className="gv-muted">Censados</span>
+                  <span className="gv-muted">Relevados</span>
                   <span className="gv-kpi text-dark">{censados}</span>
                 </div>
                 <div className="d-flex justify-content-between mb-2">
-                  <span className="gv-muted">Brecha</span>
+                  <span className="gv-muted">Pendientes</span>
                   <span className="gv-kpi text-secondary">{hasDenom ? gap : "—"}</span>
                 </div>
                 <div className="d-flex justify-content-between mt-3 pt-3 border-top">
@@ -411,18 +645,78 @@ export default function GVCatastroDashboard() {
               </div>
             </div>
 
-            {/* Card 2: Composición */}
+            {/* Card 2: Temporal */}
             <div className="col-md-4">
               <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#0d6efd" }}>
-                <h5 className="text-primary mb-3">Composición</h5>
-                <div className="d-flex justify-content-between mb-2">
-                  <span className="gv-muted">Mejoras</span>
-                  <span className="gv-kpi text-dark">{data.by_tipo?.mejora || 0}</span>
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <h5 className="text-primary mb-0">Temporal</h5>
+                  <div className="d-flex gap-2">
+                    <select
+                      className="form-select form-select-sm"
+                      value={tempGranularidad}
+                      onChange={(e) => setTempGranularidad(e.target.value)}
+                    >
+                      <option value="dia">Dia</option>
+                      <option value="semana">Semana</option>
+                      <option value="mes">Mes</option>
+                    </select>
+                  </div>
                 </div>
-                <div className="d-flex justify-content-between mb-2">
-                  <span className="gv-muted">Terrenos</span>
-                  <span className="gv-kpi text-dark">{data.by_tipo?.terreno || 0}</span>
+                <div className="row g-2 mb-2">
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha inicio</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaInicio}
+                      onChange={(e) => setFechaInicio(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha fin</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaFin}
+                      onChange={(e) => setFechaFin(e.target.value)}
+                    />
+                  </div>
                 </div>
+                <div className="d-flex align-items-center gap-2 mb-2">
+                  <label className="form-label small mb-0">Modo</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={tempModoDetalle}
+                    onChange={(e) => setTempModoDetalle(e.target.value)}
+                  >
+                    <option value="fases">Fases</option>
+                    <option value="dbi">DBI</option>
+                  </select>
+                </div>
+
+                {temporalFilterBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Universo actual: {temporalFilterBadges.join(" / ")}
+                  </div>
+                )}
+                {temporalSecondaryBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Filtros activos en mapa (no afectan temporal): {temporalSecondaryBadges.join(" / ")}
+                  </div>
+                )}
+
+                <GVTemporalCharts
+                  avance={tempAvance}
+                  detalle={tempDetalle}
+                  selectedCategoria={tempSelectedCategoria}
+                  modoDetalle={tempModoDetalle}
+                  onSelectCategoria={setTempSelectedCategoria}
+                  isFiltered={temporalFilterBadges.length > 0}
+                  loadingAvance={tempLoadingAvance}
+                  loadingDetalle={tempLoadingDetalle}
+                  errorAvance={tempErrorAvance}
+                  errorDetalle={tempErrorDetalle}
+                />
               </div>
             </div>
 
@@ -455,7 +749,7 @@ export default function GVCatastroDashboard() {
                           <div className="fw-semibold">{t.descripcion}</div>
                           <div className="d-flex justify-content-between small">
                             <span>Universo: {t.universo || "--"}</span>
-                            <span>Censados: {t.censados}</span>
+                            <span>Relevados: {t.censados}</span>
                           </div>
                           <div className="small text-muted">{t.pct.toFixed(1)}%</div>
                         </button>
@@ -523,7 +817,7 @@ export default function GVCatastroDashboard() {
             </button>
           </div>
           <p className="small text-muted mb-3">
-            F0 = Censo sin documentación | F1 = Documentación | Final = Carpeta finalizada
+            F0 = Relevamiento | F1 = Documentación | Final = Carpeta finalizada
           </p>
           <div className="row g-4">
             {/* Tabla Mejora */}
@@ -609,13 +903,51 @@ export default function GVCatastroDashboard() {
         </div>
       </div>
 
+      <GVEconomicPanel
+        data={ecoData}
+        loading={ecoLoading}
+        error={ecoError}
+        contextLabel={economicoContext.length > 0 ? `Universo actual: ${economicoContext.join(" / ")}` : "Universo actual: sin filtros"}
+      />
+
       {/* Row map layout and Filters */}
       <div className="card shadow-sm mt-4 mb-4">
         <div className="card-body bg-light">
           <h5 className="card-title text-secondary mb-3">Filtros del Mapa</h5>
+          <div className="row g-2 mb-2">
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha inicio</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaInicio}
+                onChange={(e) => setFechaInicio(e.target.value)}
+              />
+            </div>
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha fin</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaFin}
+                onChange={(e) => setFechaFin(e.target.value)}
+              />
+            </div>
+          </div>
           <div className="mb-2">
-            {Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "") ? (
-              <small className="text-muted">Filtros activos</small>
+            {anyMapFiltersActive ? (
+              <div className="d-flex flex-wrap align-items-center gap-2">
+                <small className="text-muted">Filtros activos:</small>
+                {mapFilterBadges.length > 0 ? (
+                  mapFilterBadges.map((label) => (
+                    <span key={label} className="badge bg-light text-dark border">
+                      {label}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-muted small">Otros filtros activos</span>
+                )}
+              </div>
             ) : (
               <small className="text-muted">Sin filtros</small>
             )}
