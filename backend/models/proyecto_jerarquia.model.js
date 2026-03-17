@@ -29,7 +29,7 @@ const getJerarquia = async (idProyecto) => {
 
   // 2. Traer todos los subtramos de esos tramos en un solo query
   const subtramosRes = await pool.query(
-    `SELECT id_proyecto_subtramo, id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max
+    `SELECT id_proyecto_subtramo, id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max, id_vial_subtramo
      FROM ema.proyecto_subtramos
      WHERE id_proyecto_tramo = ANY($1::int[])
      ORDER BY id_proyecto_tramo ASC, orden ASC, id_proyecto_subtramo ASC`,
@@ -199,8 +199,9 @@ const saveJerarquia = async (idProyecto, tramos) => {
             `UPDATE ema.proyecto_subtramos
              SET descripcion = $1, cantidad_universo = $2, orden = $3,
                  fecha_limite = CASE WHEN $4 THEN $5::date ELSE fecha_limite END,
-                 fecha_max = CASE WHEN $6 THEN $7::date ELSE fecha_max END
-             WHERE id_proyecto_subtramo = $8 AND id_proyecto_tramo = $9`,
+                 fecha_max = CASE WHEN $6 THEN $7::date ELSE fecha_max END,
+                 id_vial_subtramo = $8
+             WHERE id_proyecto_subtramo = $9 AND id_proyecto_tramo = $10`,
             [
               s.descripcion || "",
               parseOptInt(s.cantidad_universo, null),
@@ -209,6 +210,7 @@ const saveJerarquia = async (idProyecto, tramos) => {
               fLim.value,
               fMax.present,
               fMax.value,
+              parseOptInt(s.id_vial_subtramo, null),
               idS,
               idTramoReal,
             ]
@@ -218,8 +220,8 @@ const saveJerarquia = async (idProyecto, tramos) => {
           const fMax = parseOptDatePresence(s, "fecha_max");
 
           await client.query(
-            `INSERT INTO ema.proyecto_subtramos (id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max)
-             VALUES ($1, $2, $3, $4, $5::date, $6::date)`,
+            `INSERT INTO ema.proyecto_subtramos (id_proyecto_tramo, descripcion, cantidad_universo, orden, fecha_limite, fecha_max, id_vial_subtramo)
+             VALUES ($1, $2, $3, $4, $5::date, $6::date, $7)`,
             [
               idTramoReal,
               s.descripcion || "",
@@ -227,6 +229,7 @@ const saveJerarquia = async (idProyecto, tramos) => {
               parseOptInt(s.orden, 0),
               fLim.present ? fLim.value : null,
               fMax.present ? fMax.value : null,
+              parseOptInt(s.id_vial_subtramo, null),
             ]
           );
         }

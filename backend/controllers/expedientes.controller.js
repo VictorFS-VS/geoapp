@@ -111,10 +111,15 @@ function parseOptionalBoolean(raw, fieldName) {
   throw err;
 }
 
+function isRemoteUrl(url) {
+  return /^https?:\/\//i.test(String(url || "").trim());
+}
+
 function resolveAbsolutePath(url) {
   if (!url) return null;
   const raw = String(url).trim();
   if (!raw) return null;
+  if (isRemoteUrl(raw)) return null;
 
   const normalized = raw.replace(/\\/g, "/");
   const lower = normalized.toLowerCase();
@@ -149,6 +154,28 @@ function resolveAbsolutePath(url) {
   }
 
   return path.join(__dirname, "..", "uploads", p);
+}
+
+function resolveRecoveredRemotePath(url) {
+  if (!isRemoteUrl(url)) return null;
+  try {
+    const parsed = new URL(String(url).trim());
+    const pathname = parsed.pathname.replace(/\\/g, "/");
+    const segments = pathname
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => sanitizeFilename(segment));
+    const filename = segments.length ? segments.pop() : "archivo_remoto";
+    return path.join(
+      BASE_UPLOAD_DIR,
+      "recovered",
+      sanitizeFolder(parsed.hostname) || "host",
+      ...segments,
+      sanitizeFilename(filename)
+    );
+  } catch {
+    return null;
+  }
 }
 
 function sendInline(res, absPath, filename) {
@@ -451,6 +478,8 @@ exports.listByProyecto = async (req, res) => {
       ` AND (` +
       `propietario_nombre ILIKE $${idx} OR ` +
       `propietario_ci ILIKE $${idx} OR ` +
+      `pareja_nombre ILIKE $${idx} OR ` +
+      `pareja_ci ILIKE $${idx} OR ` +
       `codigo_exp ILIKE $${idx} OR ` +
       `codigo_censo ILIKE $${idx} OR ` +
       `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${idx}` +
@@ -506,6 +535,8 @@ exports.create = async (req, res) => {
          codigo_exp,
          propietario_nombre,
          propietario_ci,
+         pareja_nombre,
+         pareja_ci,
          tramo,
          subtramo,
          id_tramo,
@@ -528,6 +559,8 @@ exports.create = async (req, res) => {
         b.codigo_exp || null,
         b.propietario_nombre || null,
         b.propietario_ci || null,
+        cleanStr(b.pareja_nombre),
+        cleanStr(b.pareja_ci),
         resTramo.tramo,
         resTramo.subtramo,
         resTramo.id_tramo,
@@ -570,11 +603,13 @@ exports.update = async (req, res) => {
       "codigo_exp=$4",
       "propietario_nombre=$5",
       "propietario_ci=$6",
-      "tramo=$7",
-      "subtramo=$8",
-      "id_tramo=$9",
-      "id_sub_tramo=$10",
-      "codigo_censo=$11",
+      "pareja_nombre=$7",
+      "pareja_ci=$8",
+      "tramo=$9",
+      "subtramo=$10",
+      "id_tramo=$11",
+      "id_sub_tramo=$12",
+      "codigo_censo=$13",
     ];
 
     const params = [
@@ -584,6 +619,8 @@ exports.update = async (req, res) => {
       b.codigo_exp || null,
       b.propietario_nombre || null,
       b.propietario_ci || null,
+      cleanStr(b.pareja_nombre),
+      cleanStr(b.pareja_ci),
       resTramo.tramo,
       resTramo.subtramo,
       resTramo.id_tramo,
@@ -591,8 +628,8 @@ exports.update = async (req, res) => {
       resTramo.codigo_censo,
     ];
 
-    // reset to 12 because we removed 4 columns
-    let idx = 12;
+    // reset to 14 because we added 2 columns
+    let idx = 14;
 
     if (parteA.present) {
       sets.push(`parte_a=$${idx}`);
@@ -892,7 +929,7 @@ exports.verDocInline = async (req, res) => {
   if (!rows.length) return res.status(404).json({ message: "No encontrado" });
 
   const rec = rows[0];
-  const abs = resolveAbsolutePath(rec.url);
+  const abs = resolveAbsolutePath(rec.url) || resolveRecoveredRemotePath(rec.url);
   if (!abs || !(await fs.pathExists(abs))) {
     return res.status(404).json({ message: "Archivo no existe en disco" });
   }
@@ -912,7 +949,7 @@ exports.descargarDoc = async (req, res) => {
   if (!rows.length) return res.status(404).json({ message: "No encontrado" });
 
   const rec = rows[0];
-  const abs = resolveAbsolutePath(rec.url);
+  const abs = resolveAbsolutePath(rec.url) || resolveRecoveredRemotePath(rec.url);
   if (!abs || !(await fs.pathExists(abs))) {
     return res.status(404).json({ message: "Archivo no existe en disco" });
   }
@@ -926,7 +963,7 @@ exports.eliminarDoc = async (req, res) => {
 
   if (!rows.length) return res.status(404).json({ message: "Documento no encontrado." });
 
-  const abs = resolveAbsolutePath(rows[0].url);
+  const abs = resolveAbsolutePath(rows[0].url) || resolveRecoveredRemotePath(rows[0].url);
   if (abs && (await fs.pathExists(abs))) {
     try {
       await fs.remove(abs);
@@ -1284,6 +1321,669 @@ exports.geojsonMejoras = async (req, res) => {
 // ✅ IMPORT EXCEL
 // =====================
 exports.importExcel = async (req, res) => {
+  const idProyecto = Number(req.params.idProyecto);
+  const { rows } = req.body || {};
+
+  if (!idProyecto) {
+    return res.status(400).json({ message: "idProyecto inválido" });
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ message: "Body inválido: rows vacío" });
+  }
+
+  function isNonSignificant(v) {
+    if (v === null || v === undefined) return true;
+    const s = String(v).trim();
+    if (!s) return true;
+    return /^0+$/.test(s);
+  }
+
+  function normalizeSignificant(v) {
+    return isNonSignificant(v) ? null : String(v).trim();
+  }
+
+  const normalized = rows.map((r, idx) => ({
+    _rowIndex: idx + 1,
+    id_proyecto: idProyecto,
+    fecha_relevamiento: isYmd(r.fecha_relevamiento) ? String(r.fecha_relevamiento).trim() : null,
+    gps: cleanStr(r.gps),
+    tecnico: cleanStr(r.tecnico),
+    codigo_exp: normalizeSignificant(r.codigo_exp),
+    codigo_censo: normalizeSignificant(r.codigo_censo),
+    propietario_nombre: cleanStr(r.propietario_nombre),
+    propietario_ci: normalizeSignificant(r.propietario_ci),
+    pareja_nombre: cleanStr(r.pareja_nombre),
+    pareja_ci: normalizeSignificant(r.pareja_ci),
+    id_import: normalizeSignificant(r.id_import ?? r.id_informe),
+    tramo: cleanStr(r.tramo),
+    subtramo: cleanStr(r.subtramo),
+    ci_propietario_frente_url: normalizeSignificant(r.ci_propietario_frente_url),
+    ci_propietario_dorso_url: normalizeSignificant(r.ci_propietario_dorso_url),
+    ci_adicional_frente_url: normalizeSignificant(r.ci_adicional_frente_url),
+    ci_adicional_dorso_url: normalizeSignificant(r.ci_adicional_dorso_url),
+  }));
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const insertSql = `
+      INSERT INTO ema.expedientes
+      (
+        id_proyecto,
+        id_import,
+        fecha_relevamiento,
+        gps,
+        tecnico,
+        codigo_exp,
+        codigo_censo,
+        propietario_nombre,
+        propietario_ci,
+        pareja_nombre,
+        pareja_ci,
+        id_tramo,
+        id_sub_tramo,
+        tramo,
+        subtramo
+      )
+      VALUES
+      (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+      )
+      RETURNING id_expediente
+    `;
+
+    let inserted = 0;
+    let updated_by_id_import = 0;
+    let updated_by_codigo_exp = 0;
+    let updated_by_codigo_censo = 0;
+    let rejected = 0;
+    const errors = [];
+    const warnings = [];
+    const postCommitWarnings = [];
+    let documentsInserted = 0;
+    let documentsSkippedExisting = 0;
+    let documentsRecovered = 0;
+    const affectedExpedientes = new Set();
+    const attemptedRemoteRecoveries = new Set();
+
+    function normalizeCatalogText(v) {
+      if (!v) return "";
+      return v
+        .toString()
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    const tramosByName = new Map();
+    const subtramosByName = new Map();
+
+    const { rows: tramos } = await client.query(
+      `SELECT id_proyecto_tramo, descripcion
+         FROM ema.proyecto_tramos
+        WHERE id_proyecto = $1`,
+      [idProyecto]
+    );
+
+    const { rows: subtramos } = await client.query(
+      `SELECT st.id_proyecto_subtramo, st.id_proyecto_tramo, st.descripcion
+         FROM ema.proyecto_subtramos st
+         JOIN ema.proyecto_tramos t ON t.id_proyecto_tramo = st.id_proyecto_tramo
+        WHERE t.id_proyecto = $1`,
+      [idProyecto]
+    );
+
+    const pushToMap = (map, key, value) => {
+      if (!key) return;
+      const list = map.get(key) || [];
+      list.push(value);
+      map.set(key, list);
+    };
+
+    tramos.forEach((t) =>
+      pushToMap(tramosByName, normalizeCatalogText(t.descripcion), {
+        id: t.id_proyecto_tramo,
+        descripcion: t.descripcion,
+      })
+    );
+
+    subtramos.forEach((st) =>
+      pushToMap(subtramosByName, normalizeCatalogText(st.descripcion), {
+        id: st.id_proyecto_subtramo,
+        id_tramo: st.id_proyecto_tramo,
+        descripcion: st.descripcion,
+      })
+    );
+
+    const resolveTramoSubtramo = (rawTramo, rawSubtramo, rowIndex) => {
+      const tramoKey = normalizeCatalogText(rawTramo);
+      const subKey = normalizeCatalogText(rawSubtramo);
+      const tramoMatches = tramoKey ? tramosByName.get(tramoKey) || [] : [];
+      const subMatches = subKey ? subtramosByName.get(subKey) || [] : [];
+      const hasExplicitTramo = Boolean(tramoKey);
+
+      let tramoResolved = null;
+      let subResolved = null;
+      let shouldClearSubtramo = false;
+
+      if (tramoMatches.length > 1) {
+        warnings.push({
+          row: rowIndex,
+          type: "ambiguous_tramo",
+          message: "Tramo ambiguo (m\u00e1s de una coincidencia)",
+          value: rawTramo,
+        });
+      } else if (tramoMatches.length === 1) {
+        tramoResolved = tramoMatches[0];
+      } else if (rawTramo) {
+        warnings.push({
+          row: rowIndex,
+          type: "unresolved_tramo",
+          message: "Tramo no resuelto en cat\u00e1logo",
+          value: rawTramo,
+        });
+      }
+
+      if (subMatches.length > 1) {
+        warnings.push({
+          row: rowIndex,
+          type: "ambiguous_subtramo",
+          message: "Subtramo ambiguo (m\u00e1s de una coincidencia)",
+          value: rawSubtramo,
+        });
+      } else if (subMatches.length === 1) {
+        subResolved = subMatches[0];
+      } else if (rawSubtramo) {
+        warnings.push({
+          row: rowIndex,
+          type: "unresolved_subtramo",
+          message: "Subtramo no resuelto en cat\u00e1logo",
+          value: rawSubtramo,
+        });
+      }
+
+      if (subResolved && tramoResolved) {
+        if (subResolved.id_tramo !== tramoResolved.id) {
+          shouldClearSubtramo = true;
+          warnings.push({
+            row: rowIndex,
+            type: "corrected_hierarchy",
+            message: "Subtramo descartado por inconsistencia jer\u00e1rquica. Se conserva solo el tramo.",
+            value: { tramo: rawTramo, subtramo: rawSubtramo },
+          });
+          subResolved = null;
+        }
+      } else if (subResolved && !tramoResolved && !hasExplicitTramo) {
+        tramoResolved = tramos.find((t) => t.id_proyecto_tramo === subResolved.id_tramo) || null;
+        if (tramoResolved) {
+          warnings.push({
+            row: rowIndex,
+            type: "inferred_tramo",
+            message: "Tramo inferido desde subtramo",
+            value: rawSubtramo,
+          });
+        }
+      } else if (subResolved && !tramoResolved && hasExplicitTramo) {
+        shouldClearSubtramo = true;
+        warnings.push({
+          row: rowIndex,
+          type: "corrected_hierarchy",
+          message: "Subtramo descartado por inconsistencia jer\u00e1rquica. Se conserva el tramo textual sin ID de subtramo.",
+          value: { tramo: rawTramo, subtramo: rawSubtramo },
+        });
+        subResolved = null;
+      }
+
+      if (!subResolved && rawSubtramo) {
+        shouldClearSubtramo = true;
+      }
+
+      if (!tramoResolved && !subResolved && (rawTramo || rawSubtramo)) {
+        warnings.push({
+          row: rowIndex,
+          type: "unresolved_tramo_subtramo",
+          message: "No se resolvi\u00f3 tramo/subtramo en cat\u00e1logo",
+          value: { tramo: rawTramo, subtramo: rawSubtramo },
+        });
+      }
+
+      return {
+        id_tramo: tramoResolved ? tramoResolved.id : null,
+        id_sub_tramo: subResolved ? subResolved.id : null,
+        resolvedTramo: Boolean(tramoResolved),
+        resolvedSubtramo: Boolean(subResolved),
+        shouldClearSubtramo,
+      };
+    };
+
+    const buildDocNameFromUrl = (url, fallbackLabel) => {
+      const raw = String(url || "").trim();
+      if (!raw) return sanitizeFilename(fallbackLabel);
+      const noQuery = raw.split("?")[0];
+      const base = path.basename(noQuery);
+      if (base && base !== "." && base !== "..") return sanitizeFilename(base);
+      return sanitizeFilename(fallbackLabel);
+    };
+
+    const downloadRemoteDocument = async (url, absolutePath) => {
+      if (!absolutePath) {
+        return { ok: false, reason: "Ruta local de recuperacion no disponible" };
+      }
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          return { ok: false, reason: `Descarga remota fallida (${response.status})` };
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        await fs.ensureDir(path.dirname(absolutePath));
+        await fs.writeFile(absolutePath, Buffer.from(arrayBuffer));
+        documentsRecovered += 1;
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: String(e?.message || e) };
+      }
+    };
+
+    const upsertImportDoc = async (idExpediente, subcarpeta, url, fallbackLabel) => {
+      if (!url) return;
+      const { rows: existingDocs } = await client.query(
+        `SELECT id_archivo
+           FROM ema.tumba
+          WHERE tipo_documento = 'expedientes'
+            AND id_documento = $1
+            AND COALESCE(subcarpeta,'') = COALESCE($2,'')
+            AND url = $3
+          LIMIT 1`,
+        [idExpediente, subcarpeta || null, url]
+      );
+
+      if (existingDocs.length) {
+        const abs = resolveAbsolutePath(url);
+        const recoveredAbs = resolveRecoveredRemotePath(url);
+        const existsOnDisk =
+          (abs ? await fs.pathExists(abs) : false) ||
+          (recoveredAbs ? await fs.pathExists(recoveredAbs) : false);
+
+        if (existsOnDisk) {
+          documentsSkippedExisting += 1;
+          return;
+        }
+
+        if (isRemoteUrl(url)) {
+          if (!attemptedRemoteRecoveries.has(url)) {
+            attemptedRemoteRecoveries.add(url);
+            const recovered = await downloadRemoteDocument(url, recoveredAbs);
+            if (recovered.ok) {
+              documentsSkippedExisting += 1;
+              return;
+            }
+            warnings.push({
+              row: fallbackLabel,
+              type: "missing_existing_document",
+              message: "Documento existente en BD sin archivo local; no se pudo recrear desde URL remota",
+              value: { url, detail: recovered.reason || null },
+            });
+            return;
+          }
+
+          if (recoveredAbs && (await fs.pathExists(recoveredAbs))) {
+            documentsSkippedExisting += 1;
+            return;
+          }
+
+          warnings.push({
+            row: fallbackLabel,
+            type: "missing_existing_document",
+            message: "Documento existente en BD sin archivo local; la descarga remota no dejó archivo recuperado",
+            value: { url },
+          });
+          return;
+        }
+
+        warnings.push({
+          row: fallbackLabel,
+          type: "missing_existing_document",
+          message: "Documento registrado en BD pero archivo no encontrado",
+          value: { url },
+        });
+        return;
+      }
+
+      const nombre = buildDocNameFromUrl(url, fallbackLabel);
+      await client.query(
+        `INSERT INTO ema.tumba (id_documento, tipo_documento, id_tipo, subcarpeta, url, nombre_archivo)
+         VALUES ($1, 'expedientes', 5, $2, $3, $4)`,
+        [idExpediente, subcarpeta || null, url, nombre]
+      );
+      documentsInserted += 1;
+    };
+
+    for (const r of normalized) {
+      if (!r.fecha_relevamiento) {
+        rejected += 1;
+        errors.push({
+          row: r._rowIndex,
+          reason: "fecha_relevamiento es obligatoria y debe tener formato YYYY-MM-DD",
+          identity: {
+            id_import: r.id_import,
+            codigo_exp: r.codigo_exp,
+            codigo_censo: r.codigo_censo,
+          },
+        });
+        continue;
+      }
+
+      const hasIdentity = Boolean(r.id_import || r.codigo_exp || r.codigo_censo);
+      if (!hasIdentity) {
+        rejected += 1;
+        errors.push({
+          row: r._rowIndex,
+          reason: "Sin identidad suficiente (id_import/codigo_exp/codigo_censo)",
+          identity: {
+            id_import: r.id_import,
+            codigo_exp: r.codigo_exp,
+            codigo_censo: r.codigo_censo,
+          },
+        });
+        continue;
+      }
+
+      const tramoResolution = resolveTramoSubtramo(r.tramo, r.subtramo, r._rowIndex);
+
+      let matchType = null;
+      let existing = null;
+
+      if (r.id_import) {
+        const { rows: found } = await client.query(
+          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
+             FROM ema.expedientes
+            WHERE id_proyecto = $1 AND id_import = $2`,
+          [r.id_proyecto, r.id_import]
+        );
+        if (found.length > 1) {
+          rejected += 1;
+          errors.push({
+            row: r._rowIndex,
+            reason: "id_import ambiguo (mÃ¡s de un expediente)",
+            identity: { id_import: r.id_import },
+          });
+          continue;
+        }
+        if (found.length === 1) {
+          matchType = "id_import";
+          existing = found[0];
+        }
+      }
+
+      if (!existing && r.codigo_exp) {
+        const { rows: found } = await client.query(
+          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
+             FROM ema.expedientes
+            WHERE id_proyecto = $1 AND codigo_exp = $2`,
+          [r.id_proyecto, r.codigo_exp]
+        );
+        if (found.length > 0) {
+          matchType = "codigo_exp";
+          existing = found[0];
+        }
+      }
+
+      if (!existing && r.codigo_censo) {
+        const { rows: found } = await client.query(
+          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
+             FROM ema.expedientes
+            WHERE id_proyecto = $1 AND codigo_censo = $2`,
+          [r.id_proyecto, r.codigo_censo]
+        );
+        if (found.length > 1) {
+          rejected += 1;
+          errors.push({
+            row: r._rowIndex,
+            reason: "codigo_censo ambiguo (mÃ¡s de un expediente)",
+            identity: { codigo_censo: r.codigo_censo },
+          });
+          continue;
+        }
+        if (found.length === 1) {
+          matchType = "codigo_censo";
+          existing = found[0];
+        }
+      }
+
+      if (!existing) {
+        const q = await client.query(insertSql, [
+          r.id_proyecto,
+          r.id_import,
+          r.fecha_relevamiento,
+          r.gps,
+          r.tecnico,
+          r.codigo_exp,
+          r.codigo_censo,
+          r.propietario_nombre,
+          r.propietario_ci,
+          r.pareja_nombre,
+          r.pareja_ci,
+          tramoResolution.id_tramo,
+          tramoResolution.id_sub_tramo,
+          r.tramo,
+          r.subtramo,
+        ]);
+
+        if (q.rowCount > 0) {
+          inserted += 1;
+          const idExpediente = q.rows[0]?.id_expediente;
+          if (idExpediente) {
+            affectedExpedientes.add(Number(idExpediente));
+            await upsertImportDoc(
+              idExpediente,
+              "ci",
+              r.ci_propietario_frente_url,
+              `ci_titular_frente_${r._rowIndex}`
+            );
+            await upsertImportDoc(
+              idExpediente,
+              "ci",
+              r.ci_propietario_dorso_url,
+              `ci_titular_dorso_${r._rowIndex}`
+            );
+            await upsertImportDoc(
+              idExpediente,
+              "ci_pareja",
+              r.ci_adicional_frente_url,
+              `ci_cotitular_frente_${r._rowIndex}`
+            );
+            await upsertImportDoc(
+              idExpediente,
+              "ci_pareja",
+              r.ci_adicional_dorso_url,
+              `ci_cotitular_dorso_${r._rowIndex}`
+            );
+          }
+        }
+        continue;
+      }
+
+      if (r.id_import && existing.id_import && String(existing.id_import) !== String(r.id_import)) {
+        rejected += 1;
+        errors.push({
+          row: r._rowIndex,
+          reason: "Conflicto de identidad: id_import distinto en expediente existente",
+          identity: {
+            id_import: r.id_import,
+            existing_id_import: existing.id_import,
+          },
+        });
+        continue;
+      }
+
+      const sets = ["fecha_relevamiento=$1", "updated_at=now()"];
+      const params = [r.fecha_relevamiento];
+      let idx = 2;
+
+      if (r.gps) {
+        sets.push(`gps=$${idx}`);
+        params.push(r.gps);
+        idx += 1;
+      }
+      if (r.tecnico) {
+        sets.push(`tecnico=$${idx}`);
+        params.push(r.tecnico);
+        idx += 1;
+      }
+      if (r.propietario_nombre) {
+        sets.push(`propietario_nombre=$${idx}`);
+        params.push(r.propietario_nombre);
+        idx += 1;
+      }
+      if (r.propietario_ci) {
+        sets.push(`propietario_ci=$${idx}`);
+        params.push(r.propietario_ci);
+        idx += 1;
+      }
+      if (r.pareja_nombre) {
+        sets.push(`pareja_nombre=$${idx}`);
+        params.push(r.pareja_nombre);
+        idx += 1;
+      }
+      if (r.pareja_ci) {
+        sets.push(`pareja_ci=$${idx}`);
+        params.push(r.pareja_ci);
+        idx += 1;
+      }
+      if (tramoResolution.resolvedTramo) {
+        sets.push(`id_tramo=$${idx}`);
+        params.push(tramoResolution.id_tramo);
+        idx += 1;
+      }
+      if (tramoResolution.resolvedSubtramo) {
+        sets.push(`id_sub_tramo=$${idx}`);
+        params.push(tramoResolution.id_sub_tramo);
+        idx += 1;
+      } else if (tramoResolution.shouldClearSubtramo) {
+        sets.push(`id_sub_tramo=$${idx}`);
+        params.push(null);
+        idx += 1;
+      }
+      if (r.tramo) {
+        sets.push(`tramo=$${idx}`);
+        params.push(r.tramo);
+        idx += 1;
+      }
+      if (r.subtramo) {
+        sets.push(`subtramo=$${idx}`);
+        params.push(r.subtramo);
+        idx += 1;
+      }
+      if (r.codigo_exp && isNonSignificant(existing.codigo_exp)) {
+        sets.push(`codigo_exp=$${idx}`);
+        params.push(r.codigo_exp);
+        idx += 1;
+      }
+      if (r.codigo_censo && isNonSignificant(existing.codigo_censo)) {
+        sets.push(`codigo_censo=$${idx}`);
+        params.push(r.codigo_censo);
+        idx += 1;
+      }
+      if (r.id_import && isNonSignificant(existing.id_import)) {
+        sets.push(`id_import=$${idx}`);
+        params.push(r.id_import);
+        idx += 1;
+      }
+
+      const q = await client.query(
+        `UPDATE ema.expedientes SET ${sets.join(", ")} WHERE id_expediente=$${idx} RETURNING id_expediente`,
+        [...params, existing.id_expediente]
+      );
+
+      if (q.rowCount > 0) {
+        const idExpediente = q.rows[0]?.id_expediente;
+        if (idExpediente) {
+          affectedExpedientes.add(Number(idExpediente));
+          await upsertImportDoc(
+            idExpediente,
+            "ci",
+            r.ci_propietario_frente_url,
+            `ci_titular_frente_${r._rowIndex}`
+          );
+          await upsertImportDoc(
+            idExpediente,
+            "ci",
+            r.ci_propietario_dorso_url,
+            `ci_titular_dorso_${r._rowIndex}`
+          );
+          await upsertImportDoc(
+            idExpediente,
+            "ci_pareja",
+            r.ci_adicional_frente_url,
+            `ci_cotitular_frente_${r._rowIndex}`
+          );
+          await upsertImportDoc(
+            idExpediente,
+            "ci_pareja",
+            r.ci_adicional_dorso_url,
+            `ci_cotitular_dorso_${r._rowIndex}`
+          );
+        }
+        if (matchType === "id_import") updated_by_id_import += 1;
+        if (matchType === "codigo_exp") updated_by_codigo_exp += 1;
+        if (matchType === "codigo_censo") updated_by_codigo_censo += 1;
+      }
+    }
+
+    await client.query("COMMIT");
+
+    // Corre post-commit para evitar lock cruzado entre el client transaccional
+    // del import y el pool.query interno usado por ensureEtapas().
+    for (const idExpediente of affectedExpedientes) {
+      try {
+        await ensureEtapas(idExpediente);
+      } catch (e) {
+        const message = `ensureEtapas falló para expediente ${idExpediente}`;
+        console.warn(`[EXP IMPORT] ${message}: ${String(e?.message || e)}`);
+        postCommitWarnings.push({
+          type: "ensure_etapas_failed",
+          id_expediente: idExpediente,
+          message,
+          detail: String(e?.message || e),
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      id_proyecto: idProyecto,
+      recibidos: rows.length,
+      validos: normalized.length - rejected,
+      inserted,
+      updated_by_id_import,
+      updated_by_codigo_exp,
+      updated_by_codigo_censo,
+      rejected,
+      errors,
+      warnings,
+      postCommitWarnings,
+      documentsInserted,
+      documentsSkippedExisting,
+      documentsRecovered,
+    });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    return res.status(500).json({
+      message: "Error importando",
+      detail: String(e?.message || e),
+    });
+  } finally {
+    client.release();
+  }
+};
+
+exports.importExcelLegacy = async (req, res) => {
   const idProyecto = Number(req.params.idProyecto);
   const { rows } = req.body || {};
 

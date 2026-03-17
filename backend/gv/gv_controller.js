@@ -197,7 +197,7 @@ async function catastroDashboard(req, res) {
             target_total = censados;
         }
 
-        const by_tipo = { mejora: 0, terreno: 0 };
+        const by_tipo = { mejora: 0, terreno: 0, sin_iniciar: 0 };
         const geo_stats = { con_poligono: 0, solo_punto: 0 };
 
         // Inicializar contadores de fases
@@ -206,6 +206,7 @@ async function catastroDashboard(req, res) {
         const phases = {
             mejora: { N: stagesMejora.length, counts: new Array(stagesMejora.length + 1).fill(0) },
             terreno: { N: stagesTerreno.length, counts: new Array(stagesTerreno.length + 1).fill(0) },
+            sin_iniciar: { N: 0, counts: [0] },
         };
 
         let invalid_sequence_total = 0;
@@ -224,24 +225,27 @@ async function catastroDashboard(req, res) {
             let stopCounting = false;
             const hasRelevamiento = !!row.fecha_relevamiento;
 
-            if (phases[tipoExp]) {
-                for (const key of stagesExp) {
-                    const isOk = !!carpeta[key]?.ok;
-                    if (isOk) {
-                        if (stopCounting) {
-                            invalid_sequence = true;
-                        } else {
-                            completed++;
-                        }
+            for (const key of stagesExp) {
+                const isOk = !!carpeta[key]?.ok;
+                if (isOk) {
+                    if (stopCounting) {
+                        invalid_sequence = true;
                     } else {
-                        stopCounting = true;
+                        completed++;
                     }
+                } else {
+                    stopCounting = true;
                 }
+            }
 
-                if (invalid_sequence) invalid_sequence_total++;
-                if (completed > 0 || hasRelevamiento) {
-                    phases[tipoExp].counts[completed]++;
+            if (invalid_sequence) invalid_sequence_total++;
+
+            if (tipoExp === "sin_iniciar") {
+                if (hasRelevamiento) {
+                    phases.sin_iniciar.counts[0]++;
                 }
+            } else if (phases[tipoExp] && (completed > 0 || hasRelevamiento)) {
+                phases[tipoExp].counts[completed]++;
             }
 
             let has_polygon = false;
@@ -371,6 +375,8 @@ async function catastroMap(req, res) {
             sql += ` AND (` +
                 `propietario_nombre ILIKE $${qIdx} OR ` +
                 `propietario_ci ILIKE $${qIdx} OR ` +
+                `pareja_nombre ILIKE $${qIdx} OR ` +
+                `pareja_ci ILIKE $${qIdx} OR ` +
                 `codigo_exp ILIKE $${qIdx} OR ` +
                 `codigo_censo ILIKE $${qIdx} OR ` +
                 `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${qIdx}` +
