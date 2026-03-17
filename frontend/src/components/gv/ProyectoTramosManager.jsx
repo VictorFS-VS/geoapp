@@ -164,6 +164,7 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                             id_proyecto_subtramo: generateTempId(),
                             descripcion: "",
                             cantidad_universo: "",
+                            id_vial_subtramo: "",
                             orden: 0,
                             fecha_limite: "",
                             fecha_max: ""
@@ -584,7 +585,7 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                                                     <Card key={sId} className="mb-2 border-primary border-opacity-25">
                                                         <Card.Body className="p-2">
                                                             <Row className="align-items-center">
-                                                                <Col md={6}>
+                                                                <Col md={4}>
                                                                     <Form.Control
                                                                         size="sm"
                                                                         placeholder="Descripción Subtramo"
@@ -592,7 +593,7 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                                                                         onChange={e => actualizarSubtramoLocally(tId, sId, "descripcion", e.target.value)}
                                                                     />
                                                                 </Col>
-                                                                <Col md={4}>
+                                                                <Col md={3}>
                                                                     <Form.Control
                                                                         size="sm"
                                                                         type="number"
@@ -600,6 +601,18 @@ export default function ProyectoTramosManager({ idProyecto, total = null, onTota
                                                                         value={sub.cantidad_universo || ""}
                                                                         onChange={e => actualizarSubtramoLocally(tId, sId, "cantidad_universo", e.target.value)}
                                                                     />
+                                                                </Col>
+                                                                <Col md={3}>
+                                                                    <Form.Select
+                                                                        size="sm"
+                                                                        value={sub.id_vial_subtramo || ""}
+                                                                        onChange={e => actualizarSubtramoLocally(tId, sId, "id_vial_subtramo", e.target.value)}
+                                                                    >
+                                                                        <option value="">Seleccionar tramo vial</option>
+                                                                        {catalogoVial.map(c => (
+                                                                            <option key={c.id} value={c.id}>{c.descripcion}</option>
+                                                                        ))}
+                                                                    </Form.Select>
                                                                 </Col>
                                                                 <Col md={2} className="text-end">
                                                                     <Button variant="outline-danger" size="sm" onClick={() => eliminarSubtramo(tId, sId)} title="Eliminar subtramo">

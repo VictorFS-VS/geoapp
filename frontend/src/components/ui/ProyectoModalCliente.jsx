@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { Modal, Button, Spinner } from "react-bootstrap";
+import { useAuth } from "@/auth/AuthContext";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const API_URL = BASE.endsWith("/api") ? BASE : BASE + "/api";
@@ -31,6 +32,7 @@ export default function ProyectoModal({ proyecto, children }) {
   const navigate = useNavigate();
   const outletCtx = useOutletContext() || {};
   const toggleSidebar = outletCtx.toggleSidebar || (() => {});
+  const { can } = useAuth();
 
   const open = () => setShow(true);
   const close = () => !busy && setShow(false);
@@ -97,6 +99,11 @@ export default function ProyectoModal({ proyecto, children }) {
   const esUsuario9 = tipoUsuario === 9;   // CLIENTE
   const esUsuario11 = tipoUsuario === 11; // ADMIN_CLIENTE
   const soloLectura = esUsuario9 || esUsuario10 || esUsuario11;
+  const puedeExpedientes =
+    can("expedientes.read") ||
+    can("expedientes.create") ||
+    can("expedientes.update") ||
+    can("expedientes.upload");
 
   const nombre = proyecto?.nombre || `Proyecto #${proyecto?.gid ?? "—"}`;
   const codigo = proyecto?.codigo ? `#${proyecto.codigo}` : "";
@@ -148,6 +155,17 @@ export default function ProyectoModal({ proyecto, children }) {
                 }
               >
                 {soloLectura ? "👁️ Ver Proyecto" : "✏️ Editar Proyecto"}
+              </Button>
+            )}
+
+            {puedeExpedientes && (
+              <Button
+                variant="dark"
+                className="w-100"
+                disabled={busy}
+                onClick={() => goTo(`/proyectos/${proyecto?.gid}/expedientes`)}
+              >
+                ➕ Expedientes
               </Button>
             )}
 

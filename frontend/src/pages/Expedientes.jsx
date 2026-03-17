@@ -13,8 +13,8 @@ import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
 import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "react-bootstrap";
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
+import { useAuth } from "@/auth/AuthContext";
 import { alerts } from "@/utils/alerts";
-import { hasPerm } from "@/utils/auth";
 import * as XLSX from "xlsx";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -166,6 +166,7 @@ function matchesTipoRule(nameOrBase, tipoCarpeta) {
 export default function Expedientes() {
   const { id } = useParams(); // id_proyecto
   const idProyecto = Number(id);
+  const { can } = useAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
   const didAutoOpenRef = useRef(false);
@@ -196,7 +197,11 @@ export default function Expedientes() {
   const [catastroLoading, setCatastroLoading] = useState(false);
   const [catastroError, setCatastroError] = useState("");
 
-  const canDeleteTotal = hasPerm("expedientes.delete");
+  const canCreate = can("expedientes.create");
+  const canUpdate = can("expedientes.update");
+  const canDelete = can("expedientes.delete");
+  const canUpload = can("expedientes.upload");
+  const canDeleteTotal = canDelete;
 
   const [form, setForm] = useState({
     id_proyecto: idProyecto,
@@ -206,6 +211,8 @@ export default function Expedientes() {
     codigo_exp: "",
     propietario_nombre: "",
     propietario_ci: "",
+    pareja_nombre: "",
+    pareja_ci: "",
     id_tramo: null,
     id_sub_tramo: null,
     codigo_censo: "",
@@ -234,7 +241,12 @@ export default function Expedientes() {
   const [tipoCarpeta, setTipoCarpeta] = useState("mejora");
   const [avaluoOpen, setAvaluoOpen] = useState(true);
 
-  const readonly = mode === "ver";
+  const readonly =
+    mode === "ver" ||
+    (mode === "crear" && !canCreate) ||
+    (mode === "editar" && !canUpdate);
+  const geometryEditable =
+    (mode === "editar" || mode === "crear") && canUpdate;
   const gpsFieldRef = useRef(null);
   const planoGeoReqSeqRef = useRef(0);
   const planoGeoReqKeyRef = useRef({});
@@ -341,7 +353,7 @@ export default function Expedientes() {
 
   const handleEliminarPlano = async () => {
     if (!current?.id_expediente) return;
-    if (readonly || currentGroupBlocked) return;
+    if (!geometryEditable || currentGroupBlocked) return;
     const ok = window.confirm("¿Eliminar el polígono del tipo activo?");
     if (!ok) return;
     try {
@@ -365,6 +377,8 @@ export default function Expedientes() {
     codigo_exp: row.codigo_exp || "",
     propietario_nombre: row.propietario_nombre || "",
     propietario_ci: row.propietario_ci || "",
+    pareja_nombre: row.pareja_nombre || "",
+    pareja_ci: row.pareja_ci || "",
     id_tramo: normalizePositiveId(row.id_tramo),
     id_sub_tramo: normalizePositiveId(row.id_sub_tramo),
     codigo_censo: row.codigo_censo || "",
@@ -780,6 +794,7 @@ export default function Expedientes() {
   // IMPORT EXCEL
   // =========================
   const EXP_FIELDS = [
+    { key: "id_import", label: "Codigo importacion", type: "text" },
     { key: "fecha_relevamiento", label: "Fecha relevamiento", type: "date" },
     { key: "gps", label: "GPS", type: "text" },
     { key: "tecnico", label: "Técnico", type: "text" },
@@ -798,11 +813,15 @@ export default function Expedientes() {
 
   const [showImport, setShowImport] = useState(false);
   const [excelCols, setExcelCols] = useState([]);
+  const [excelColumns, setExcelColumns] = useState([]);
   const [excelRows, setExcelRows] = useState([]);
   const [excelPreview, setExcelPreview] = useState([]);
+  const [excelWarnings, setExcelWarnings] = useState([]);
   const [mapCols, setMapCols] = useState({});
   const [importBusy, setImportBusy] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
+  const [importResult, setImportResult] = useState(null);
+  const [showImportDetails, setShowImportDetails] = useState(false);
 
   function norm(s) {
     return String(s || "")
@@ -829,6 +848,20 @@ export default function Expedientes() {
     };
 
     return {
+      id_import: pick(
+        "id_informe",
+        "id informe",
+        "id del informe",
+        "id_import",
+        "id import",
+        "codigo importacion",
+        "codigo de importacion",
+        "codigo importacion",
+        "codigo de importacion",
+        "codigo importacion",
+        "codigo de importacion"
+      ),
+
       fecha_relevamiento: pick(
         "Datos_Relevamiento_Fecha",
         "fecha",
@@ -974,9 +1007,18 @@ export default function Expedientes() {
           const wb = XLSX.read(data, { type: "array", cellDates: true });
           const sheetName = wb.SheetNames[0];
           const ws = wb.Sheets[sheetName];
-          const json = XLSX.utils.sheet_to_json(ws, { defval: "", raw: false });
-          const headers = json.length ? Object.keys(json[0]) : [];
-          resolve({ headers, rows: json });
+          const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+          const headerRow = Array.isArray(matrix[0]) ? matrix[0] : [];
+          const headers = headerRow.map((h) => String(h ?? "").trim());
+          const rows = matrix.slice(1).map((r) => {
+            const obj = {};
+            for (let i = 0; i < headers.length; i += 1) {
+              const key = headers[i] || `__col_${i}`;
+              obj[key] = r?.[i] ?? "";
+            }
+            return obj;
+          });
+          resolve({ headers, rows });
         } catch (err) {
           reject(err);
         }
@@ -987,6 +1029,9 @@ export default function Expedientes() {
 
   async function onExcelPicked(file) {
     setImportErrors([]);
+    setExcelWarnings([]);
+    setImportResult(null);
+    setShowImportDetails(false);
     try {
       const { headers, rows } = await parseExcelFile(file);
       if (!headers.length) {
@@ -997,7 +1042,40 @@ export default function Expedientes() {
         setImportErrors(["El Excel no tiene filas de datos."]);
         return;
       }
+      const columns = headers.map((h, index) => {
+        const headerOriginal = String(h ?? "").trim();
+        const sampleValue = rows.find((r) => {
+          const v = r[headerOriginal || `__col_${index}`];
+          return String(v ?? "").trim() !== "";
+        });
+        return {
+          index,
+          headerOriginal,
+          headerNormalized: norm(headerOriginal),
+          sampleValue: sampleValue ? sampleValue[headerOriginal || `__col_${index}`] : "",
+        };
+      });
+      const emptyHeaders = columns.filter((c) => !c.headerOriginal).map((c) => c.index + 1);
+      const headerCounts = new Map();
+      columns.forEach((c) => {
+        const key = c.headerOriginal.toLowerCase();
+        if (!key) return;
+        headerCounts.set(key, (headerCounts.get(key) || 0) + 1);
+      });
+      const duplicatedHeaders = Array.from(headerCounts.entries())
+        .filter(([, count]) => count > 1)
+        .map(([header]) => header);
+      const warnings = [];
+      if (emptyHeaders.length) {
+        warnings.push(`Se detectaron columnas sin encabezado (columnas: ${emptyHeaders.join(", ")}).`);
+      }
+      if (duplicatedHeaders.length) {
+        warnings.push(`Se detectaron encabezados duplicados: ${duplicatedHeaders.join(", ")}.`);
+      }
+      if (warnings.length) setExcelWarnings(warnings);
+
       setExcelCols(headers);
+      setExcelColumns(columns);
       setExcelRows(rows);
       setExcelPreview(rows.slice(0, 10));
 
@@ -1011,12 +1089,11 @@ export default function Expedientes() {
   }
 
   function buildMappedPayload() {
-    const errs = [];
-    const required = ["codigo_exp", "propietario_nombre"];
-    for (const k of required) {
-      if (!mapCols[k]) errs.push(`Falta mapear: ${k}`);
-    }
-    if (errs.length) return { ok: false, errs };
+    const isSignificant = (value) => {
+      const raw = String(value ?? "").trim();
+      if (!raw) return false;
+      return !/^0+$/.test(raw);
+    };
 
     const mapped = excelRows.map((r) => {
       const obj = { id_proyecto: idProyecto };
@@ -1036,11 +1113,19 @@ export default function Expedientes() {
       return obj;
     });
 
-    const cleaned = mapped.filter(
-      (x) =>
-        (x.codigo_exp && String(x.codigo_exp).trim() !== "") ||
-        (x.propietario_nombre && String(x.propietario_nombre).trim() !== "")
-    );
+    const cleaned = mapped.filter((x) => {
+      const hasCi = isSignificant(x.propietario_ci);
+      const hasCiImage =
+        isSignificant(x.ci_propietario_frente_url) ||
+        isSignificant(x.ci_propietario_dorso_url);
+
+      return (
+        isSignificant(x.fecha_relevamiento) &&
+        isSignificant(x.propietario_nombre) &&
+        isSignificant(x.gps) &&
+        (hasCi || hasCiImage)
+      );
+    });
 
     return { ok: true, rows: cleaned };
   }
@@ -1058,16 +1143,18 @@ export default function Expedientes() {
 
     setImportBusy(true);
     setImportErrors([]);
+    setImportResult(null);
+    setShowImportDetails(false);
     try {
-      await apiJson(`${API}/expedientes/import/${idProyecto}`, "POST", {
+      const result = await apiJson(`${API}/expedientes/import/${idProyecto}`, "POST", {
         rows: out.rows,
         mapping: mapCols,
         total: out.rows.length,
       });
 
-      setShowImport(false);
+      setImportResult(result || {});
+      setShowImportDetails(false);
       await load();
-      alert(`Importación OK: ${out.rows.length} expedientes.`);
     } catch (e) {
       setImportErrors([String(e?.message || e)]);
     } finally {
@@ -1232,6 +1319,8 @@ export default function Expedientes() {
       codigo_exp: "",
       propietario_nombre: "",
       propietario_ci: "",
+      pareja_nombre: "",
+      pareja_ci: "",
       id_tramo: null,
       id_sub_tramo: null,
       codigo_censo: "",
@@ -1615,20 +1704,26 @@ export default function Expedientes() {
         </Col>
 
         <Col className="text-end">
-          <Form.Label className="me-2 mb-0">Importar Excel</Form.Label>
-          <Form.Control
-            type="file"
-            accept=".xlsx,.xls"
-            style={{ display: "inline-block", width: 260 }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onExcelPicked(f);
-              e.target.value = "";
-            }}
-          />
-          <Button className="ms-2" onClick={openCrear}>
-            Nuevo
-          </Button>
+          {canUpload && (
+            <>
+              <Form.Label className="me-2 mb-0">Importar Excel</Form.Label>
+              <Form.Control
+                type="file"
+                accept=".xlsx,.xls"
+                style={{ display: "inline-block", width: 260 }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onExcelPicked(f);
+                  e.target.value = "";
+                }}
+              />
+            </>
+          )}
+          {canCreate && (
+            <Button className="ms-2" onClick={openCrear}>
+              Nuevo
+            </Button>
+          )}
           <Link
             className="btn btn-outline-success btn-sm ms-2"
             to={`/proyectos/${id}/gv-catastro`}
@@ -1652,7 +1747,7 @@ export default function Expedientes() {
       <Row className="align-items-center mb-2">
         <Col md={6}>
           <Form.Control
-            placeholder="Buscar por nombre, CI, expediente, DBI o codigo censo"
+            placeholder="Buscar por titular/co-titular, CI, expediente, DBI o codigo censo"
             value={filterQ}
             onChange={(e) => setFilterQ(e.target.value)}
             onKeyDown={(e) => {
@@ -1788,9 +1883,11 @@ export default function Expedientes() {
                     <Button variant="secondary" size="sm" onClick={() => openVer(r)}>
                       Ver
                     </Button>
-                    <Button variant="primary" size="sm" onClick={() => openEditar(r)}>
-                      Editar
-                    </Button>
+                    {canUpdate && (
+                      <Button variant="primary" size="sm" onClick={() => openEditar(r)}>
+                        Editar
+                      </Button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -1836,13 +1933,14 @@ export default function Expedientes() {
                   value={form.gps}
                   onChange={(gps) => setForm({ ...form, gps })}
                   onOpenMap={() => {
+                    if (!geometryEditable) return;
                     if (current?.id_expediente) {
                       loadPlanoGeo(current.id_expediente, tipoCarpeta);
                       loadCatastroFeatures();
                     }
                   }}
                   readOnlyGeometry={readOnlyGeometry}
-                  disabled={readonly}
+                  disabled={!geometryEditable}
                 />
               </Form.Group>
             </Col>
@@ -1884,6 +1982,26 @@ export default function Expedientes() {
                   value={form.propietario_ci}
                   disabled={readonly}
                   onChange={(e) => setForm({ ...form, propietario_ci: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={8}>
+              <Form.Group>
+                <Form.Label>Nombre del co-titular</Form.Label>
+                <Form.Control
+                  value={form.pareja_nombre}
+                  disabled={readonly}
+                  onChange={(e) => setForm({ ...form, pareja_nombre: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={4}>
+              <Form.Group>
+                <Form.Label>C.I. del co-titular</Form.Label>
+                <Form.Control
+                  value={form.pareja_ci}
+                  disabled={readonly}
+                  onChange={(e) => setForm({ ...form, pareja_ci: e.target.value })}
                 />
               </Form.Group>
             </Col>
@@ -2115,7 +2233,7 @@ export default function Expedientes() {
                 <div className="btn-group">
                   <Button
                     variant={tipoCarpeta === "mejora" ? "primary" : "outline-primary"}
-                    disabled={!current || onlyTerrenoActive}
+                    disabled={!geometryEditable || !current || onlyTerrenoActive}
                     onClick={async () => {
                       setTipoCarpeta("mejora");
                       setPolyFiles([]);
@@ -2126,7 +2244,7 @@ export default function Expedientes() {
                   </Button>
                   <Button
                     variant={tipoCarpeta === "terreno" ? "primary" : "outline-primary"}
-                    disabled={!current || onlyMejoraActive}
+                    disabled={!geometryEditable || !current || onlyMejoraActive}
                     onClick={async () => {
                       setTipoCarpeta("terreno");
                       setPolyFiles([]);
@@ -2273,12 +2391,12 @@ export default function Expedientes() {
                                       type="file"
                                       multiple
                                       accept=".shp,.dbf,.shx,.zip,.kml,.kmz,.rar,.geojson,.json,.gpkg,.gpx,.gml,.dxf"
-                                      disabled={readonly || !editable || polyBusy}
+                                      disabled={!geometryEditable || !editable || polyBusy}
                                       onChange={(ev) => setPolyFiles(Array.from(ev.target.files || []))}
                                     />
                                     <Button
                                       variant="success"
-                                      disabled={readonly || !editable || polyBusy || !polyFiles.length}
+                                      disabled={!geometryEditable || !editable || polyBusy || !polyFiles.length}
                                       onClick={subirPoligono}
                                     >
                                       {polyBusy ? "Subiendo..." : "Cargar polígono"}
@@ -2371,14 +2489,16 @@ export default function Expedientes() {
                                     >
                                       Ver en mapa
                                     </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="outline-danger"
-                                      onClick={handleEliminarPlano}
-                                      disabled={!planoHasGeom || readonly || currentGroupBlocked}
-                                    >
-                                      Eliminar
-                                    </Button>
+                                    {geometryEditable && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline-danger"
+                                        onClick={handleEliminarPlano}
+                                        disabled={!planoHasGeom || !geometryEditable || currentGroupBlocked}
+                                      >
+                                        Eliminar
+                                      </Button>
+                                    )}
                                   </div>
                                 </div>
                               ) : (
@@ -2422,7 +2542,7 @@ export default function Expedientes() {
                       </div>
                     );
                   })()}
-                  {!readonly && (() => {
+                  {!readonly && canUpdate && (() => {
                     const dbiInfo = current?.carpeta_dbi || {};
                     const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
                     if (dbiIniciado) return null;
@@ -2530,7 +2650,7 @@ export default function Expedientes() {
                       );
                     })()}
                   </div>
-                  {!readonly && (() => {
+                  {!readonly && canUpdate && (() => {
                     const dbiInfo = current?.carpeta_dbi || {};
                     const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
                     if (!dbiIniciado) return null;
@@ -2635,7 +2755,7 @@ export default function Expedientes() {
                         <Form.Control
                           placeholder="ej: fotos, planos, actas..."
                           value={subcarpeta}
-                          disabled={readonly}
+                          disabled={readonly || !canUpload}
                           onChange={(e) => setSubcarpeta(e.target.value)}
                         />
                       </Form.Group>
@@ -2647,14 +2767,14 @@ export default function Expedientes() {
                         <Form.Control
                           type="file"
                           multiple
-                          disabled={readonly}
+                          disabled={readonly || !canUpload}
                           onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
                         />
                       </Form.Group>
                     </Col>
 
                     <Col md={12} className="text-end">
-                      {!readonly && (
+                      {!readonly && canUpload && (
                         <Button variant="outline-primary" onClick={uploadDocs}>
                           Subir documentos
                         </Button>
@@ -2670,7 +2790,7 @@ export default function Expedientes() {
                               <Form.Control
                                 type="file"
                                 accept="image/*"
-                                disabled={readonly}
+                                disabled={readonly || !canUpload}
                                 onChange={(e) => setCiFrente(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
@@ -2682,14 +2802,14 @@ export default function Expedientes() {
                               <Form.Control
                                 type="file"
                                 accept="image/*"
-                                disabled={readonly}
+                                disabled={readonly || !canUpload}
                                 onChange={(e) => setCiDorso(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
                           </Col>
 
                           <Col md={12} className="text-end">
-                            {!readonly && (
+                            {!readonly && canUpload && (
                               <Button variant="outline-success" onClick={uploadCI}>
                                 Subir CI titular
                               </Button>
@@ -2727,7 +2847,7 @@ export default function Expedientes() {
                                           >
                                             Descargar
                                           </Button>
-                                          {!readonly && (
+                                          {!readonly && canUpload && (
                                             <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
                                               Eliminar
                                             </Button>
@@ -2761,7 +2881,7 @@ export default function Expedientes() {
                               <Form.Control
                                 type="file"
                                 accept="image/*"
-                                disabled={readonly}
+                                disabled={readonly || !canUpload}
                                 onChange={(e) => setCiAdicionalFrente(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
@@ -2773,14 +2893,14 @@ export default function Expedientes() {
                               <Form.Control
                                 type="file"
                                 accept="image/*"
-                                disabled={readonly}
+                                disabled={readonly || !canUpload}
                                 onChange={(e) => setCiAdicionalDorso(e.target.files?.[0] || null)}
                               />
                             </Form.Group>
                           </Col>
 
                           <Col md={12} className="text-end">
-                            {!readonly && (
+                            {!readonly && canUpload && (
                               <Button variant="outline-success" onClick={uploadCIAdicional}>
                                 Subir CI adicional
                               </Button>
@@ -2818,7 +2938,7 @@ export default function Expedientes() {
                                           >
                                             Descargar
                                           </Button>
-                                          {!readonly && (
+                                          {!readonly && canUpload && (
                                             <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
                                               Eliminar
                                             </Button>
@@ -2890,7 +3010,7 @@ export default function Expedientes() {
                                 >
                                   Descargar
                                 </Button>
-                                {!readonly && (
+                                {!readonly && canUpload && (
                                   <Button variant="danger" size="sm" onClick={() => delDoc(d.id_archivo)}>
                                     Eliminar
                                   </Button>
@@ -2919,7 +3039,7 @@ export default function Expedientes() {
           <Button variant="secondary" onClick={() => setShow(false)}>
             Cerrar
           </Button>
-          {!readonly && (
+          {!readonly && ((mode === "crear" && canCreate) || (mode === "editar" && canUpdate)) && (
             <Button variant="primary" onClick={save}>
               {mode === "crear" ? "Guardar" : "Actualizar"}
             </Button>
@@ -2977,6 +3097,80 @@ export default function Expedientes() {
             </div>
           )}
 
+          {importResult && (
+            <div className="alert alert-success">
+              <div className="fw-semibold mb-2">Resumen de importación</div>
+              <Row className="g-2">
+                <Col md={4}>
+                  <div>Insertados: <b>{Number(importResult.inserted || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Actualizados (id_import): <b>{Number(importResult.updated_by_id_import || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Actualizados (código exp): <b>{Number(importResult.updated_by_codigo_exp || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Actualizados (código censo): <b>{Number(importResult.updated_by_codigo_censo || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Rechazados: <b>{Number(importResult.rejected || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Docs insertados: <b>{Number(importResult.documentsInserted || 0)}</b></div>
+                </Col>
+                <Col md={4}>
+                  <div>Docs omitidos: <b>{Number(importResult.documentsSkippedExisting || 0)}</b></div>
+                </Col>
+              </Row>
+
+              {((importResult.errors && importResult.errors.length) ||
+                (importResult.warnings && importResult.warnings.length)) && (
+                <div className="mt-3">
+                  <Button
+                    variant="outline-secondary"
+                    size="sm"
+                    onClick={() => setShowImportDetails((v) => !v)}
+                  >
+                    {showImportDetails ? "Ocultar detalles" : "Ver detalles"}
+                  </Button>
+
+                  <Collapse in={showImportDetails}>
+                    <div className="mt-2">
+                      {Array.isArray(importResult.warnings) && importResult.warnings.length > 0 && (
+                        <>
+                          <div className="fw-semibold">Advertencias</div>
+                          <ul className="mb-2">
+                            {importResult.warnings.slice(0, 50).map((w, i) => (
+                              <li key={`warn-${i}`}>
+                                {w?.row ? `Fila ${w.row}: ` : ""}{w?.message || JSON.stringify(w)}
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                      {Array.isArray(importResult.errors) && importResult.errors.length > 0 && (
+                        <>
+                          <div className="fw-semibold">Errores</div>
+                          <ul className="mb-0">
+                            {importResult.errors.slice(0, 50).map((e, i) => (
+                              <li key={`err-${i}`}>
+                                {e?.row ? `Fila ${e.row}: ` : ""}{e?.reason || JSON.stringify(e)}
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                      {(importResult.warnings?.length > 50 || importResult.errors?.length > 50) && (
+                        <div className="text-muted small">Mostrando solo 50 ítems por sección.</div>
+                      )}
+                    </div>
+                  </Collapse>
+                </div>
+              )}
+            </div>
+          )}
+
           <Row className="g-3">
             <Col md={5}>
               <h6 className="mb-2">Mapeo de columnas</h6>
@@ -2989,18 +3183,29 @@ export default function Expedientes() {
                     onChange={(e) => setMapCols((prev) => ({ ...prev, [f.key]: e.target.value }))}
                   >
                     <option value="">— No mapear —</option>
-                    {excelCols.map((c, idx) => (
-                      <option key={`mapcol-${c}-${idx}`} value={c}>
-                        {c}
-                      </option>
-                    ))}
+                    {excelColumns.map((c) => (
+                        <option key={`mapcol-${c.headerOriginal}-${c.index}`} value={c.headerOriginal}>
+                          {c.headerOriginal
+                            ? `${c.headerOriginal} (col ${c.index + 1})`
+                            : `(Sin encabezado) col ${c.index + 1}`}
+                        </option>
+                      ))}
                   </Form.Select>
                 </Form.Group>
               ))}
 
-              <div className="text-muted small mt-2">
-                Filas detectadas: <b>{excelRows.length}</b>
-              </div>
+                <div className="text-muted small mt-2">
+                  Filas detectadas: <b>{excelRows.length}</b>
+                </div>
+                {excelWarnings.length > 0 && (
+                  <Alert variant="warning" className="mt-2 py-2">
+                    <ul className="mb-0">
+                      {excelWarnings.map((w, i) => (
+                        <li key={`warn-${i}`}>{w}</li>
+                      ))}
+                    </ul>
+                  </Alert>
+                )}
               <div className="text-muted small">
                 Tip: asegurá encabezados en la primera fila del Excel.
                 <br />
@@ -3014,21 +3219,25 @@ export default function Expedientes() {
                 <Table bordered size="sm" className="align-middle">
                   <thead>
                     <tr>
-                      {excelCols.slice(0, 8).map((h) => (
-                        <th key={h}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {excelPreview.map((r, idx) => (
-                      <tr key={idx}>
-                        {excelCols.slice(0, 8).map((h) => (
-                          <td key={h}>{String(r[h] ?? "")}</td>
+                        {excelColumns.slice(0, 8).map((h) => (
+                          <th key={`prev-${h.headerOriginal}-${h.index}`}>
+                            {h.headerOriginal ? h.headerOriginal : "(Sin encabezado)"}{" "}
+                            <span className="text-muted">[{h.index + 1}]</span>
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </Table>
+                    </thead>
+                    <tbody>
+                      {excelPreview.map((r, idx) => (
+                        <tr key={idx}>
+                          {excelColumns.slice(0, 8).map((h) => {
+                            const key = h.headerOriginal || `__col_${h.index}`;
+                            return <td key={`prev-cell-${h.index}`}>{String(r[key] ?? "")}</td>;
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
               </div>
 
               <div className="mt-2 text-muted small">

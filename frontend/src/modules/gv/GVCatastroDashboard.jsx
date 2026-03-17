@@ -819,87 +819,127 @@ export default function GVCatastroDashboard() {
           <p className="small text-muted mb-3">
             F0 = Relevamiento | F1 = Documentación | Final = Carpeta finalizada
           </p>
-          <div className="row g-4">
-            {/* Tabla Mejora */}
-            <div className="col-md-6">
-              <h6 className="text-primary border-bottom pb-2">Mejora</h6>
-              <div className="table-responsive">
-                <table className="table table-sm table-borderless align-middle mb-0 gv-table">
-                  <thead className="table-light text-muted small">
-                    <tr>
-                      <th>Fase</th>
-                      <th>Cantidad</th>
-                      <th>%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const counts = normalizePhaseCounts(data, 'mejora', 5); // MaxFases de mejora original
-                      const totalTipo = data.by_tipo?.mejora || 0;
-                      return counts.map((count, i) => {
-                        const isActive = mapFilters.tipo === "mejora" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
-                        return (
-                          <tr
-                            key={`m-${i}`}
-                            className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
-                            onClick={() => applyPhaseFilter("mejora", i)}
-                          >
-                            <td>
-                              <GvPhaseChip phaseIndex={i} phaseTotal={5} label={`F${i}`} />
-                            </td>
-                            <td className="fw-semibold">{count}</td>
-                            <td className="text-muted small">
-                              {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
-                            </td>
-                          </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          {(() => {
+            const sinIniciarCount = Number(data?.phases?.sin_iniciar?.counts?.[0]) || 0;
+            const sinIniciarPctBase = Number(data?.censados) || Number(data?.target_total) || 0;
+            const showSinIniciar = sinIniciarCount > 0;
+            const colClass = showSinIniciar ? "col-md-4" : "col-md-6";
 
-            {/* Tabla Terreno */}
-            <div className="col-md-6">
-              <h6 className="text-warning border-bottom pb-2">Terreno</h6>
-              <div className="table-responsive">
-                <table className="table table-sm table-borderless align-middle mb-0 gv-table">
-                  <thead className="table-light text-muted small">
-                    <tr>
-                      <th>Fase</th>
-                      <th>Cantidad</th>
-                      <th>%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const counts = normalizePhaseCounts(data, 'terreno', 7); // MaxFases de terreno original
-                      const totalTipo = data.by_tipo?.terreno || 0;
-                      return counts.map((count, i) => {
-                        const isActive = mapFilters.tipo === "terreno" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
-                        return (
-                          <tr
-                            key={`t-${i}`}
-                            className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
-                            onClick={() => applyPhaseFilter("terreno", i)}
-                          >
+            return (
+              <div className="row g-4">
+                {/* Tabla Mejora */}
+                <div className={colClass}>
+                  <h6 className="text-primary border-bottom pb-2">Mejora</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'mejora', 5);
+                          const totalTipo = data.by_tipo?.mejora || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "mejora" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`m-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("mejora", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={5} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Tabla Terreno */}
+                <div className={colClass}>
+                  <h6 className="text-warning border-bottom pb-2">Terreno</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'terreno', 7);
+                          const totalTipo = data.by_tipo?.terreno || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "terreno" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`t-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("terreno", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={7} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {showSinIniciar && (
+                  <div className={colClass}>
+                    <h6 className="text-secondary border-bottom pb-2">Sin tipo definido</h6>
+                    <div className="table-responsive">
+                      <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                        <thead className="table-light text-muted small">
+                          <tr>
+                            <th>Fase</th>
+                            <th>Cantidad</th>
+                            <th>%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
                             <td>
-                              <GvPhaseChip phaseIndex={i} phaseTotal={7} label={`F${i}`} />
+                              <span className="badge text-bg-secondary">F0</span>
                             </td>
-                            <td className="fw-semibold">{count}</td>
+                            <td className="fw-semibold">{sinIniciarCount}</td>
                             <td className="text-muted small">
-                              {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                              {sinIniciarPctBase > 0 ? ((sinIniciarCount / sinIniciarPctBase) * 100).toFixed(1) : "0.0"}%
                             </td>
                           </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-muted small mt-2">
+                      Corresponde a expedientes relevados sin tipo definido todavia.
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -969,7 +1009,7 @@ export default function GVCatastroDashboard() {
                     setMapFilters((prev) => ({ ...prev, q: e.currentTarget.value }));
                   }
                 }}
-                placeholder="Buscar por nombre, CI, expediente, DBI o código censo"
+                placeholder="Buscar por titular/co-titular, CI, expediente, DBI o código censo"
               />
             </div>
             <div className="col-md-2">
