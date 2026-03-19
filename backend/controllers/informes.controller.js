@@ -78,6 +78,7 @@ async function cleanupInformeFiles(fileRows = []) {
   const errors = [];
   let deleted = 0;
   let failed = 0;
+  let skipped = 0;
   const total = Array.isArray(fileRows) ? fileRows.length : 0;
 
   for (const row of fileRows || []) {
@@ -101,21 +102,24 @@ async function cleanupInformeFiles(fileRows = []) {
       await fs.promises.unlink(abs);
       deleted += 1;
     } catch (e) {
-      failed += 1;
-      errors.push({ ruta, error: e?.message || String(e) });
+      if (String(e?.code) === "ENOENT") {
+        skipped += 1;
+      } else {
+        failed += 1;
+        errors.push({ ruta, error: e?.message || String(e) });
+      }
     }
   }
 
-  if (failed > 0) {
-    console.warn("[cleanupInformeFiles] unlink warnings", {
-      total,
-      deleted,
-      failed,
-      errors: errors.slice(0, 5),
-    });
-  }
+  console.info("[cleanupInformeFiles] summary", {
+    total,
+    deleted,
+    skipped,
+    failed,
+    sample_errors: failed > 0 ? errors.slice(0, 5) : [],
+  });
 
-  return { total, deleted, failed, errors };
+  return { total, deleted, skipped, failed, errors };
 }
 
 function normalizeAnswerForSaveByTipo(tipo, valorRaw) {
@@ -3183,6 +3187,7 @@ async function deletePregunta(req, res) {
         cleanup: {
           total: cleanup.total,
           deleted: cleanup.deleted,
+          skipped: cleanup.skipped,
           failed: cleanup.failed,
         },
       });
@@ -3299,7 +3304,7 @@ async function deletePregunta(req, res) {
           mode,
           deleted_count: 0,
           deleted_ids: [],
-          cleanup: { total: 0, deleted: 0, failed: 0 },
+          cleanup: { total: 0, deleted: 0, skipped: 0, failed: 0 },
         });
       }
 
@@ -3325,6 +3330,7 @@ async function deletePregunta(req, res) {
         cleanup: {
           total: cleanup.total,
           deleted: cleanup.deleted,
+          skipped: cleanup.skipped,
           failed: cleanup.failed,
         },
       });

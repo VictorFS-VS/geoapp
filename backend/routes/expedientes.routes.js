@@ -25,6 +25,13 @@ router.get(
   ctrl.listByProyecto
 );
 
+router.post(
+  "/proyecto/:idProyecto/bulk-delete",
+  verifyToken,
+  requirePerm("expedientes.delete"),
+  ctrl.bulkDeleteExpedientesByProyecto
+);
+
 router.get(
   "/:idExpediente",
   verifyToken,

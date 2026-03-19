@@ -202,6 +202,16 @@ export default function Expedientes() {
   const canDelete = can("expedientes.delete");
   const canUpload = can("expedientes.upload");
   const canDeleteTotal = canDelete;
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const headerCheckboxRef = useRef(null);
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allIds = useMemo(
+    () => rows.map((r) => Number(r.id_expediente)).filter((n) => Number.isFinite(n) && n > 0),
+    [rows]
+  );
+  const allSelected = allIds.length > 0 && allIds.every((id) => selectedSet.has(id));
 
   const [form, setForm] = useState({
     id_proyecto: idProyecto,
@@ -1186,6 +1196,111 @@ export default function Expedientes() {
     }
   };
 
+  const toggleSelectAll = (checked) => {
+    setSelectedIds(checked ? allIds : []);
+  };
+
+  const toggleSelectOne = (id, checked) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return Array.from(next);
+    });
+  };
+
+  const eliminarSeleccionados = async () => {
+    if (!canDelete || !selectedIds.length || bulkDeleting) return;
+
+    const ok = await alerts.confirm({
+      title: "Eliminar expedientes seleccionados",
+      text: `Se eliminarán ${selectedIds.length} expedientes de este proyecto. Esta acción no se puede deshacer.`,
+      confirmButtonText: "Sí, eliminar",
+      icon: "warning",
+    });
+    if (!ok) return;
+
+    setBulkDeleting(true);
+    alerts.loading("Eliminando expedientes...");
+
+    try {
+      const resp = await fetch(`${API}/expedientes/proyecto/${idProyecto}/bulk-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || data?.ok === false) {
+        throw new Error(data?.message || data?.error || `Error ${resp.status}`);
+      }
+
+      alerts.toast.success(
+        `Eliminados ${data?.deleted_count ?? selectedIds.length} expedientes`
+      );
+      setSelectedIds([]);
+      await load();
+    } catch (e) {
+      alerts.toast.error(String(e?.message || e));
+    } finally {
+      alerts.close();
+      setBulkDeleting(false);
+    }
+  };
+
+  const eliminarTodosContextual = async () => {
+    if (!canDelete || bulkDeleting) return;
+
+    const parts = [];
+    if (String(filterQ || "").trim()) parts.push(`Busqueda: "${String(filterQ).trim()}"`);
+    if (String(filterTramoId || "").trim()) parts.push(`TramoId: ${String(filterTramoId).trim()}`);
+    if (String(filterSubtramoId || "").trim()) parts.push(`SubtramoId: ${String(filterSubtramoId).trim()}`);
+
+    const scopeTxt = parts.length
+      ? `Se eliminarán todos los expedientes del resultado actual (${parts.join(" / ")}).`
+      : "Se eliminarán todos los expedientes del proyecto (sin filtros activos).";
+
+    const ok = await alerts.confirm({
+      title: "Eliminar todos los expedientes del listado",
+      text: `${scopeTxt} Esta acción no se puede deshacer.`,
+      confirmButtonText: "Sí, eliminar",
+      icon: "warning",
+    });
+    if (!ok) return;
+
+    setBulkDeleting(true);
+    alerts.loading("Eliminando expedientes...");
+
+    try {
+      const resp = await fetch(`${API}/expedientes/proyecto/${idProyecto}/bulk-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          all: true,
+          filters: {
+            q: String(filterQ || "").trim(),
+            tramoId: String(filterTramoId || "").trim(),
+            subtramoId: String(filterSubtramoId || "").trim(),
+          },
+        }),
+      });
+
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || data?.ok === false) {
+        throw new Error(data?.message || data?.error || `Error ${resp.status}`);
+      }
+
+      alerts.toast.success(`Eliminados ${data?.deleted_count ?? 0} expedientes`);
+      setSelectedIds([]);
+      await load();
+    } catch (e) {
+      alerts.toast.error(String(e?.message || e));
+    } finally {
+      alerts.close();
+      setBulkDeleting(false);
+    }
+  };
+
   const loadDocs = async (idExp) => {
     const data = await apiGet(`${API}/expedientes/${idExp}/documentos`);
     setDocs(Array.isArray(data) ? data : []);
@@ -1221,6 +1336,15 @@ export default function Expedientes() {
     loadTramosCensales();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idProyecto]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => prev.filter((id) => allIds.includes(id)));
+  }, [allIds]);
+
+  useEffect(() => {
+    if (!headerCheckboxRef.current) return;
+    headerCheckboxRef.current.indeterminate = selectedIds.length > 0 && !allSelected;
+  }, [selectedIds, allSelected]);
 
   useEffect(() => {
     if (qDebounceRef.current) {
@@ -1741,6 +1865,30 @@ export default function Expedientes() {
             <small className="text-muted">Sin filtros</small>
           )}
           <span className="ms-2 text-muted">Resultados: {rows.length}</span>
+          <span className="ms-2 text-muted">Seleccionados: {selectedIds.length}</span>
+        </Col>
+        <Col className="text-end">
+          {canDelete && (
+            <>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={!selectedIds.length || bulkDeleting}
+                onClick={eliminarSeleccionados}
+              >
+                {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
+              </Button>
+              <Button
+                className="ms-2"
+                variant="outline-danger"
+                size="sm"
+                disabled={bulkDeleting}
+                onClick={eliminarTodosContextual}
+              >
+                {bulkDeleting ? "Eliminando..." : "Eliminar TODOS"}
+              </Button>
+            </>
+          )}
         </Col>
       </Row>
 
@@ -1838,6 +1986,16 @@ export default function Expedientes() {
         <Table bordered hover size="sm" className="align-middle">
           <thead>
             <tr>
+              <th style={{ width: 36 }}>
+                <Form.Check
+                  type="checkbox"
+                  ref={headerCheckboxRef}
+                  checked={allSelected}
+                  onChange={(e) => toggleSelectAll(e.target.checked)}
+                  disabled={!rows.length || bulkDeleting}
+                  aria-label="Seleccionar todos"
+                />
+              </th>
               <th>ID</th>
               <th>Código Exp.</th>
               <th>Propietario</th>
@@ -1851,7 +2009,7 @@ export default function Expedientes() {
           <tbody>
             {!rows.length && (
               <tr>
-                <td colSpan={8} className="text-center text-muted py-4">
+                <td colSpan={9} className="text-center text-muted py-4">
                   {loading
                     ? "Cargando..."
                     : filtersActive
@@ -1862,6 +2020,17 @@ export default function Expedientes() {
             )}
             {rows.map((r) => (
               <tr key={r.id_expediente}>
+                <td>
+                  <Form.Check
+                    type="checkbox"
+                    checked={selectedSet.has(Number(r.id_expediente))}
+                    onChange={(e) =>
+                      toggleSelectOne(Number(r.id_expediente), e.target.checked)
+                    }
+                    disabled={bulkDeleting}
+                    aria-label={`Seleccionar expediente ${r.id_expediente}`}
+                  />
+                </td>
                 <td>{r.id_expediente}</td>
                 <td>{r.codigo_exp}</td>
                 <td>{r.propietario_nombre}</td>
