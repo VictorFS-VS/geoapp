@@ -17,6 +17,7 @@ import Swal from "sweetalert2";
 import { alerts } from "@/utils/alerts";
 import QRCode from "qrcode";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
+import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
 
 /* =========================
    API base (robusto)
@@ -501,6 +502,7 @@ export default function InformeBuilder() {
   const [loadingPlantillas, setLoadingPlantillas] = useState(true);
   const [plantillaSelId, setPlantillaSelId] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showNewImportModal, setShowNewImportModal] = useState(false);
 
   const plantillaSeleccionada = useMemo(
     () => plantillas.find((p) => Number(p.id_plantilla) === Number(plantillaSelId)) || null,
@@ -2024,9 +2026,17 @@ export default function InformeBuilder() {
                 >
                   Importar respuestas (Excel)
                 </Button>
+                <Button
+                  variant="outline-info"
+                  onClick={() => setShowNewImportModal(true)}
+                  disabled={!plantillaSelId}
+                  title={!plantillaSelId ? "Seleccioná una plantilla" : "Canal nuevo de importación XLSX"}
+                >
+                  Importación nueva (XLSX)
+                </Button>
               </div>
               <div className="card-body text-muted">
-                Importá respuestas masivamente desde Excel con vista previa y mapeo automático de columnas.
+                Importá respuestas masivamente desde Excel con vista previa y mapeo automático de columnas.                
               </div>
             </div>
 
@@ -3306,6 +3316,16 @@ export default function InformeBuilder() {
                 idPlantilla={Number(plantillaSelId) || null}
                 nombrePlantilla={plantillaSeleccionada?.nombre || ""}
                 preguntasLista={preguntasLista}
+                linksDestino={shareLinks || []}
+              />
+
+              <ImportarInformesNuevoModal
+                show={showNewImportModal}
+                onHide={() => setShowNewImportModal(false)}
+                API_URL={API_URL}
+                authHeaders={authHeaders}
+                idPlantilla={Number(plantillaSelId) || null}
+                nombrePlantilla={plantillaSeleccionada?.nombre || ""}
                 linksDestino={shareLinks || []}
               />
     </>

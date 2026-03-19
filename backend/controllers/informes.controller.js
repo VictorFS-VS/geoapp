@@ -1,4 +1,4 @@
-// backend/controllers/informes.controller.js
+﻿// backend/controllers/informes.controller.js
 "use strict";
 
 const fs = require("fs");
@@ -9,8 +9,10 @@ const ExcelJS = require("exceljs");
 const pool = require("../db");
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ImageRun, PageOrientation } = require("docx");
 
-/* ───────────────────────── Helpers ───────────────────────── */
-/* básicos */
+const BASE_UPLOAD_PATH = path.resolve(path.join(__dirname, "..", "uploads"));
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* bÃ¡sicos */
 function safe(v) {
   return v ?? "";
 }
@@ -44,13 +46,76 @@ function normalizeJsonbInput(v, { mode = "update" } = {}) {
     try {
       return JSON.parse(s);
     } catch (e) {
-      return { __json_error: e?.message || "JSON inválido" };
+      return { __json_error: e?.message || "JSON invÃ¡lido" };
     }
   }
 
   if (typeof v === "object") return v;
 
   return null;
+}
+
+function resolveAbsolutePath(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  const normalized = s.replace(/\\/g, "/");
+
+  if (path.isAbsolute(s)) {
+    return path.resolve(s);
+  }
+
+  let rel = normalized.replace(/^\/+/, "");
+  if (rel.toLowerCase().startsWith("uploads/")) {
+    rel = rel.slice("uploads/".length);
+  }
+
+  return path.resolve(path.join(BASE_UPLOAD_PATH, rel.replace(/\//g, path.sep)));
+}
+
+async function cleanupInformeFiles(fileRows = []) {
+  const errors = [];
+  let deleted = 0;
+  let failed = 0;
+  const total = Array.isArray(fileRows) ? fileRows.length : 0;
+
+  for (const row of fileRows || []) {
+    const ruta = row?.ruta_archivo ?? row?.ruta ?? row?.url ?? null;
+    if (!ruta) continue;
+
+    try {
+      const abs = resolveAbsolutePath(ruta);
+      if (!abs) {
+        failed += 1;
+        errors.push({ ruta, error: "ruta inválida" });
+        continue;
+      }
+
+      if (!abs.startsWith(BASE_UPLOAD_PATH + path.sep)) {
+        failed += 1;
+        errors.push({ ruta, error: "fuera de BASE_UPLOAD_PATH" });
+        continue;
+      }
+
+      await fs.promises.unlink(abs);
+      deleted += 1;
+    } catch (e) {
+      failed += 1;
+      errors.push({ ruta, error: e?.message || String(e) });
+    }
+  }
+
+  if (failed > 0) {
+    console.warn("[cleanupInformeFiles] unlink warnings", {
+      total,
+      deleted,
+      failed,
+      errors: errors.slice(0, 5),
+    });
+  }
+
+  return { total, deleted, failed, errors };
 }
 
 function normalizeAnswerForSaveByTipo(tipo, valorRaw) {
@@ -82,7 +147,7 @@ function normalizeAnswerForSaveByTipo(tipo, valorRaw) {
     return [];
   }
 
-  // NÚMERO: acá sí coerce a Number cuando se pueda
+  // NÃšMERO: acÃ¡ sÃ­ coerce a Number cuando se pueda
   if (t === "numero") {
     return _coerceValue(valorRaw);
   }
@@ -167,7 +232,7 @@ function _getAnswerValueFromObj(answersObj, idPregunta) {
   return undefined;
 }
 
-/* imágenes (si ya lo usás en PDF/Word) */
+/* imÃ¡genes (si ya lo usÃ¡s en PDF/Word) */
 function fileToDataUri(absPath) {
   if (!absPath) return null;
   try {
@@ -181,13 +246,13 @@ function fileToDataUri(absPath) {
   }
 }
 
-/* ─────────────── Semáforo (robusto) ─────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SemÃ¡foro (robusto) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function normalizeHex(v) {
   if (!v) return null;
   const s = String(v).trim();
   if (/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s)) return s.toUpperCase();
-  // soporta #RGB (lo pasamos a #RRGGBB si querés, pero por ahora lo aceptamos)
+  // soporta #RGB (lo pasamos a #RRGGBB si querÃ©s, pero por ahora lo aceptamos)
   if (/^#([0-9a-fA-F]{3})$/.test(s)) return s.toUpperCase();
   return null;
 }
@@ -297,7 +362,7 @@ function semaforoToObj(input, paletteMap) {
   const hex = paletteMap?.get(key) || null;
   if (!hex) return null;
 
-  // “nombre lindo” para guardar como texto
+  // â€œnombre lindoâ€ para guardar como texto
   const niceName = s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 
   return { nombre: niceName, hex: String(hex).toUpperCase() };
@@ -333,7 +398,7 @@ function buildRespuestasMap(respuestas) {
     let val = r.valor_texto;
 
     if (r.valor_bool !== null && r.valor_bool !== undefined) {
-      val = r.valor_bool ? "Sí" : "No";
+      val = r.valor_bool ? "SÃ­" : "No";
     } else if (r.valor_json !== null && r.valor_json !== undefined) {
       try {
         const parsed =
@@ -342,7 +407,7 @@ function buildRespuestasMap(respuestas) {
         if (Array.isArray(parsed)) {
           val = parsed.join(", ");
         } else if (parsed && typeof parsed === "object") {
-          // ✅ ubicación {lat,lng}
+          // âœ… ubicaciÃ³n {lat,lng}
           if ("lat" in parsed && "lng" in parsed) val = `${parsed.lat}, ${parsed.lng}`;
           else val = JSON.stringify(parsed, null, 2);
         } else {
@@ -358,7 +423,7 @@ function buildRespuestasMap(respuestas) {
   return map;
 }
 
-// ✅ base pública para armar URLs de fotos
+// âœ… base pÃºblica para armar URLs de fotos
 // Recomendado en .env del backend (SIN /api):
 // PUBLIC_BASE_URL=https://api.emagroup.com.py
 function getPublicBaseUrl(req) {
@@ -376,7 +441,7 @@ function normalizeSlashes(p) {
 }
 
 /**
- * ✅ Usa tus estáticos existentes:
+ * âœ… Usa tus estÃ¡ticos existentes:
  * - /uploads   (recomendado)
  * - /api/uploads (alternativa)
  */
@@ -387,8 +452,8 @@ function toPublicPhotoUrl(req, ruta_archivo) {
 
   const base = getPublicBaseUrl(req);
 
-  // elegí UNO (sin tocar index.js)
-  const PUBLIC_PREFIX = "/uploads";      // ✅ recomendado
+  // elegÃ­ UNO (sin tocar index.js)
+  const PUBLIC_PREFIX = "/uploads";      // âœ… recomendado
   // const PUBLIC_PREFIX = "/api/uploads"; // alternativa
 
   const p0 = normalizeSlashes(raw);
@@ -414,7 +479,7 @@ function toPublicPhotoUrl(req, ruta_archivo) {
   return `${base}${PUBLIC_PREFIX}/${rel}`;
 }
 
-// ✅ límites y helpers (poné esto arriba del archivo o arriba de safeSaveUpload)
+// âœ… lÃ­mites y helpers (ponÃ© esto arriba del archivo o arriba de safeSaveUpload)
 const MAX_UPLOAD_BYTES =
   (typeof globalThis.MAX_UPLOAD_BYTES === "number" && globalThis.MAX_UPLOAD_BYTES > 0
     ? globalThis.MAX_UPLOAD_BYTES
@@ -426,12 +491,12 @@ function pickSafeImageExt(name = "", mimetype = "") {
   const n = String(name || "").toLowerCase().trim();
   const mt = String(mimetype || "").toLowerCase().trim();
 
-  // 1) por mimetype (más confiable)
+  // 1) por mimetype (mÃ¡s confiable)
   if (mt === "image/jpeg" || mt === "image/jpg") return ".jpg";
   if (mt === "image/png") return ".png";
   if (mt === "image/webp") return ".webp";
 
-  // 2) fallback por extensión (si mimetype viene vacío)
+  // 2) fallback por extensiÃ³n (si mimetype viene vacÃ­o)
   if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return ".jpg";
   if (n.endsWith(".png")) return ".png";
   if (n.endsWith(".webp")) return ".webp";
@@ -448,13 +513,13 @@ function sanitizeFilename(name = "") {
     .slice(0, 120) || "archivo";
 }
 
-// ✅ HTML para UN informe (fotos por pregunta) — MISMO FORMATO LIMPIO (sirve para single y multi)
+// âœ… HTML para UN informe (fotos por pregunta) â€” MISMO FORMATO LIMPIO (sirve para single y multi)
 function htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotosPorPregunta) {
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>Informe dinámico</title>
+<title>Informe dinÃ¡mico</title>
 <style>
   :root { --teal:#0e7a7a; --muted:#666; --band:#eeeeee; }
   body { font-family: Arial, sans-serif; font-size: 12px; color:#222; line-height: 1.45; }
@@ -463,7 +528,7 @@ function htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotos
   .hr { border-top: 2px solid var(--teal); margin: 6px 0 16px; }
   .meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
 
-  /* ✅ Secciones más “limpias” */
+  /* âœ… Secciones mÃ¡s â€œlimpiasâ€ */
   .sec { margin: 14px 0; page-break-inside: avoid; break-inside: avoid; }
   .band {
     background: var(--band);
@@ -478,7 +543,7 @@ function htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotos
   .label { font-weight: bold; display:inline-block; min-width: 260px; vertical-align: top; }
   .valor { display:inline-block; margin-left: 10px; max-width: 420px; white-space: pre-wrap; word-break: break-word; }
 
-  /* ✅ Galería: que se vea bien en PDF (3 columnas) */
+  /* âœ… GalerÃ­a: que se vea bien en PDF (3 columnas) */
   .gal-preg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 8px; }
   .gal-preg img { width: 100%; height: 110px; object-fit: cover; border: 1px solid #ccc; border-radius: 4px; }
 
@@ -538,7 +603,7 @@ function htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotos
       return `
       <div class="sec">
         <div class="band">${safe(sec.titulo)}</div>
-        ${bloque || '<div class="preg muted">Sin preguntas en esta sección.</div>'}
+        ${bloque || '<div class="preg muted">Sin preguntas en esta secciÃ³n.</div>'}
       </div>
     `;
     })
@@ -547,7 +612,7 @@ function htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotos
 </html>`;
 }
 
-// ✅ HTML para VARIOS informes en un solo PDF — MISMO FORMATO QUE EL INDIVIDUAL
+// âœ… HTML para VARIOS informes en un solo PDF â€” MISMO FORMATO QUE EL INDIVIDUAL
 function htmlTemplateMultiInformes({ proyectoLabel, informesBlocks }) {
   return `<!doctype html>
 <html>
@@ -563,11 +628,11 @@ function htmlTemplateMultiInformes({ proyectoLabel, informesBlocks }) {
   .cover .meta { color: var(--muted); font-size: 11px; margin: 2px 0; }
   .cover .hr { border-top: 2px solid var(--teal); margin: 8px 0 16px; }
 
-  /* ✅ separación por informe */
+  /* âœ… separaciÃ³n por informe */
   .report { page-break-after: always; }
   .report:last-child { page-break-after: auto; }
 
-  /* ✅ Reusar las MISMAS clases del individual (para que quede idéntico) */
+  /* âœ… Reusar las MISMAS clases del individual (para que quede idÃ©ntico) */
   h1 { font-size: 20px; color: var(--teal); margin: 6px 0 4px; }
   .hr { border-top: 2px solid var(--teal); margin: 6px 0 16px; }
   .meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
@@ -608,11 +673,11 @@ function htmlTemplateMultiInformes({ proyectoLabel, informesBlocks }) {
 }
 
 /**
- * ✅ Normaliza valores para comparar:
+ * âœ… Normaliza valores para comparar:
  * - booleans reales
  * - strings "true"/"false"
- * - strings "SI"/"SÍ"/"NO"
- * - números en string ("12" -> 12)
+ * - strings "SI"/"SÃ"/"NO"
+ * - nÃºmeros en string ("12" -> 12)
  * - arrays (normaliza elementos)
  * - deja objetos tal cual
  */
@@ -630,7 +695,7 @@ function _coerceValue(v) {
     if (sl === "true") return true;
     if (sl === "false") return false;
 
-    if (sl === "si" || sl === "sí") return true;
+    if (sl === "si" || sl === "sÃ­") return true;
     if (sl === "no") return false;
 
     if (s !== "" && /^-?\d+(\.\d+)?$/.test(s)) {
@@ -644,7 +709,7 @@ function _coerceValue(v) {
   return v;
 }
 
-// ✅ evalCond ROBUSTO
+// âœ… evalCond ROBUSTO
 function evalCond(cond, answersObj) {
   if (!cond) return true;
 
@@ -717,11 +782,11 @@ function evalCond(cond, answersObj) {
   return false;
 }
 
-// ✅ FUNCIÓN ACTUALIZADA
+// âœ… FUNCIÃ“N ACTUALIZADA
 async function safeSaveUpload(uploadFile, destAbs) {
-  if (!uploadFile) throw new Error("Archivo vacío");
+  if (!uploadFile) throw new Error("Archivo vacÃ­o");
 
-  // ✅ usa un maxBytes local (evita ReferenceError + ts6133 si lo usás)
+  // âœ… usa un maxBytes local (evita ReferenceError + ts6133 si lo usÃ¡s)
   const maxBytes =
     typeof MAX_UPLOAD_BYTES === "number" && MAX_UPLOAD_BYTES > 0
       ? MAX_UPLOAD_BYTES
@@ -738,17 +803,17 @@ async function safeSaveUpload(uploadFile, destAbs) {
   const dir = path.dirname(destAbs);
   await fs.promises.mkdir(dir, { recursive: true });
 
-  // ✅ fuerza nombre seguro + extensión segura (evita raros como .jpg.exe)
+  // âœ… fuerza nombre seguro + extensiÃ³n segura (evita raros como .jpg.exe)
   const base = sanitizeFilename(path.basename(destAbs, path.extname(destAbs)));
   const finalAbs = path.join(dir, `${base}${safeExt}`);
 
-  // ✅ express-fileupload: mv devuelve promesa si no pasás callback
+  // âœ… express-fileupload: mv devuelve promesa si no pasÃ¡s callback
   await uploadFile.mv(finalAbs);
 
   return finalAbs;
 }
 
-// ✅ Guardar respuesta en (texto/bool/jsonb)
+// âœ… Guardar respuesta en (texto/bool/jsonb)
 function toJsonbOrText(valor) {
   let valor_texto = null;
   let valor_bool = null;
@@ -792,7 +857,7 @@ function toJsonbOrText(valor) {
   return { valor_texto, valor_bool, valor_json };
 }
 
-/* ───────────────────────── PLANTILLAS ───────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ PLANTILLAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 // GET /api/informes/plantillas
 async function getPlantillas(req, res) {
@@ -825,7 +890,7 @@ async function getPlantillas(req, res) {
     const { rows } = await pool.query(q, [userId, isAdmin]);
     return res.json(rows);
   } catch (err) {
-    console.error("❌ getPlantillas error:", err.message);
+    console.error("âŒ getPlantillas error:", err.message);
     return res.json([]);
   }
 }
@@ -860,7 +925,7 @@ async function getPlantillaById(req, res) {
     const isShared = !!plantilla.mi_rol_db;
     const isActive = (plantilla.activo ?? true) === true;
 
-    // ✅ dueño SIEMPRE ve aunque esté inactiva
+    // âœ… dueÃ±o SIEMPRE ve aunque estÃ© inactiva
     const canRead = isAdmin || isOwner || (isActive && isShared);
     if (!canRead) return res.status(403).json({ ok: false, error: "Sin acceso a la plantilla" });
 
@@ -910,7 +975,7 @@ async function createPlantilla(req, res) {
         ]
       )
       .catch(async () => {
-        console.warn("⚠️ createPlantilla: campos extendidos no disponibles, usando fallback");
+        console.warn("âš ï¸ createPlantilla: campos extendidos no disponibles, usando fallback");
         return pool.query(
           `INSERT INTO ema.informe_plantilla (nombre, descripcion, activo)
            VALUES ($1, $2, $3)
@@ -922,7 +987,7 @@ async function createPlantilla(req, res) {
     const { rows } = await result;
     return res.status(201).json({ ok: true, plantilla: rows[0] });
   } catch (err) {
-    console.error("❌ createPlantilla error:", err.message);
+    console.error("âŒ createPlantilla error:", err.message);
     return res.status(500).json({ ok: false, error: "Error al crear plantilla", details: err.message });
   }
 }
@@ -985,12 +1050,12 @@ async function updatePlantilla(req, res) {
 
     return res.json({ ok: true, plantilla: rows[0] });
   } catch (err) {
-    console.error("❌ updatePlantilla error:", err.message);
+    console.error("âŒ updatePlantilla error:", err.message);
     return res.status(500).json({ ok: false, error: "Error al actualizar plantilla", details: err.message });
   }
 }
 
-// DELETE lógico /api/informes/plantillas/:id
+// DELETE lÃ³gico /api/informes/plantillas/:id
 async function deletePlantilla(req, res) {
   const { id } = req.params;
   try {
@@ -1009,12 +1074,12 @@ async function deletePlantilla(req, res) {
   }
 }
 
-// ✅ DELETE DEFINITIVO (SOLO ADMIN)
+// âœ… DELETE DEFINITIVO (SOLO ADMIN)
 async function hardDeletePlantilla(req, res) {
   const idPlantilla = Number(req.params.id);
   const tipo = Number(req.user?.tipo_usuario ?? req.user?.tipo ?? req.user?.group_id);
   if (tipo !== 1) return res.status(403).json({ ok: false, error: "Solo administrador puede eliminar definitivamente" });
-  if (!idPlantilla) return res.status(400).json({ ok: false, error: "ID inválido" });
+  if (!idPlantilla) return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
 
   const client = await pool.connect();
   try {
@@ -1060,7 +1125,7 @@ async function hardDeletePlantilla(req, res) {
   }
 }
 
-/* ───────────────────────────────────────── SECCIONES ───────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SECCIONES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 // POST /api/informes/plantillas/:idPlantilla/secciones
 async function createSeccion(req, res) {
@@ -1071,7 +1136,7 @@ async function createSeccion(req, res) {
     const visibleIfJson = normalizeJsonbInput(visible_if, { mode: "create" });
 
     if (visibleIfJson && visibleIfJson.__json_error) {
-      return res.status(400).json({ ok: false, error: `visible_if inválido: ${visibleIfJson.__json_error}` });
+      return res.status(400).json({ ok: false, error: `visible_if invÃ¡lido: ${visibleIfJson.__json_error}` });
     }
 
     const { rows } = await pool.query(
@@ -1084,7 +1149,7 @@ async function createSeccion(req, res) {
     return res.status(201).json({ ok: true, seccion: rows[0] });
   } catch (err) {
     console.error("createSeccion error:", err);
-    return res.status(500).json({ ok: false, error: "Error al crear sección" });
+    return res.status(500).json({ ok: false, error: "Error al crear secciÃ³n" });
   }
 }
 
@@ -1096,7 +1161,7 @@ async function updateSeccion(req, res) {
   const visibleIfJson = normalizeJsonbInput(req.body.visible_if, { mode: "update" });
 
   if (visibleIfJson && visibleIfJson.__json_error) {
-    return res.status(400).json({ ok: false, error: `visible_if inválido: ${visibleIfJson.__json_error}` });
+    return res.status(400).json({ ok: false, error: `visible_if invÃ¡lido: ${visibleIfJson.__json_error}` });
   }
 
   try {
@@ -1130,11 +1195,11 @@ async function updateSeccion(req, res) {
       params
     );
 
-    if (!rows.length) return res.status(404).json({ ok: false, error: "Sección no encontrada" });
+    if (!rows.length) return res.status(404).json({ ok: false, error: "SecciÃ³n no encontrada" });
     return res.json({ ok: true, seccion: rows[0] });
   } catch (err) {
     console.error("updateSeccion error:", err);
-    return res.status(500).json({ ok: false, error: "Error al actualizar sección" });
+    return res.status(500).json({ ok: false, error: "Error al actualizar secciÃ³n" });
   }
 }
 
@@ -1142,7 +1207,7 @@ async function updateSeccion(req, res) {
 async function deleteSeccion(req, res) {
   const idSeccion = Number(req.params.idSeccion);
   if (!Number.isFinite(idSeccion) || idSeccion <= 0) {
-    return res.status(400).json({ ok: false, error: "idSeccion inválido" });
+    return res.status(400).json({ ok: false, error: "idSeccion invÃ¡lido" });
   }
 
   const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
@@ -1188,18 +1253,18 @@ async function deleteSeccion(req, res) {
       } catch {}
     }
 
-    if (!delSec.rowCount) return res.status(404).json({ ok: false, error: "Sección no encontrada" });
+    if (!delSec.rowCount) return res.status(404).json({ ok: false, error: "SecciÃ³n no encontrada" });
     return res.json({ ok: true });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("deleteSeccion error:", err);
-    return res.status(500).json({ ok: false, error: err?.detail || err?.message || "Error al eliminar sección" });
+    return res.status(500).json({ ok: false, error: err?.detail || err?.message || "Error al eliminar secciÃ³n" });
   } finally {
     client.release();
   }
 }
 
-/* ───────────────────────────────────────── PREGUNTAS ───────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ PREGUNTAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 // POST /api/informes/secciones/:idSeccion/preguntas
 async function createPregunta(req, res) {
@@ -1213,7 +1278,6 @@ async function createPregunta(req, res) {
     obligatorio = false,
     orden = 1,
     permite_foto = false,
-    id_unico = false,
     visible_if,
     required_if,
     hide_if,
@@ -1233,7 +1297,6 @@ async function createPregunta(req, res) {
     permite_foto = true;
     opciones = null;
     opciones_json = null;
-    id_unico = false; // opcional pero recomendable
   }
 
   const opcionesInput = opciones_json !== undefined ? opciones_json : opciones;
@@ -1257,7 +1320,6 @@ async function createPregunta(req, res) {
 
   const secId = asPositiveInt(idSeccion, 0);
   const newOrden = asPositiveInt(orden, 1);
-  const idUnicoBool = !!id_unico;
 
   const client = await pool.connect();
   try {
@@ -1289,12 +1351,11 @@ async function createPregunta(req, res) {
           obligatorio,
           orden,
           permite_foto,
-          id_unico,
           visible_if,
           required_if,
           hide_if
         )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         secId,
@@ -1304,7 +1365,6 @@ async function createPregunta(req, res) {
         !!obligatorio,
         newOrden,
         !!permite_foto,
-        idUnicoBool,
         visibleIfJson,
         requiredIfJson,
         hideIfJson,
@@ -1339,7 +1399,6 @@ async function updatePregunta(req, res) {
     obligatorio,
     orden,
     permite_foto,
-    id_unico,
     id_seccion,
     visible_if,
     required_if,
@@ -1348,7 +1407,7 @@ async function updatePregunta(req, res) {
 
   const pregId = asPositiveInt(idPregunta, 0);
   if (!pregId) {
-    return res.status(400).json({ ok: false, error: "idPregunta inválido" });
+    return res.status(400).json({ ok: false, error: "idPregunta invÃ¡lido" });
   }
 
   const tipoNorm =
@@ -1360,7 +1419,6 @@ async function updatePregunta(req, res) {
     permite_foto = true;
     opciones = null;
     opciones_json = null;
-    id_unico = false; // opcional pero recomendable
   }
 
   const opcionesInput = opciones_json !== undefined ? opciones_json : opciones;
@@ -1519,11 +1577,6 @@ async function updatePregunta(req, res) {
       params.push(!!permite_foto);
     }
 
-    if (id_unico !== undefined) {
-      sets.push(`id_unico = $${sets.length + 1}`);
-      params.push(!!id_unico);
-    }
-
     if (visibleIfJson !== undefined) {
       sets.push(`visible_if = $${sets.length + 1}`);
       params.push(visibleIfJson);
@@ -1579,7 +1632,7 @@ async function moverPregunta(req, res) {
   const toSec = Number(to_seccion_id);
   let toOrd = Number(to_orden);
 
-  if (!idPreg || !toSec || !toOrd) return res.status(400).json({ ok: false, error: "Parámetros inválidos" });
+  if (!idPreg || !toSec || !toOrd) return res.status(400).json({ ok: false, error: "ParÃ¡metros invÃ¡lidos" });
 
   const client = await pool.connect();
   try {
@@ -1669,7 +1722,7 @@ async function moverPregunta(req, res) {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("moverPregunta error:", err);
-    if (err.code === "23505") return res.status(409).json({ ok: false, error: "Conflicto de orden en la sección destino" });
+    if (err.code === "23505") return res.status(409).json({ ok: false, error: "Conflicto de orden en la secciÃ³n destino" });
     return res.status(500).json({ ok: false, error: "Error al mover pregunta" });
   } finally {
     client.release();
@@ -1682,7 +1735,7 @@ async function deletePregunta(req, res) {
   const idPregunta = Number(rawId);
 
   if (!Number.isFinite(idPregunta) || idPregunta <= 0) {
-    return res.status(400).json({ ok: false, error: "ID inválido" });
+    return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
   }
 
   const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
@@ -1755,10 +1808,10 @@ async function deletePregunta(req, res) {
   }
 }
 
-/* ───────────────────────────────────────── INFORMES LLENADOS ───────────────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ INFORMES LLENADOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
   /**
-   * ✅ Regla final de visibilidad:
+   * âœ… Regla final de visibilidad:
    * - secVisible = evalCond(sec_visible_if) (si no hay => true)
    * - qHidden   = evalCond(q.hide_if)       (si no hay => false)
    * - qVisible  = evalCond(q.visible_if)    (si no hay => true)
@@ -1802,7 +1855,7 @@ async function deletePregunta(req, res) {
     return null;
   }
 
-  async function validarPreguntasIdUnico({
+  async function validarPreguntasUnicas({
     client,
     idPlantilla,
     preguntasById,
@@ -1815,7 +1868,8 @@ async function deletePregunta(req, res) {
     for (const qid of visibleSet) {
       const q = preguntasById.get(Number(qid));
       if (!q) continue;
-      if (!q.id_unico) continue;
+      const isUniqueField = !!q?.es_unico;
+      if (!isUniqueField) continue;
 
       const raw = _getAnswerValueFromObj(respuestasObj, qid);
       const val = _coerceValue(raw);
@@ -1857,13 +1911,13 @@ async function deletePregunta(req, res) {
           id_pregunta: Number(qid),
           etiqueta: q?.etiqueta || null,
           valor: val,
-          reason: "id_unico",
+          reason: "unique_field",
         });
       }
     }
 
     if (errores.length) {
-      const e = new Error("Hay valores duplicados en campos marcados como ID único");
+      const e = new Error("Hay valores duplicados en campos marcados como unicos");
       e.statusCode = 409;
       e.details = errores;
       throw e;
@@ -1876,12 +1930,12 @@ async function deletePregunta(req, res) {
 
     const idPlantilla = Number(id_plantilla);
     if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
-      return res.status(400).json({ ok: false, error: "id_plantilla inválido" });
+      return res.status(400).json({ ok: false, error: "id_plantilla invÃ¡lido" });
     }
 
     const idProyecto = id_proyecto ? Number(id_proyecto) : null;
     if (id_proyecto && (!Number.isFinite(idProyecto) || idProyecto <= 0)) {
-      return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
+      return res.status(400).json({ ok: false, error: "id_proyecto invÃ¡lido" });
     }
 
     let respuestasObj = {};
@@ -1902,7 +1956,7 @@ async function deletePregunta(req, res) {
     try {
       await client.query("BEGIN");
 
-      // ✅ IMPORTANTE: incluir id_unico + opciones_json (semaforo)
+      // âœ… IMPORTANTE: incluir opciones_json (semaforo)
       const qRes = await client.query(
         `
         SELECT
@@ -1911,7 +1965,6 @@ async function deletePregunta(req, res) {
           q.tipo,
           q.obligatorio,
           q.permite_foto,
-          q.id_unico,
           q.opciones_json,
           q.visible_if,
           q.required_if,
@@ -1961,7 +2014,7 @@ async function deletePregunta(req, res) {
         if (isRequired) requiredSet.add(qid);
       }
 
-      // ✅ required no-imagen
+      // âœ… required no-imagen
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
@@ -1976,7 +2029,7 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // ✅ required imagen (en create: debe venir archivo)
+      // âœ… required imagen (en create: debe venir archivo)
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
@@ -1998,8 +2051,8 @@ async function deletePregunta(req, res) {
         });
       }
 
-      // ✅ validar ID único antes de crear
-      await validarPreguntasIdUnico({
+      // âœ… validar ID Ãºnico antes de crear
+      await validarPreguntasUnicas({
         client,
         idPlantilla,
         preguntasById,
@@ -2008,7 +2061,7 @@ async function deletePregunta(req, res) {
         excludeInformeId: null,
       });
 
-      // ✅ crear informe
+      // âœ… crear informe
       const infRes = await client.query(
         `
         INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
@@ -2021,7 +2074,7 @@ async function deletePregunta(req, res) {
       const informe = infRes.rows[0];
       const idInforme = informe.id_informe;
 
-      // ✅ guardar respuestas (solo visibles)
+      // âœ… guardar respuestas (solo visibles)
       for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
         const idPregunta = Number(idPreguntaStr);
         if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
@@ -2064,7 +2117,7 @@ async function deletePregunta(req, res) {
         );
       }
 
-      // ✅ subir fotos segura
+      // âœ… subir fotos segura
       const uploadsRoot = path.join(__dirname, "..", "uploads");
       const baseDir = path.join(
         uploadsRoot,
@@ -2237,7 +2290,7 @@ async function deletePregunta(req, res) {
         let val = r.valor_texto;
 
         if (r.valor_bool !== null && r.valor_bool !== undefined) {
-          val = r.valor_bool ? "Sí" : "No";
+          val = r.valor_bool ? "SÃ­" : "No";
         } else if (r.valor_json !== null && r.valor_json !== undefined) {
           try {
             const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
@@ -2295,20 +2348,20 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* ───────────────────────────────────────────────────────────────
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     GET /api/informes/proyecto/:idProyecto/por-plantilla
     Devuelve plantillas usadas en el proyecto + sus informes
-  ─────────────────────────────────────────────────────────────── */
+  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   async function listPlantillasByProyecto(req, res) {
     const { idProyecto } = req.params;
 
     try {
       const idP = Number(idProyecto);
       if (!Number.isFinite(idP) || idP <= 0) {
-        return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+        return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
       }
 
-      // 1) Plantillas usadas (conteo + último)
+      // 1) Plantillas usadas (conteo + Ãºltimo)
       const q1 = await pool.query(
         `
         SELECT
@@ -2329,7 +2382,7 @@ async function deletePregunta(req, res) {
         return res.json({ ok: true, items: [] });
       }
 
-      // 2) Informes por plantilla (para dropdown “Informe”)
+      // 2) Informes por plantilla (para dropdown â€œInformeâ€)
       const q2 = await pool.query(
         `
         SELECT
@@ -2374,9 +2427,9 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* ───────────────────────────────────────────────────────────────
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     2) GET /api/informes/proyecto/:idProyecto?plantilla=ID
-  ─────────────────────────────────────────────────────────────── */
+  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   async function listInformesByProyecto(req, res) {
     const { idProyecto } = req.params;
     const { id: userId, tipo_usuario } = req.user || {};
@@ -2420,15 +2473,15 @@ async function deletePregunta(req, res) {
       const { rows } = await pool.query(q, params);
       return res.json({ ok: true, informes: rows });
     } catch (err) {
-      console.error("❌ listInformesByProyecto error:", err.message);
+      console.error("âŒ listInformesByProyecto error:", err.message);
       return res.json({ ok: true, informes: [] });
     }
   }
 
-  /* ───────────────────────────────────────────────────────────────
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     GET /api/informes/proyecto/:idProyecto/puntos?plantilla=ID&informe=ID
-    ✅ Incluye: id_plantilla + nombre_plantilla
-  ─────────────────────────────────────────────────────────────── */
+    âœ… Incluye: id_plantilla + nombre_plantilla
+  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   async function getInformesPuntosGeojson(req, res) {
     const { idProyecto } = req.params;
       const { plantilla, informe } = req.query;
@@ -2436,7 +2489,7 @@ async function deletePregunta(req, res) {
       try {
         const idP = Number(idProyecto);
         if (!Number.isFinite(idP) || idP <= 0) {
-          return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+          return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
         }
 
         const params = [idP];
@@ -2446,7 +2499,7 @@ async function deletePregunta(req, res) {
         if (plantilla != null && String(plantilla).trim() !== "") {
           const idPlant = Number(plantilla);
           if (!Number.isFinite(idPlant) || idPlant <= 0) {
-            return res.status(400).json({ ok: false, error: "plantilla inválida" });
+            return res.status(400).json({ ok: false, error: "plantilla invÃ¡lida" });
           }
           params.push(idPlant);
           whereExtra += ` AND i.id_plantilla = $${params.length} `;
@@ -2456,7 +2509,7 @@ async function deletePregunta(req, res) {
         if (informe != null && String(informe).trim() !== "") {
           const idInf = Number(informe);
           if (!Number.isFinite(idInf) || idInf <= 0) {
-            return res.status(400).json({ ok: false, error: "informe inválido" });
+            return res.status(400).json({ ok: false, error: "informe invÃ¡lido" });
           }
           params.push(idInf);
           whereExtra += ` AND i.id_informe = $${params.length} `;
@@ -2652,7 +2705,7 @@ async function deletePregunta(req, res) {
             id_informe: Number(r.id_informe),
             id_proyecto: Number(r.id_proyecto),
 
-            // ✅ lo que pediste:
+            // âœ… lo que pediste:
             id_plantilla: Number(r.id_plantilla),
             nombre_plantilla: r.nombre_plantilla,
 
@@ -2686,7 +2739,7 @@ async function deletePregunta(req, res) {
 
     const idInforme = Number(id);
     if (!Number.isFinite(idInforme) || idInforme <= 0) {
-      return res.status(400).json({ ok: false, error: "ID inválido" });
+      return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
     }
 
     let respuestasObj = undefined;
@@ -2744,7 +2797,7 @@ async function deletePregunta(req, res) {
         );
       }
 
-      // ✅ incluir id_unico + opciones_json
+      // âœ… incluir opciones_json
       const qRes = await client.query(
         `
         SELECT
@@ -2753,7 +2806,6 @@ async function deletePregunta(req, res) {
           q.tipo,
           q.obligatorio,
           q.permite_foto,
-          q.id_unico,
           q.opciones_json,
           q.visible_if,
           q.required_if,
@@ -2809,7 +2861,7 @@ async function deletePregunta(req, res) {
         if (isRequired) requiredSet.add(qid);
       }
 
-      // ✅ VALIDACIÓN REQUIRED
+      // âœ… VALIDACIÃ“N REQUIRED
       if (respuestasObj !== undefined) {
         const invalid = [];
 
@@ -2866,8 +2918,8 @@ async function deletePregunta(req, res) {
           });
         }
 
-        // ✅ validar ID único excluyendo el mismo informe
-        await validarPreguntasIdUnico({
+        // âœ… validar ID Ãºnico excluyendo el mismo informe
+        await validarPreguntasUnicas({
           client,
           idPlantilla: Number(informe.id_plantilla),
           preguntasById,
@@ -2877,7 +2929,7 @@ async function deletePregunta(req, res) {
         });
       }
 
-      // ✅ BORRADO DE FOTOS (DB + FS)
+      // âœ… BORRADO DE FOTOS (DB + FS)
       if (deleteIds.length) {
         const { rows: fotosDel } = await client.query(
           `
@@ -2908,7 +2960,7 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // ✅ REEMPLAZO DE RESPUESTAS (solo visibles)
+      // âœ… REEMPLAZO DE RESPUESTAS (solo visibles)
       if (respuestasObj !== undefined) {
         await client.query("DELETE FROM ema.informe_respuesta WHERE id_informe = $1", [idInforme]);
 
@@ -2959,7 +3011,7 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // ✅ SUBIDA DE FOTOS SEGURA
+      // âœ… SUBIDA DE FOTOS SEGURA
       const baseDir = path.join(
         uploadsRoot,
         "proyectos",
@@ -3035,14 +3087,14 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* ───────────────────────────────────────────────────────────────
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     5) DELETE /api/informes/:id/fotos/:idFoto
-  ─────────────────────────────────────────────────────────────── */
+  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   async function deleteInformeFoto(req, res) {
     const idInforme = Number(req.params.id);
     const idFoto = Number(req.params.idFoto);
 
-    if (!idInforme || !idFoto) return res.status(400).json({ ok: false, error: "Parámetros inválidos" });
+    if (!idInforme || !idFoto) return res.status(400).json({ ok: false, error: "ParÃ¡metros invÃ¡lidos" });
 
     const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
     const client = await pool.connect();
@@ -3083,14 +3135,14 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* ───────────────────────────────────────────────────────────────
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     6) DELETE /api/informes/:id
-  ─────────────────────────────────────────────────────────────── */
+  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   async function deleteInforme(req, res) {
     const idInforme = Number(req.params.id);
 
     if (!Number.isFinite(idInforme) || idInforme <= 0) {
-      return res.status(400).json({ ok: false, error: "ID inválido" });
+      return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
     }
 
     const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
@@ -3123,20 +3175,17 @@ async function deletePregunta(req, res) {
 
       await client.query("COMMIT");
 
-      for (const f of fotosRows) {
-        try {
-          const ruta = String(f?.ruta_archivo || "").trim();
-          if (!ruta) continue;
+      const cleanup = await cleanupInformeFiles(fotosRows);
 
-          const cleaned = ruta.replace(/^uploads[\\/]/i, "");
-          const abs = path.resolve(path.join(uploadsRoot, cleaned));
-          if (!abs.startsWith(uploadsRoot + path.sep)) continue;
-
-          await fs.promises.unlink(abs).catch(() => {});
-        } catch {}
-      }
-
-      return res.json({ ok: true, deleted: del.rowCount });
+      return res.json({
+        ok: true,
+        deleted: del.rowCount,
+        cleanup: {
+          total: cleanup.total,
+          deleted: cleanup.deleted,
+          failed: cleanup.failed,
+        },
+      });
     } catch (err) {
       try {
         await client.query("ROLLBACK");
@@ -3160,7 +3209,140 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* ───────────────────────── SHARE LINKS (PRIVADO) ───────────────────────── */
+  /* ---------------------------------------------------------
+     POST /api/informes/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete
+     Borrado masivo (admin + informes.delete)
+  --------------------------------------------------------- */
+  async function bulkDeleteInformesByProyectoPlantilla(req, res) {
+    const idProyecto = Number(req.params.idProyecto);
+    const idPlantilla = Number(req.params.idPlantilla);
+
+    if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+      return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+    }
+    if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+      return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
+    }
+
+    const adminRoleId = Number(req.user?.tipo_usuario ?? req.user?.group_id);
+    if (adminRoleId !== 1) {
+      return res.status(403).json({ ok: false, error: "Solo admin puede borrar en masa" });
+    }
+
+    const mode = req.body?.all === true ? "all" : "ids";
+    let ids = [];
+
+    if (mode === "ids") {
+      const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+      ids = Array.from(
+        new Set(
+          rawIds
+            .map((x) => Number(x))
+            .filter((n) => Number.isFinite(n) && n > 0)
+        )
+      );
+
+      if (!ids.length) {
+        return res.status(400).json({ ok: false, error: "ids vacío o inválido" });
+      }
+      if (ids.length > 5000) {
+        return res.status(400).json({ ok: false, error: "Límite de ids excedido (max 5000)" });
+      }
+    }
+
+    const client = await pool.connect();
+    let fotosRows = [];
+
+    try {
+      await client.query("BEGIN");
+
+      if (mode === "all") {
+        const { rows } = await client.query(
+          `
+          SELECT id_informe
+          FROM ema.informe
+          WHERE id_proyecto = $1
+            AND id_plantilla = $2
+          FOR UPDATE
+          `,
+          [idProyecto, idPlantilla]
+        );
+        ids = rows.map((r) => Number(r.id_informe)).filter((n) => Number.isFinite(n) && n > 0);
+      } else {
+        const { rows: foundRows } = await client.query(
+          `
+          SELECT id_informe
+          FROM ema.informe
+          WHERE id_informe = ANY($1::int[])
+            AND id_proyecto = $2
+            AND id_plantilla = $3
+          FOR UPDATE
+          `,
+          [ids, idProyecto, idPlantilla]
+        );
+
+        if (foundRows.length !== ids.length) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            ok: false,
+            error: "ids fuera de proyecto/plantilla o conjunto inconsistente",
+            found_count: foundRows.length,
+            requested_count: ids.length,
+          });
+        }
+      }
+
+      if (!ids.length) {
+        await client.query("ROLLBACK");
+        return res.json({
+          ok: true,
+          mode,
+          deleted_count: 0,
+          deleted_ids: [],
+          cleanup: { total: 0, deleted: 0, failed: 0 },
+        });
+      }
+
+      const fotos = await client.query(
+        `SELECT ruta_archivo FROM ema.informe_foto WHERE id_informe = ANY($1::int[])`,
+        [ids]
+      );
+      fotosRows = fotos.rows || [];
+
+      await client.query(`DELETE FROM ema.informe_foto WHERE id_informe = ANY($1::int[])`, [ids]);
+      await client.query(`DELETE FROM ema.informe_respuesta WHERE id_informe = ANY($1::int[])`, [ids]);
+      const del = await client.query(`DELETE FROM ema.informe WHERE id_informe = ANY($1::int[])`, [ids]);
+
+      await client.query("COMMIT");
+
+      const cleanup = await cleanupInformeFiles(fotosRows);
+
+      return res.json({
+        ok: true,
+        mode,
+        deleted_count: del.rowCount,
+        deleted_ids: ids,
+        cleanup: {
+          total: cleanup.total,
+          deleted: cleanup.deleted,
+          failed: cleanup.failed,
+        },
+      });
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+      console.error("bulkDeleteInformesByProyectoPlantilla error:", err);
+      return res.status(500).json({
+        ok: false,
+        error: err?.detail || err?.message || "Error al eliminar informes",
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SHARE LINKS (PRIVADO) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   function buildPublicUrl(req, token) {
     const baseRaw = process.env.PUBLIC_FORM_BASE_URL || "";
     const base = String(baseRaw).trim().replace(/\/+$/, "");
@@ -3179,7 +3361,7 @@ async function deletePregunta(req, res) {
       let expira;
       if (expira_en) expira = new Date(expira_en);
       else expira = new Date(Date.now() + Number(minutos) * 60 * 1000);
-      if (Number.isNaN(expira.getTime())) return res.status(400).json({ ok: false, error: "expira_en inválido" });
+      if (Number.isNaN(expira.getTime())) return res.status(400).json({ ok: false, error: "expira_en invÃ¡lido" });
 
       const { rows } = await pool.query(
         `INSERT INTO ema.informe_share_link
@@ -3251,7 +3433,7 @@ async function deletePregunta(req, res) {
   async function eliminarShareLink(req, res) {
     const { idShare } = req.params;
     const sid = Number(idShare);
-    if (!sid) return res.status(400).json({ ok: false, error: "idShare inválido" });
+    if (!sid) return res.status(400).json({ ok: false, error: "idShare invÃ¡lido" });
 
     try {
       const r = await pool.query(
@@ -3269,10 +3451,10 @@ async function deletePregunta(req, res) {
     }
   }
 
-/* ───────────────────────── SHARE LINKS (PÚBLICO) ───────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SHARE LINKS (PÃšBLICO) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 async function _getValidShareByToken(token) {
   const { rows } = await pool.query(`SELECT * FROM ema.informe_share_link WHERE token = $1`, [token]);
-  if (!rows.length) return { ok: false, status: 404, error: "Link inválido" };
+  if (!rows.length) return { ok: false, status: 404, error: "Link invÃ¡lido" };
 
   const link = rows[0];
   const now = new Date();
@@ -3280,7 +3462,7 @@ async function _getValidShareByToken(token) {
   if (link.cerrado_en) return { ok: false, status: 410, error: "Link cerrado" };
   if (new Date(link.expira_en) <= now) return { ok: false, status: 410, error: "Link expirado" };
   if (link.max_envios != null && Number(link.envios_count) >= Number(link.max_envios)) {
-    return { ok: false, status: 429, error: "Límite de envíos alcanzado" };
+    return { ok: false, status: 429, error: "LÃ­mite de envÃ­os alcanzado" };
   }
 
   return { ok: true, link };
@@ -3312,7 +3494,7 @@ async function publicGetShareForm(req, res) {
       [Number(link.id_plantilla)]
     );
 
-    // ✅ incluye opciones_json porque es q.*
+    // âœ… incluye opciones_json porque es q.*
     const { rows: preguntas } = await pool.query(
       `SELECT q.*
        FROM ema.informe_pregunta q
@@ -3343,7 +3525,7 @@ async function publicGetShareForm(req, res) {
     });
   } catch (err) {
     console.error("publicGetShareForm error:", err);
-    return res.status(500).json({ ok: false, error: "Error al cargar formulario público" });
+    return res.status(500).json({ ok: false, error: "Error al cargar formulario pÃºblico" });
   }
 }
 
@@ -3387,7 +3569,7 @@ async function publicSubmitShareForm(req, res) {
     );
     if (!shareRes.rowCount) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Link inválido" });
+      return res.status(404).json({ ok: false, error: "Link invÃ¡lido" });
     }
 
     const link = shareRes.rows[0];
@@ -3403,10 +3585,10 @@ async function publicSubmitShareForm(req, res) {
     }
     if (link.max_envios != null && Number(link.envios_count) >= Number(link.max_envios)) {
       await client.query("ROLLBACK");
-      return res.status(429).json({ ok: false, error: "Límite de envíos alcanzado" });
+      return res.status(429).json({ ok: false, error: "LÃ­mite de envÃ­os alcanzado" });
     }
 
-    // ✅ incluir opciones_json
+    // âœ… incluir opciones_json
     const qRes = await client.query(
       `
       SELECT
@@ -3442,7 +3624,7 @@ async function publicSubmitShareForm(req, res) {
       if (isRequired) requiredSet.add(qid);
     }
 
-    // ✅ required no-imagen
+    // âœ… required no-imagen
     for (const qid of requiredSet) {
       const q = preguntasById.get(qid);
       if (!q) continue;
@@ -3457,7 +3639,7 @@ async function publicSubmitShareForm(req, res) {
       }
     }
 
-    // ✅ required imagen (en público)
+    // âœ… required imagen (en pÃºblico)
     for (const qid of requiredSet) {
       const q = preguntasById.get(qid);
       if (!q) continue;
@@ -3479,7 +3661,7 @@ async function publicSubmitShareForm(req, res) {
       });
     }
 
-    // ✅ crear informe
+    // âœ… crear informe
     const infRes = await client.query(
       `
       INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
@@ -3495,7 +3677,7 @@ async function publicSubmitShareForm(req, res) {
 
     const idInforme = infRes.rows[0].id_informe;
 
-    // ✅ guardar respuestas (solo visibles)
+    // âœ… guardar respuestas (solo visibles)
     for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
       const idPregunta = Number(idPreguntaStr);
       if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
@@ -3504,7 +3686,7 @@ async function publicSubmitShareForm(req, res) {
       if (!q) continue;
       if (!visibleSet.has(idPregunta)) continue;
 
-      // ✅ Normalización por tipo (FIX SELECT)
+      // âœ… NormalizaciÃ³n por tipo (FIX SELECT)
       const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
 
       let valorTexto = null;
@@ -3539,7 +3721,7 @@ async function publicSubmitShareForm(req, res) {
       );
     }
 
-    // ✅ subir fotos segura
+    // âœ… subir fotos segura
     const uploadsRoot = path.join(__dirname, "..", "uploads");
     const baseDir = path.join(
       uploadsRoot,
@@ -3590,7 +3772,7 @@ async function publicSubmitShareForm(req, res) {
       }
     }
 
-    // ✅ actualizar contador/envíos
+    // âœ… actualizar contador/envÃ­os
     const upd = await client.query(
       `
       UPDATE ema.informe_share_link
@@ -3620,27 +3802,27 @@ async function publicSubmitShareForm(req, res) {
     console.error("publicSubmitShareForm error:", err);
     return res
       .status(500)
-      .json({ ok: false, error: err?.message || "Error al enviar formulario público" });
+      .json({ ok: false, error: err?.message || "Error al enviar formulario pÃºblico" });
   } finally {
     client.release();
   }
 }
 
-/* ───────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    7) GET /api/informes/proyecto/:idProyecto/export/excel?plantilla=ID
-─────────────────────────────────────────────────────────────── */
-// ✅ Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+// âœ… Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
 // GET /api/informes/proyecto/:idProyecto/export/excel?kobo=1
-// (opcional) ?plantilla=ID  (si querés mantenerlo)
+// (opcional) ?plantilla=ID  (si querÃ©s mantenerlo)
 async function exportProyectoInformesExcel(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
-  if (!idProyecto) return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+  if (!idProyecto) return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
 
   const client = await pool.connect();
   try {
-    // ✅ proy label (PK gid)
+    // âœ… proy label (PK gid)
     const proyQ = await client.query(
       `SELECT gid, nombre, codigo
        FROM ema.proyectos
@@ -3687,11 +3869,11 @@ async function exportProyectoInformesExcel(req, res) {
       if (!respByInforme.has(idInf)) respByInforme.set(idInf, new Map());
 
       let v = "";
-      if (r.valor_bool !== null && r.valor_bool !== undefined) v = r.valor_bool ? "Sí" : "No";
+      if (r.valor_bool !== null && r.valor_bool !== undefined) v = r.valor_bool ? "SÃ­" : "No";
       else if (r.valor_json !== null && r.valor_json !== undefined) {
         try {
           const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-          // ✅ si es objeto tipo {lat,lng} o similares -> stringify estable
+          // âœ… si es objeto tipo {lat,lng} o similares -> stringify estable
           v = Array.isArray(parsed) ? parsed.join(", ") : (typeof parsed === "object" ? JSON.stringify(parsed) : String(parsed));
         } catch {
           v = String(r.valor_json);
@@ -3750,7 +3932,7 @@ async function exportProyectoInformesExcel(req, res) {
       String(s || "")
         .trim()
         .replace(/\s+/g, " ")
-        .replace(/[^\p{L}\p{N}\s._:-]/gu, "") // deja letras/números/espacios y algunos signos
+        .replace(/[^\p{L}\p{N}\s._:-]/gu, "") // deja letras/nÃºmeros/espacios y algunos signos
         .replace(/\s/g, "_")
         .slice(0, 80) || "campo";
 
@@ -3764,7 +3946,7 @@ async function exportProyectoInformesExcel(req, res) {
     };
 
     // columnas de preguntas (y opcional fotos por pregunta)
-    // Si hay múltiples plantillas, prefijamos para que no choque:
+    // Si hay mÃºltiples plantillas, prefijamos para que no choque:
     const multiPlantilla = plantillasIds.length > 1;
 
     const preguntaCols = preguntasAll.map((p) => {
@@ -3791,10 +3973,10 @@ async function exportProyectoInformesExcel(req, res) {
     wb.creator = "EMA GeoApp";
     wb.created = new Date();
 
-    // ✅ Hoja principal tipo Kobo
+    // âœ… Hoja principal tipo Kobo
     const ws = wb.addWorksheet("data", { views: [{ state: "frozen", ySplit: 1 }] });
 
-    // columnas base (tipo Kobo “start/end” no aplica si no tenés esos campos)
+    // columnas base (tipo Kobo â€œstart/endâ€ no aplica si no tenÃ©s esos campos)
     const baseCols = [
       { header: "id_informe", key: "id_informe", width: 12 },
       { header: "fecha_creado", key: "fecha_creado", width: 22 },
@@ -3804,14 +3986,14 @@ async function exportProyectoInformesExcel(req, res) {
       { header: "titulo", key: "titulo", width: 34 },
     ];
 
-    // ✅ columnas preguntas
+    // âœ… columnas preguntas
     const questionCols = preguntaCols.map((q) => ({
       header: q.colName,
       key: q.colName,
       width: 28,
     }));
 
-    // ✅ columnas fotos por pregunta (opcional)
+    // âœ… columnas fotos por pregunta (opcional)
     const fotoCols = preguntaCols.map((q) => ({
       header: `Fotos:${q.colName}`,
       key: `Fotos:${q.colName}`,
@@ -3853,7 +4035,7 @@ async function exportProyectoInformesExcel(req, res) {
       r.alignment = { vertical: "top", wrapText: true };
     }
 
-    // ✅ Hoja diccionario (opcional, súper útil)
+    // âœ… Hoja diccionario (opcional, sÃºper Ãºtil)
     const wsQ = wb.addWorksheet("questions", { views: [{ state: "frozen", ySplit: 1 }] });
     wsQ.columns = [
       { header: "colName", key: "colName", width: 40 },
@@ -3876,7 +4058,7 @@ async function exportProyectoInformesExcel(req, res) {
       });
     }
 
-    // ✅ hoja info
+    // âœ… hoja info
     const wsInfo = wb.addWorksheet("info");
     wsInfo.addRow(["Proyecto", proyectoLabel]);
     wsInfo.addRow(["ID Proyecto", idProyecto]);
@@ -3898,9 +4080,9 @@ async function exportProyectoInformesExcel(req, res) {
   }
 }
 
-/* ───────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    8) GET /api/informes/proyecto/:idProyecto/personas?...
-─────────────────────────────────────────────────────────────── */
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 async function buscarPersonasProyecto(req, res) {
   const { idProyecto } = req.params;
   const { by = "all", q = "", plantilla } = req.query;
@@ -3908,7 +4090,7 @@ async function buscarPersonasProyecto(req, res) {
   try {
     const idP = Number(idProyecto);
     if (!Number.isFinite(idP) || idP <= 0) {
-      return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+      return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
     }
 
     const qTxt = String(q || "").trim();
@@ -3921,7 +4103,7 @@ async function buscarPersonasProyecto(req, res) {
     if (plantilla != null && String(plantilla).trim() !== "") {
       const idPlant = Number(plantilla);
       if (!Number.isFinite(idPlant) || idPlant <= 0) {
-        return res.status(400).json({ ok: false, error: "plantilla inválida" });
+        return res.status(400).json({ ok: false, error: "plantilla invÃ¡lida" });
       }
       params.push(idPlant);
       wherePlant = ` AND i.id_plantilla = $${params.length} `;
@@ -3936,7 +4118,7 @@ async function buscarPersonasProyecto(req, res) {
       if (wantsId) {
         const idInf = Number(qTxt);
         if (!Number.isFinite(idInf) || idInf <= 0) {
-          return res.status(400).json({ ok: false, error: "ID inválido" });
+          return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
         }
         baseParams.push(idInf);
         const pId = `$${baseParams.length}`;
@@ -3978,7 +4160,7 @@ async function buscarPersonasProyecto(req, res) {
             CASE
               WHEN UPPER(q.etiqueta) LIKE '%CI%'
                 OR UPPER(q.etiqueta) LIKE '%CEDULA%'
-                OR UPPER(q.etiqueta) LIKE '%CÉDULA%'
+                OR UPPER(q.etiqueta) LIKE '%CÃ‰DULA%'
                 OR UPPER(q.etiqueta) LIKE '%DOCUMENTO%'
               THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
             END
@@ -3987,8 +4169,8 @@ async function buscarPersonasProyecto(req, res) {
           MAX(
             CASE
               WHEN UPPER(q.etiqueta) LIKE '%CODIGO%'
-                OR UPPER(q.etiqueta) LIKE '%CÓDIGO%'
-                OR UPPER(q.etiqueta) LIKE '%CÓD%'
+                OR UPPER(q.etiqueta) LIKE '%CÃ“DIGO%'
+                OR UPPER(q.etiqueta) LIKE '%CÃ“D%'
               THEN COALESCE(r.valor_texto, r.valor_json::text, NULL)
             END
           ) AS codigo_raw,
@@ -4079,18 +4261,18 @@ async function buscarPersonasProyecto(req, res) {
   }
 }
 
-/* ───────────────────────────────────────────────────────────────
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    9) GET /api/informes/proyecto/:idProyecto/pdf?plantilla=ID
-   ✅ PDF individual y PDF completo: mismo formato limpio
-─────────────────────────────────────────────────────────────── */
+   âœ… PDF individual y PDF completo: mismo formato limpio
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 async function generarPdfProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
-  if (!idProyecto) return res.status(400).send("idProyecto inválido");
+  if (!idProyecto) return res.status(400).send("idProyecto invÃ¡lido");
 
   try {
-    // ✅ proyecto label (ema.proyectos PK = gid)
+    // âœ… proyecto label (ema.proyectos PK = gid)
     const proyQ = await pool.query(
       `SELECT gid, nombre, codigo
        FROM ema.proyectos
@@ -4161,13 +4343,13 @@ async function generarPdfProyecto(req, res) {
         [informe.id_informe]
       );
 
-      // ✅ respuestasMap (fix [object Object] + coords)
+      // âœ… respuestasMap (fix [object Object] + coords)
       const respuestasMap = {};
       for (const r of respuestas) {
         let val = r.valor_texto;
 
         if (r.valor_bool !== null && r.valor_bool !== undefined) {
-          val = r.valor_bool ? "Sí" : "No";
+          val = r.valor_bool ? "SÃ­" : "No";
         } else if (r.valor_json !== null && r.valor_json !== undefined) {
           try {
             const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
@@ -4175,7 +4357,7 @@ async function generarPdfProyecto(req, res) {
             if (Array.isArray(parsed)) {
               val = parsed.join(", ");
             } else if (parsed && typeof parsed === "object") {
-              // ✅ caso ubicación {lat,lng}
+              // âœ… caso ubicaciÃ³n {lat,lng}
               if ("lat" in parsed && "lng" in parsed) val = `${parsed.lat}, ${parsed.lng}`;
               else val = JSON.stringify(parsed, null, 2);
             } else {
@@ -4208,7 +4390,7 @@ async function generarPdfProyecto(req, res) {
       informesBlocks.push(bodyInner);
     }
 
-    // ✅ Multi usa las mismas clases/CSS => mismo formato que individual
+    // âœ… Multi usa las mismas clases/CSS => mismo formato que individual
     const html = htmlTemplateMultiInformes({ proyectoLabel, informesBlocks });
 
     const browser = await puppeteer.launch({
@@ -4242,7 +4424,7 @@ async function generarPdfProyecto(req, res) {
 }
 
 // GET /api/informes/proyecto/:idProyecto/plantillas
-// Devuelve TODAS las plantillas permitidas para el proyecto (aunque no tengan informes aún)
+// Devuelve TODAS las plantillas permitidas para el proyecto (aunque no tengan informes aÃºn)
 async function listAllPlantillasByProyecto(req, res) {
   const { idProyecto } = req.params;
   const { id: userId, tipo_usuario } = req.user || {};
@@ -4251,7 +4433,7 @@ async function listAllPlantillasByProyecto(req, res) {
   try {
     const idP = Number(idProyecto);
     if (!Number.isFinite(idP) || idP <= 0) {
-      return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+      return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
     }
 
     const { rows } = await pool.query(
@@ -4283,10 +4465,10 @@ async function listAllPlantillasByProyecto(req, res) {
        AND pu.id_usuario = $2
       WHERE
         (
-          -- ✅ plantillas sin restricción de proyecto
+          -- âœ… plantillas sin restricciÃ³n de proyecto
           p.proyectos_permitidos IS NULL
 
-          -- ✅ proyectos_permitidos es array (de números o strings) y contiene el idProyecto
+          -- âœ… proyectos_permitidos es array (de nÃºmeros o strings) y contiene el idProyecto
           OR EXISTS (
             SELECT 1
             FROM jsonb_array_elements_text(p.proyectos_permitidos) e(val)
@@ -4294,7 +4476,7 @@ async function listAllPlantillasByProyecto(req, res) {
           )
         )
         AND (
-          -- ✅ permisos: admin / creador / compartida (y activa si no es creador/admin)
+          -- âœ… permisos: admin / creador / compartida (y activa si no es creador/admin)
           $3 = true
           OR p.id_creador = $2
           OR (
@@ -4314,12 +4496,12 @@ async function listAllPlantillasByProyecto(req, res) {
   }
 }
 
-// ✅ opcional (para webp -> png/jpg)
+// âœ… opcional (para webp -> png/jpg)
 let sharp = null;
-try { sharp = require("sharp"); } catch { /* si no está, se omite */ }
+try { sharp = require("sharp"); } catch { /* si no estÃ¡, se omite */ }
 
 // =========================
-// ✅ generarWordProyecto (NORMAL + TABLA REAL)
+// âœ… generarWordProyecto (NORMAL + TABLA REAL)
 // =========================
 async function generarWordProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
@@ -4328,7 +4510,7 @@ async function generarWordProyecto(req, res) {
   const modo = String(req.query.modo || "normal").toLowerCase();
   const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
 
-  if (!idProyecto) return res.status(400).send("idProyecto inválido");
+  if (!idProyecto) return res.status(400).send("idProyecto invÃ¡lido");
 
   try {
     // proyecto label
@@ -4372,7 +4554,7 @@ async function generarWordProyecto(req, res) {
     // =========================
     const children = [];
 
-    // Portada única
+    // Portada Ãºnica
     children.push(
       new Paragraph({ text: "INFORMES DEL PROYECTO", heading: HeadingLevel.TITLE }),
       new Paragraph({
@@ -4432,7 +4614,7 @@ async function generarWordProyecto(req, res) {
     }
 
     // ===========
-    // TABLA: UNA tabla por sección, filas = informes
+    // TABLA: UNA tabla por secciÃ³n, filas = informes
     // ===========
     async function buildTablaSeccion({
       seccion,
@@ -4550,7 +4732,7 @@ async function generarWordProyecto(req, res) {
     for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
       const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
 
-      // título plantilla (una vez)
+      // tÃ­tulo plantilla (una vez)
       children.push(
         new Paragraph({
           text: `Plantilla: ${safeStr(nombrePlantilla)}`,
@@ -4629,7 +4811,7 @@ async function generarWordProyecto(req, res) {
       // render segun modo
       // ===========
       if (!isTabla) {
-        // ✅ NORMAL: igual a tu lógica (pero ahora por plantilla agrupada)
+        // âœ… NORMAL: igual a tu lÃ³gica (pero ahora por plantilla agrupada)
         for (const informe of infosPlantilla) {
           const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
 
@@ -4652,14 +4834,14 @@ async function generarWordProyecto(req, res) {
           for (const sec of secciones) {
             children.push(
               new Paragraph({
-                text: safeStr(sec.titulo || "Sección"),
+                text: safeStr(sec.titulo || "SecciÃ³n"),
                 heading: HeadingLevel.HEADING_3,
               })
             );
 
             const preguntasSec = preguntas.filter((p) => p.id_seccion === sec.id_seccion);
             if (!preguntasSec.length) {
-              children.push(new Paragraph({ text: "Sin preguntas en esta sección." }), new Paragraph({ text: " " }));
+              children.push(new Paragraph({ text: "Sin preguntas en esta secciÃ³n." }), new Paragraph({ text: " " }));
               continue;
             }
 
@@ -4717,18 +4899,18 @@ async function generarWordProyecto(req, res) {
           children.push(new Paragraph({ children: [], pageBreakBefore: true }));
         }
       } else {
-        // ✅ TABLA REAL (una tabla por sección, filas=informes)
+        // âœ… TABLA REAL (una tabla por secciÃ³n, filas=informes)
         for (const sec of secciones) {
           children.push(
             new Paragraph({
-              text: safeStr(sec.titulo || "Sección"),
+              text: safeStr(sec.titulo || "SecciÃ³n"),
               heading: HeadingLevel.HEADING_2,
             })
           );
 
           const preguntasSec = preguntas.filter((p) => p.id_seccion === sec.id_seccion);
           if (!preguntasSec.length) {
-            children.push(new Paragraph({ text: "Sin preguntas en esta sección." }), new Paragraph({ text: " " }));
+            children.push(new Paragraph({ text: "Sin preguntas en esta secciÃ³n." }), new Paragraph({ text: " " }));
             continue;
           }
 
@@ -4743,12 +4925,12 @@ async function generarWordProyecto(req, res) {
           children.push(tabla, new Paragraph({ text: " " }));
         }
 
-        // salto de página entre plantillas
+        // salto de pÃ¡gina entre plantillas
         children.push(new Paragraph({ children: [], pageBreakBefore: true }));
       }
     }
 
-    // ✅ Landscape SOLO para TABLA (mejor “tipo excel”)
+    // âœ… Landscape SOLO para TABLA (mejor â€œtipo excelâ€)
     const doc = new Document({
       sections: [
         {
@@ -4774,7 +4956,7 @@ async function generarWordProyecto(req, res) {
   }
 }
 
-// ✅ GET /api/informes/proyecto/:idProyecto/preguntas
+// âœ… GET /api/informes/proyecto/:idProyecto/preguntas
 // Devuelve preguntas (id + etiqueta) usadas en informes del proyecto.
 // Opcional: ?plantilla=ID  (para filtrar por plantilla)
 async function getPreguntasByProyecto(req, res) {
@@ -4783,7 +4965,7 @@ async function getPreguntasByProyecto(req, res) {
   const idPlantilla = idPlantillaRaw ? Number(idPlantillaRaw) : null;
 
   if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
-    return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+    return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
   }
 
   try {
@@ -4824,7 +5006,7 @@ async function buscarRespuestasProyecto(req, res) {
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
 
   if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
-    return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+    return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
   }
   if (q.length < 2) {
     return res.json({ ok: true, items: [] });
@@ -4847,7 +5029,7 @@ async function buscarRespuestasProyecto(req, res) {
         COALESCE(NULLIF(TRIM(q.etiqueta), ''), 'Pregunta #' || r.id_pregunta) AS etiqueta,
         CASE
           WHEN r.valor_texto IS NOT NULL AND TRIM(r.valor_texto) <> '' THEN r.valor_texto
-          WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Sí' ELSE 'No' END
+          WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'SÃ­' ELSE 'No' END
           WHEN r.valor_json IS NOT NULL THEN r.valor_json::text
           ELSE ''
         END AS valor
@@ -4857,7 +5039,7 @@ async function buscarRespuestasProyecto(req, res) {
       WHERE i.id_proyecto = $1
         AND (
           (r.valor_texto IS NOT NULL AND r.valor_texto ILIKE $2)
-          OR (r.valor_bool IS NOT NULL AND (CASE WHEN r.valor_bool THEN 'Sí' ELSE 'No' END) ILIKE $2)
+          OR (r.valor_bool IS NOT NULL AND (CASE WHEN r.valor_bool THEN 'SÃ­' ELSE 'No' END) ILIKE $2)
           OR (r.valor_json IS NOT NULL AND (r.valor_json::text) ILIKE $2)
         )
         ${whereExtra}
@@ -4906,7 +5088,7 @@ async function duplicarPlantilla(req, res) {
   const idPlantilla = Number(id);
 
   if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
-    return res.status(400).json({ ok: false, error: "ID de plantilla inválido" });
+    return res.status(400).json({ ok: false, error: "ID de plantilla invÃ¡lido" });
   }
 
   const client = await pool.connect();
@@ -5021,12 +5203,11 @@ async function duplicarPlantilla(req, res) {
             obligatorio,
             orden,
             permite_foto,
-            id_unico,
             visible_if,
             required_if,
             hide_if
           )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         RETURNING *
         `,
         [
@@ -5037,7 +5218,6 @@ async function duplicarPlantilla(req, res) {
           !!preg.obligatorio,
           preg.orden,
           !!preg.permite_foto,
-          !!preg.id_unico,
           preg.visible_if || null,
           preg.required_if || null,
           preg.hide_if || null,
@@ -5081,7 +5261,7 @@ async function duplicarPlantilla(req, res) {
       );
     }
 
-    // 8) remapear visible_if de secciones también
+    // 8) remapear visible_if de secciones tambiÃ©n
     const nuevasSeccionesRes = await client.query(
       `
       SELECT *
@@ -5133,7 +5313,7 @@ async function duplicarPlantilla(req, res) {
   }
 }
 
-/* ───────────────────────── EXPORTS ───────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ EXPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 module.exports = {
   // Plantillas
   getPlantillas,
@@ -5167,6 +5347,7 @@ module.exports = {
   actualizarInforme,
   deleteInformeFoto,
   deleteInforme,
+  bulkDeleteInformesByProyectoPlantilla,
 
   // Proyecto helpers
   listPlantillasByProyecto,
@@ -5183,7 +5364,9 @@ module.exports = {
   closeShareLink,
   eliminarShareLink,
 
-  // Share links (público)
+  // Share links (pÃºblico)
   publicGetShareForm,
   publicSubmitShareForm,
 };
+
+

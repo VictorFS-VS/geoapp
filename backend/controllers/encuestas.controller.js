@@ -1155,9 +1155,9 @@ const frecuenciasEncuesta = async (req, res) => {
       // ✅ FIX: agrupar numéricos como categorías enteras (1,2,3…)
       labelExpr = `CASE
         WHEN ${ident(campo)} IS NULL THEN 'Sin dato'
-        ELSE ((${ident(campo)}::numeric)::int)::text
+        ELSE ((${ident(campo)}::numeric)::bigint)::text
       END`;
-      orderExpr = `((${ident(campo)}::numeric)::int) ASC`;
+      orderExpr = `((${ident(campo)}::numeric)::bigint) ASC`;
     } else {
       labelExpr = `NULLIF(TRIM(${ident(campo)}::text), '')`;
     }

@@ -4,6 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Table, Button, Badge, Spinner, Alert } from "react-bootstrap";
 import Swal from "sweetalert2";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
+import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const API_URL = BASE.endsWith("/api") ? BASE : BASE + "/api";
@@ -55,6 +56,7 @@ const InformesProyectoPlantillas = () => {
   const [error, setError] = useState(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showNewImportModal, setShowNewImportModal] = useState(false);
   const [plantillaImportSel, setPlantillaImportSel] = useState(null);
   const [preguntasLista, setPreguntasLista] = useState([]);
   const [loadingPreguntas, setLoadingPreguntas] = useState(false);
@@ -152,6 +154,16 @@ const InformesProyectoPlantillas = () => {
     setShowImportModal(true);
   }
 
+  function abrirNuevoImport(plantilla) {
+    const idPlantilla = Number(plantilla?.id_plantilla);
+    if (!idPlantilla) {
+      Toast.fire({ icon: "warning", title: "Plantilla invalida." });
+      return;
+    }
+    setPlantillaImportSel(plantilla);
+    setShowNewImportModal(true);
+  }
+
   return (
     <>
       <div className="container mt-3">
@@ -230,7 +242,7 @@ const InformesProyectoPlantillas = () => {
                   <th>Plantilla</th>
                   <th style={{ width: 140 }}>Total</th>
                   <th style={{ width: 220 }}>Último informe</th>
-                  <th style={{ width: 260 }}>Acciones</th>
+                  <th style={{ width: 360 }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -249,8 +261,9 @@ const InformesProyectoPlantillas = () => {
                     <td>{formatearFecha(p.ultimo_informe)}</td>
 
                     <td>
-                      <div className="btn-group btn-group-sm">
+                      <div className="d-flex flex-wrap gap-1">
                         <Button
+                          size="sm"
                           variant="primary"
                           onClick={() => irAInformesDePlantilla(p.id_plantilla)}
                         >
@@ -258,6 +271,7 @@ const InformesProyectoPlantillas = () => {
                         </Button>
 
                         <Button
+                          size="sm"
                           variant="outline-success"
                           onClick={() => abrirImportacion(p)}
                           title="Importar Excel creando un informe nuevo por cada fila"
@@ -270,6 +284,16 @@ const InformesProyectoPlantillas = () => {
                         </Button>
 
                         <Button
+                          size="sm"
+                          variant="outline-primary"
+                          onClick={() => abrirNuevoImport(p)}
+                          title="Canal nuevo de importacion XLSX con preview, mapeo y control de duplicados"
+                        >
+                          Importacion nueva (XLSX)
+                        </Button>
+
+                        <Button
+                          size="sm"
                           variant="outline-secondary"
                           onClick={() =>
                             navigate(
@@ -299,6 +323,16 @@ const InformesProyectoPlantillas = () => {
         idPlantilla={Number(plantillaImportSel?.id_plantilla || 0) || null}
         nombrePlantilla={plantillaImportSel?.nombre || ""}
         preguntasLista={preguntasLista}
+      />
+
+      <ImportarInformesNuevoModal
+        show={showNewImportModal}
+        onHide={() => setShowNewImportModal(false)}
+        API_URL={API_URL}
+        authHeaders={authHeaders}
+        idProyecto={Number(idProyecto)}
+        idPlantilla={Number(plantillaImportSel?.id_plantilla || 0) || null}
+        nombrePlantilla={plantillaImportSel?.nombre || ""}
       />
     </>
   );

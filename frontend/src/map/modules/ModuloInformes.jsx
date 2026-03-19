@@ -1,4 +1,4 @@
-// src/map/modules/ModuloInformes.jsx
+﻿// src/map/modules/ModuloInformes.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InformeModal from "@/components/InformeModal";
 import { Modal, Button, Spinner, Form } from "react-bootstrap";
@@ -14,6 +14,7 @@ const HOST_BASE = BASE.replace(/\/api\/?$/i, "");
 
 // ✅ default actual (si NO hay semáforo)
 const DEFAULT_POINT_COLOR = "#db1732ff";
+const TRACE_INF_MARKERS = false; // ← activado temporalmente para validación
 
 /* =========================================================
    ✅ Paleta estable para colores por plantilla
@@ -711,7 +712,6 @@ export default function ModuloInformes({
         return;
       } catch {}
     }
-    if (typeof mk.setMap === "function") mk.setMap(m);
   };
 
   const [filtroPlantillaId, setFiltroPlantillaId] = useState("all");
@@ -1288,13 +1288,7 @@ export default function ModuloInformes({
 
     markersRef.current.forEach((mk) => {
       if (!mk) return;
-      if ("map" in mk) {
-        try {
-          mk.map = enabled ? m : null;
-          return;
-        } catch {}
-      }
-      if (typeof mk.setMap === "function") mk.setMap(enabled ? m : null);
+      setMarkerMap(mk, enabled ? m : null);
     });
   }, [enabled, map]);
 
@@ -1832,6 +1826,41 @@ export default function ModuloInformes({
     try {
       clearMarkers();
 
+      // ✅ Guard de primer arranque: asegurar que el mapa tenga tiles cargados
+      // antes de instanciar AdvancedMarkerElement con mapId.
+      //
+      // Problema en F5: el primer load de informes puede ocurrir antes de que
+      // el mapa procese internamente su mapId. A diferencia de `idle` (que puede
+      // haber disparado ya antes de adjuntar el listener), aquí:
+      //   1. Verificamos getBounds() → si no es null, el mapa ya está listo.
+      //   2. Si no está listo, esperamos el primero de: tilesloaded, idle, o 4s.
+      // `addListenerOnce` + flag `done` garantizan idempotencia.
+      // Recargar omite este guard (didLoadRef.current === true).
+      if (!didLoadRef.current) {
+        const mapHasBounds = () => {
+          try { return !!map?.getBounds?.(); } catch { return false; }
+        };
+
+        if (!mapHasBounds()) {
+          await new Promise((resolve) => {
+            let done = false;
+            const finish = () => { if (!done) { done = true; resolve(); } };
+            try {
+              google.maps.event.addListenerOnce(map, "tilesloaded", finish);
+              google.maps.event.addListenerOnce(map, "idle", finish);
+              // Timeout de seguridad: 4s. Luego del timeout, getBounds puede
+              // seguir siendo null (mapa sin proyección), pero procedemos igual.
+              setTimeout(finish, 4000);
+            } catch {
+              resolve();
+            }
+          });
+          // Verificar que la carga sigue siendo válida tras la espera
+          if (ac.signal.aborted || seq !== loadSeqRef.current) return;
+        }
+      }
+
+
       let metaMap = {};
       if (informesMetaRef.current?.pid === pid) {
         metaMap = informesMetaRef.current.map || {};
@@ -1902,12 +1931,50 @@ export default function ModuloInformes({
       const pointCount = features.filter((f) => f?.geometry?.type === "Point").length;
       if (typeof onHasData === "function") onHasData(pointCount > 0);
 
+      let markerLib = null;
+      let markerImportError = null;
       try {
-        await google.maps.importLibrary("marker");
-      } catch {}
+        markerLib = await google.maps.importLibrary("marker");
+      } catch (e) {
+        markerImportError = e;
+        console.warn("[ModuloInformes] importLibrary('marker') fallo:", e);
+      }
 
-      const AdvancedMarker = google?.maps?.marker?.AdvancedMarkerElement;
-      const PinElement = google?.maps?.marker?.PinElement;
+      const AdvancedMarker =
+        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
+      const caps = typeof map?.getMapCapabilities === "function"
+        ? map.getMapCapabilities?.()
+        : null;
+      const advAvailable = caps?.isAdvancedMarkersAvailable;
+      if (caps && advAvailable !== true) {
+        throw new Error(
+          "AdvancedMarkerElement requires a mapId configured on the Google Map instance."
+        );
+      }
+
+      if (!caps) {
+        const mapId = map?.__e3a?.mapId || map?.mapId || null;
+        if (!mapId) {
+          // API sin getMapCapabilities: continuar para no romper comportamiento antiguo.
+        }
+      }
+
+      const canUseAdvanced = !!AdvancedMarker;
+
+      // Política explícita:
+      // - Priorizar siempre advanced markers.
+      // - No usar legacy Marker (deprecado).
+      // - Si falla import y no hay advanced disponible, abortar carga (no fallback silencioso).
+      if (!canUseAdvanced && markerImportError) {
+        throw new Error(
+          "No se pudo inicializar Google Advanced Marker en informes (import marker fallo)."
+        );
+      }
+
+      const markerPathStats = {
+        advContent: 0,
+        legacy: 0,
+      };
 
       const created = [];
 
@@ -1967,24 +2034,7 @@ export default function ModuloInformes({
 
         let mk = null;
 
-        if (AdvancedMarker && PinElement) {
-          const pin = new PinElement({
-            background: markerColorCss,
-            borderColor: "#ffffff",
-            glyphColor: "#ffffff",
-            glyph: "📍",
-            scale: 1.1,
-          });
-
-          mk = new AdvancedMarker({
-            map: enabled ? map : null,
-            position: pos,
-            content: pin.element,
-            title,
-          });
-
-          mk.addListener("gmp-click", () => openPointPanel(propsEnriched));
-        } else if (AdvancedMarker) {
+        if (AdvancedMarker) {
           const el = document.createElement("div");
           el.style.width = "16px";
           el.style.height = "16px";
@@ -1994,21 +2044,17 @@ export default function ModuloInformes({
           el.style.boxShadow = "0 6px 16px rgba(0,0,0,.22)";
 
           mk = new AdvancedMarker({
-            map: enabled ? map : null,
+            map: null,
             position: pos,
             content: el,
             title,
           });
+          markerPathStats.advContent += 1;
 
           mk.addListener("gmp-click", () => openPointPanel(propsEnriched));
         } else {
-          mk = new google.maps.Marker({
-            map: enabled ? map : null,
-            position: pos,
-            title,
-          });
-
-          mk.addListener("click", () => openPointPanel(propsEnriched));
+          // No hay AdvancedMarker disponible: no usar legacy Marker.
+          continue;
         }
 
         if (!mk) continue;
@@ -2038,6 +2084,23 @@ export default function ModuloInformes({
 
       markersRef.current = created;
       setCount(created.length);
+
+      // Adjuntar los markers en una segunda pasada evita condiciones de carrera
+      // sutiles durante la construcción y montaje del AdvancedMarker.
+      for (const mk of created) {
+        setMarkerMap(mk, enabled ? map : null);
+      }
+
+      if (TRACE_INF_MARKERS) {
+        console.info("[ModuloInformes] marker tracing", {
+          seq,
+          created: created.length,
+          pointCount,
+          markerImportOk: !markerImportError,
+          markerImportError: markerImportError ? String(markerImportError?.message || markerImportError) : null,
+          paths: markerPathStats,
+        });
+      }
 
       const b = computeBoundsFromPoints(google, features);
       if (b && autoFitEnabledRef.current) map.fitBounds(b);
@@ -2075,15 +2138,6 @@ export default function ModuloInformes({
     filterFeaturesByTramoSelection,
     ensureInformesMeta,
   ]);
-
-  // ✅ Carga inicial solo cuando NO hay filtro por tramo activo
-  useEffect(() => {
-    if (!enabled) return;
-    if (!google || !map || !pid) return;
-    if (tramoFilter?.enabled) return;
-    if (didLoadRef.current) return;
-    loadInformesPoints();
-  }, [enabled, google, map, pid, tramoFilter?.enabled, loadInformesPoints]);
 
   useEffect(() => {
     autoFitEnabledRef.current = true;

@@ -21,6 +21,21 @@ function extendBounds(bounds, pts) {
     for (const p of pts) bounds.extend(p);
 }
 
+function clearOverlay(overlay) {
+    if (!overlay) return;
+    try {
+        if ("map" in overlay) {
+            overlay.map = null;
+            return;
+        }
+    } catch { }
+    try {
+        if (typeof overlay.setMap === "function") {
+            overlay.setMap(null);
+        }
+    } catch { }
+}
+
 export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStatsChange, onSelectExpediente }) {
     const mapDivRef = useRef(null);
     const mapRef = useRef(null);
@@ -49,6 +64,7 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
                 const map = new window.google.maps.Map(mapDivRef.current, {
                     center: { lat: -25.3, lng: -57.6 },
                     zoom: 9,
+                    mapId: MAP_ID || undefined,
                     mapTypeId: mapType,
                     clickableIcons: false,
                     streetViewControl: false,
@@ -67,7 +83,7 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
             cancelled = true;
             // Limpiar overlays al desmontar
             for (const o of overlaysRef.current) {
-                try { o.setMap(null); } catch { }
+                clearOverlay(o);
             }
             overlaysRef.current = [];
             mapRef.current = null;
@@ -93,7 +109,7 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
 
         // Limpiar overlays anteriores
         for (const o of overlaysRef.current) {
-            try { o.setMap(null); } catch { }
+            clearOverlay(o);
         }
         overlaysRef.current = [];
 
@@ -108,6 +124,8 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
                 const features = geojson?.features || [];
                 const map = mapRef.current;
                 const g = window.google.maps;
+                const markerLib = await g.importLibrary("marker");
+                const { AdvancedMarkerElement } = markerLib || {};
                 const bounds = new g.LatLngBounds();
                 let boundsEmpty = true;
 
@@ -146,20 +164,24 @@ export default function GVMapaCatastroGoogle({ proyectoId, filters = {}, onStats
                     if (geom.type === 'Point') {
                         hasPointCount++;
                         const [lng, lat] = geom.coordinates;
-                        const marker = new g.Marker({
+                        if (!AdvancedMarkerElement) continue;
+
+                        const markerEl = document.createElement("div");
+                        markerEl.style.width = "12px";
+                        markerEl.style.height = "12px";
+                        markerEl.style.borderRadius = "999px";
+                        markerEl.style.background = fillHex;
+                        markerEl.style.border = `2px solid ${borderHex}`;
+                        markerEl.style.boxShadow = "0 2px 8px rgba(0,0,0,.22)";
+                        markerEl.style.pointerEvents = "none";
+
+                        const marker = new AdvancedMarkerElement({
                             map,
                             position: { lat, lng },
-                            icon: {
-                                path: g.SymbolPath.CIRCLE,
-                                scale: 6,
-                                fillColor: fillHex,
-                                fillOpacity: 1,
-                                strokeColor: borderHex,
-                                strokeWeight: 2,
-                            },
-                            zIndex: 1000,
+                            content: markerEl,
+                            title: String(props?.padron || props?.titulo || props?.id_expediente || "Expediente"),
                         });
-                        marker.addListener('click', () => {
+                        marker.addListener('gmp-click', () => {
                             if (onSelectExpediente) onSelectExpediente(feature.properties.id_expediente, feature.properties);
                         });
                         overlaysRef.current.push(marker);

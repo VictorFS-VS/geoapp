@@ -5,6 +5,7 @@ const express = require("express");
 const router = express.Router();
 
 const informesCtrl = require("../controllers/informes.controller");
+const informesImportCtrl = require("../controllers/informes.import.controller");
 const { verifyToken } = require("../middlewares/auth.middleware");
 const { requirePerm } = require("../middlewares/requirePerm");
 
@@ -74,6 +75,37 @@ router.delete(
   verifyToken,
   requirePerm("informes.plantillas.hard_delete"),
   informesCtrl.hardDeletePlantilla
+);
+
+/* =========================================================
+   IMPORT XLSX (NUEVO / AISLADO DEL LEGACY)
+   ========================================================= */
+router.post(
+  "/import-xlsx/catalog",
+  verifyToken,
+  requirePerm("informes.create"),
+  informesImportCtrl.catalogImportXlsx
+);
+
+router.post(
+  "/import-xlsx/profile",
+  verifyToken,
+  requirePerm("informes.create"),
+  informesImportCtrl.profileImportXlsx
+);
+
+router.post(
+  "/import-xlsx/prepare",
+  verifyToken,
+  requirePerm("informes.create"),
+  informesImportCtrl.prepareImportXlsx
+);
+
+router.post(
+  "/import-xlsx/run",
+  verifyToken,
+  requirePerm("informes.create"),
+  informesImportCtrl.runImportXlsx
 );
 
 /* =========================================================
@@ -212,6 +244,14 @@ router.get(
   verifyToken,
   requirePerm("informes.read"),
   informesCtrl.listInformesByProyecto
+);
+
+// Borrado masivo (admin + informes.delete)
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete",
+  verifyToken,
+  requirePerm("informes.delete"),
+  informesCtrl.bulkDeleteInformesByProyectoPlantilla
 );
 
 /* =========================================================

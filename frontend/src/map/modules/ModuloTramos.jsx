@@ -664,10 +664,12 @@ export default function ModuloTramos({
   const clearProgresivas = useCallback(() => {
     for (const entry of progresivasEntriesRef.current) {
       try {
-        entry.marker?.setMap(null);
+        if ("map" in (entry.marker || {})) entry.marker.map = null;
+        else entry.marker?.setMap?.(null);
       } catch {}
       try {
-        entry.textMarker?.setMap(null);
+        if ("map" in (entry.textMarker || {})) entry.textMarker.map = null;
+        else entry.textMarker?.setMap?.(null);
       } catch {}
     }
     progresivasEntriesRef.current = [];
@@ -685,8 +687,8 @@ export default function ModuloTramos({
     const showLabels = zoom >= PROG_LABEL_MIN_ZOOM;
     const showMarkersNoSelection = zoom >= PROG_MARKER_MIN_ZOOM;
 
-    for (const entry of progresivasEntriesRef.current) {
-      let visible = false;
+      for (const entry of progresivasEntriesRef.current) {
+        let visible = false;
 
       if (!enabledProgRef.current) {
         visible = false;
@@ -697,11 +699,14 @@ export default function ModuloTramos({
       }
 
       try {
-        entry.marker?.setMap(visible ? map : null);
+        if ("map" in (entry.marker || {})) entry.marker.map = visible ? map : null;
+        else entry.marker?.setMap?.(visible ? map : null);
       } catch {}
 
       try {
-        entry.textMarker?.setMap(visible && showLabels ? map : null);
+        if ("map" in (entry.textMarker || {}))
+          entry.textMarker.map = visible && showLabels ? map : null;
+        else entry.textMarker?.setMap?.(visible && showLabels ? map : null);
       } catch {}
     }
   }, [map]);
@@ -717,13 +722,21 @@ export default function ModuloTramos({
   }, [applyProgresivasFilterNow]);
 
   const renderProgresivas = useCallback(
-    (fc) => {
+    async (fc) => {
       if (!google || !map) return false;
 
       clearProgresivas();
 
       const feats = fc?.features || [];
       if (!feats.length) return false;
+
+      let markerLib = null;
+      try {
+        markerLib = await google.maps.importLibrary("marker");
+      } catch {}
+
+      const AdvancedMarker =
+        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
 
       const entries = [];
 
@@ -735,66 +748,79 @@ export default function ModuloTramos({
         const nombre = getProgresivaLabel(props);
         const descripcion = props?.descripcion || props?.description || "";
 
-        const marker = new google.maps.Marker({
-          position: pos,
-          map: null,
-          clickable: true,
-          zIndex: 3000,
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: PROG_MARKER_SCALE,
-            fillColor: "#ffd400",
-            fillOpacity: 1,
-            strokeColor: "#ffffff",
-            strokeWeight: 1.2,
-          },
-          title: nombre,
-        });
+        let marker = null;
+        let textMarker = null;
 
-        const textMarker = new google.maps.Marker({
-          position: pos,
-          map: null,
-          clickable: false,
-          zIndex: 3001,
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 0.001,
-            fillOpacity: 0,
-            strokeOpacity: 0,
-          },
-          label: {
-            text: nombre,
-            color: "#f8fafc",
-            fontSize: "11px",
-            fontWeight: "800",
-            className: "prog-label-marker",
-          },
-        });
+        if (AdvancedMarker) {
+          const markerContent = document.createElement("div");
+          markerContent.style.width = "8px";
+          markerContent.style.height = "8px";
+          markerContent.style.borderRadius = "999px";
+          markerContent.style.background = "#ffd400";
+          markerContent.style.border = "1.2px solid #ffffff";
+          markerContent.style.boxShadow = "0 2px 6px rgba(0,0,0,.22)";
+          markerContent.style.pointerEvents = "none";
 
-        try {
-          textMarker.setOptions({
-            labelOrigin: new google.maps.Point(PROG_LABEL_OFFSET_X, PROG_LABEL_OFFSET_Y),
+          marker = new AdvancedMarker({
+            map: null,
+            position: pos,
+            content: markerContent,
+            title: nombre,
           });
-        } catch {}
 
-        marker.addListener("click", () => {
-          const html = `
-            <div style="min-width:180px;max-width:280px;">
-              <div style="font-weight:900;margin-bottom:6px;">${esc(nombre)}</div>
-              ${
-                descripcion
-                  ? `<div style="font-size:12px;opacity:.85;"><b>Descripción:</b> ${esc(descripcion)}</div>`
-                  : `<div style="font-size:12px;opacity:.75;">Sin descripción</div>`
-              }
-            </div>
-          `;
+          try {
+            marker.zIndex = 3000;
+          } catch {}
 
-          const iw = ensureInfoWindow();
-          if (!iw) return;
-          iw.setContent(html);
-          iw.setPosition(pos);
-          iw.open({ map });
-        });
+          const labelEl = document.createElement("div");
+          labelEl.className = "prog-label-marker";
+          labelEl.textContent = nombre;
+          labelEl.style.color = "#f8fafc";
+          labelEl.style.fontSize = "11px";
+          labelEl.style.fontWeight = "800";
+          labelEl.style.whiteSpace = "nowrap";
+          labelEl.style.pointerEvents = "none";
+          labelEl.style.transform = `translate(${PROG_LABEL_OFFSET_X}px, ${PROG_LABEL_OFFSET_Y}px)`;
+
+          textMarker = new AdvancedMarker({
+            map: null,
+            position: pos,
+            content: labelEl,
+          });
+
+          try {
+            textMarker.zIndex = 3001;
+          } catch {}
+
+          marker.addListener("gmp-click", () => {
+            const html = `
+              <div style="min-width:180px;max-width:280px;">
+                <div style="font-weight:900;margin-bottom:6px;">${esc(nombre)}</div>
+                ${
+                  descripcion
+                    ? `<div style="font-size:12px;opacity:.85;"><b>Descripcion:</b> ${esc(descripcion)}</div>`
+                    : `<div style="font-size:12px;opacity:.75;">Sin descripcion</div>`
+                }
+              </div>
+            `;
+
+            const iw = ensureInfoWindow();
+            if (!iw) return;
+            iw.setContent(html);
+            iw.setPosition(pos);
+            iw.open({ map });
+          });
+        } else {
+          continue;
+        }
+
+        if (!marker || !textMarker) continue;
+        if (AdvancedMarker) {
+          // ensure label marker does not intercept clicks
+          try {
+            if (textMarker?.content) textMarker.content.style.pointerEvents = "none";
+          } catch {}
+        }
 
         entries.push({
           marker,
@@ -1126,7 +1152,7 @@ export default function ModuloTramos({
 
       setSrcProgresivas(got?.url || "");
 
-      const ok = renderProgresivas(got.fc);
+      const ok = await renderProgresivas(got.fc);
       if (!ok) return false;
 
       scheduleApplyProgresivasFilter();
@@ -1679,3 +1705,4 @@ export default function ModuloTramos({
     </>
   );
 }
+

@@ -470,6 +470,7 @@ export default function ModuloEncuestas({
   const geoRef = useRef(null);
   const markersRef = useRef(new Map());
   const lastKeyRef = useRef("");
+  const markerLibRef = useRef(null);
 
   const pid = Number(idProyecto);
 
@@ -687,13 +688,27 @@ export default function ModuloEncuestas({
     [map, openDetalleFromProps]
   );
 
+  const ensureMarkerLib = useCallback(async () => {
+    if (markerLibRef.current) return markerLibRef.current;
+    if (!google?.maps?.importLibrary) return null;
+    try {
+      const lib = await google.maps.importLibrary("marker");
+      markerLibRef.current = lib;
+      return lib;
+    } catch {
+      return null;
+    }
+  }, [google]);
+
   /* =========================
      MARKERS
   ========================= */
   const buildOrReuseMarker = useCallback(
-    (props, position) => {
-      const Adv = google?.maps?.marker?.AdvancedMarkerElement;
-      const Pin = google?.maps?.marker?.PinElement;
+    async (props, position) => {
+      const markerLib = (await ensureMarkerLib()) || google?.maps?.marker || null;
+      const Adv =
+        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
+      const Pin = markerLib?.PinElement || google?.maps?.marker?.PinElement;
 
       const id = String(getIdEncuesta(props));
       const fill = colorFromPercepcion(props.percepcion);
@@ -710,19 +725,30 @@ export default function ModuloEncuestas({
 
       const onClick = () => openDetalleFromProps(props, position);
 
+      // ✅ Path A: AdvancedMarker + PinElement.
+      // Guard instanceof HTMLElement: si pin.element es invalido, caer a path B.
       if (Adv && Pin) {
-        const pin = new Pin({
-          background: fill,
-          borderColor: "#ffffff",
-          glyphColor: "#ffffff",
-          scale: 1.0,
-        });
+        let pinEl = null;
+        try {
+          const pin = new Pin({
+            background: fill,
+            borderColor: "#ffffff",
+            glyphColor: "#ffffff",
+            scale: 1.0,
+          });
+          pinEl = (pin.element instanceof HTMLElement) ? pin.element : null;
+        } catch {
+          pinEl = null;
+        }
 
-        const mk = new Adv({ position, content: pin.element, title: `Censo ${id}` });
-        mk.__encColor = fill;
-        mk.addListener("gmp-click", onClick);
-        markersRef.current.set(id, mk);
-        return mk;
+        if (pinEl) {
+          const mk = new Adv({ position, content: pinEl, title: `Censo ${id}` });
+          mk.__encColor = fill;
+          mk.addListener("gmp-click", onClick);
+          markersRef.current.set(id, mk);
+          return mk;
+        }
+        // PinElement falló: continuar a path B
       }
 
       if (Adv) {
@@ -734,36 +760,17 @@ export default function ModuloEncuestas({
         return mk;
       }
 
-      const svg = encodeURIComponent(`
-        <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24">
-          <path d="M12 22s7-5.1 7-12a7 7 0 10-14 0c0 6.9 7 12 7 12z"
-                fill="${fill}" stroke="white" stroke-width="2"/>
-          <path d="M12 22s7-5.1 7-12a7 7 0 10-14 0c0 6.9 7 12 7 12z"
-                fill="none" stroke="rgba(0,0,0,.35)" stroke-width="1"/>
-          <circle cx="12" cy="10" r="3.2" fill="white" opacity="0.95"/>
-        </svg>
-      `);
-
-      const mk = new google.maps.Marker({
-        position,
-        title: `Censo ${id}`,
-        icon: {
-          url: `data:image/svg+xml;charset=UTF-8,${svg}`,
-          scaledSize: new google.maps.Size(30, 30),
-          anchor: new google.maps.Point(15, 30),
-        },
-      });
-
-      mk.__encColor = fill;
-      mk.addListener("click", onClick);
-
-      markersRef.current.set(id, mk);
-      return mk;
+      // ✅ Path C: AdvancedMarkerElement no disponible en absoluto.
+      // No se usa google.maps.Marker: Encuestas requiere AdvancedMarkerElement.
+      throw new Error(
+        "[ModuloEncuestas] AdvancedMarkerElement no disponible. " +
+        "Se requiere mapId configurable en google Cloud para usar marcadores de encuestas."
+      );
     },
-    [google, openDetalleFromProps]
+    [google, openDetalleFromProps, ensureMarkerLib]
   );
 
-  const renderMarkers = useCallback(() => {
+  const renderMarkers = useCallback(async () => {
     if (!google?.maps || !map) return;
 
     if (!enabled) {
@@ -799,7 +806,7 @@ export default function ModuloEncuestas({
       if (!isColorEnabled(bucket)) continue;
 
       const position = { lat, lng: lon };
-      const mk = buildOrReuseMarker(props, position);
+      const mk = await buildOrReuseMarker(props, position);
 
       usedIds.add(String(id));
       try {
@@ -840,7 +847,7 @@ export default function ModuloEncuestas({
       const key = String(pid);
       if (lastKeyRef.current === key && geoRef.current) {
         onHasData?.(!!geoRef.current?.features?.length);
-        renderMarkers();
+        await renderMarkers();
         return;
       }
 
@@ -865,7 +872,7 @@ export default function ModuloEncuestas({
         const has = !!geoRef.current?.features?.length;
         onHasData?.(has);
 
-        renderMarkers();
+        await renderMarkers();
       } catch (e) {
         if (cancelled) return;
         setErr(e?.message || "Error cargando encuestas");
@@ -885,7 +892,7 @@ export default function ModuloEncuestas({
   useEffect(() => {
     if (!visible) return;
     if (geoRef.current) onHasData?.(!!geoRef.current?.features?.length);
-    renderMarkers();
+    void renderMarkers();
   }, [
     visible,
     enabled,

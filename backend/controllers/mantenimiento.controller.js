@@ -1723,7 +1723,17 @@ async function obtenerTramos(req, res) {
 }
 
 async function obtenerProgresivas(req, res) {
-  const { id } = req.params;
+  const rawId = String(req.params.id ?? "").trim();
+
+  if (!/^[0-9]+$/.test(rawId)) {
+    return res.status(400).json({ ok: false, error: "id_proyecto inválido o fuera de rango" });
+  }
+
+  const idProyecto = Number(rawId);
+
+  if (!Number.isSafeInteger(idProyecto) || idProyecto <= 0 || idProyecto > 2147483647) {
+    return res.status(400).json({ ok: false, error: "id_proyecto inválido o fuera de rango" });
+  }
 
   try {
     const { rows } = await pool.query(
@@ -1746,17 +1756,17 @@ async function obtenerProgresivas(req, res) {
       ORDER BY
         CASE
           WHEN regexp_replace(COALESCE(name, ''), '[^0-9+]', '', 'g') ~ '^[0-9]+\\+[0-9]+$'
-          THEN split_part(regexp_replace(name, '[^0-9+]', '', 'g'), '+', 1)::int
-          ELSE 999999
+          THEN split_part(regexp_replace(name, '[^0-9+]', '', 'g'), '+', 1)::bigint
+          ELSE 999999::bigint
         END,
         CASE
           WHEN regexp_replace(COALESCE(name, ''), '[^0-9+]', '', 'g') ~ '^[0-9]+\\+[0-9]+$'
-          THEN split_part(regexp_replace(name, '[^0-9+]', '', 'g'), '+', 2)::int
-          ELSE 999999
+          THEN split_part(regexp_replace(name, '[^0-9+]', '', 'g'), '+', 2)::bigint
+          ELSE 999999::bigint
         END,
         name
       `,
-      [id]
+      [idProyecto]
     );
 
     res.json({

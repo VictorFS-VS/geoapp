@@ -165,7 +165,7 @@ export default function FullScreenVisor() {
 
   const API_KEY =
     import.meta.env.VITE_GOOGLE_MAPS_KEY || import.meta.env.VITE_GMAPS_API_KEY;
-  const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID;
+  const MAP_ID = String(import.meta.env.VITE_GOOGLE_MAP_ID || "").trim();
 
   /* =========================
      fetchInformeDetalle

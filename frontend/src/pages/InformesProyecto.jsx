@@ -129,6 +129,21 @@ function hasPerm(auth, code) {
   return permsLS.includes(code);
 }
 
+function isAdminUser(auth) {
+  const raw = auth?.user;
+  const t = Number(raw?.tipo_usuario ?? raw?.group_id);
+  if (t === 1) return true;
+  try {
+    const s = localStorage.getItem("user");
+    if (!s) return false;
+    const u = JSON.parse(s);
+    const t2 = Number(u?.tipo_usuario ?? u?.group_id);
+    return t2 === 1;
+  } catch {
+    return false;
+  }
+}
+
 const InformesProyecto = () => {
   const { idProyecto } = useParams();
   const navigate = useNavigate();
@@ -148,6 +163,8 @@ const InformesProyecto = () => {
   const [informes, setInformes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -183,6 +200,8 @@ const InformesProyecto = () => {
   // ✅ PERMISOS REALES (igual que Sidebar)
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
+  const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
+  const puedeEliminarAdmin = useMemo(() => puedeEliminar && esAdmin, [puedeEliminar, esAdmin]);
 
   // KMZ (vos tenés informes.export)
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
@@ -214,6 +233,28 @@ const InformesProyecto = () => {
     if (idProyecto) cargarInformes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idProyecto, idPlantillaFiltro]);
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allIds = useMemo(
+    () => (informes || []).map((i) => Number(i.id_informe)).filter((n) => Number.isFinite(n) && n > 0),
+    [informes]
+  );
+  const allSelected = allIds.length > 0 && allIds.every((id) => selectedSet.has(id));
+  const headerCheckboxRef = useRef(null);
+
+  useEffect(() => {
+    if (headerCheckboxRef.current) {
+      headerCheckboxRef.current.indeterminate = selectedIds.length > 0 && !allSelected;
+    }
+  }, [selectedIds, allSelected]);
+
+  useEffect(() => {
+    if (!allIds.length) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds((prev) => prev.filter((id) => allIds.includes(id)));
+  }, [allIds]);
 
   const formatearFecha = (iso) => {
     if (!iso) return "-";
@@ -475,7 +516,7 @@ const InformesProyecto = () => {
   };
 
   const eliminarInforme = async (idInforme) => {
-    if (!puedeEliminar) {
+    if (!puedeEliminarAdmin) {
       Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
       return;
     }
@@ -508,6 +549,110 @@ const InformesProyecto = () => {
     } catch (err) {
       console.error("Error eliminando informe:", err);
       Toast.fire({ icon: "error", title: "No se pudo eliminar el informe." });
+    }
+  };
+
+  const eliminarSeleccionados = async () => {
+    if (!puedeEliminarAdmin) {
+      Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
+      return;
+    }
+    if (!idPlantillaFiltro) {
+      Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
+      return;
+    }
+    if (selectedIds.length === 0) return;
+
+    const result = await Swal.fire({
+      icon: "warning",
+      title: `¿Eliminar ${selectedIds.length} informes?`,
+      text: `Plantilla #${idPlantillaFiltro}. Esta acción no se puede deshacer.`,
+      showCancelButton: true,
+      confirmButtonText: "Sí, eliminar",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#d33",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const resp = await fetch(
+        `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
+        {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: selectedIds }),
+        }
+      );
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || `Error ${resp.status}`);
+      }
+
+      setSelectedIds([]);
+      await cargarInformes();
+      Toast.fire({ icon: "success", title: "Informes eliminados correctamente." });
+    } catch (err) {
+      console.error("Error eliminando informes en masa:", err);
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const eliminarTodosPlantilla = async () => {
+    if (!puedeEliminarAdmin) {
+      Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
+      return;
+    }
+    if (!idPlantillaFiltro) {
+      Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
+      return;
+    }
+
+    const total = informes?.length || 0;
+
+    const result = await Swal.fire({
+      icon: "warning",
+      title: "¿Eliminar TODOS los informes de la plantilla?",
+      text: `Plantilla #${idPlantillaFiltro}. Esta acción es irreversible${total ? ` y eliminará al menos ${total} registros cargados.` : "."}`,
+      showCancelButton: true,
+      confirmButtonText: "Sí, eliminar todo",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#d33",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const resp = await fetch(
+        `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
+        {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ all: true }),
+        }
+      );
+
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.error || `Error ${resp.status}`);
+      }
+
+      setSelectedIds([]);
+      await cargarInformes();
+      Toast.fire({
+        icon: "success",
+        title: `Informes eliminados correctamente (${data.deleted_count || 0}).`,
+      });
+    } catch (err) {
+      console.error("Error eliminando todos los informes:", err);
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -569,6 +714,29 @@ const InformesProyecto = () => {
         </div>
 
         <div className="d-flex gap-2 flex-wrap justify-content-end">
+          {puedeEliminarAdmin ? (
+            <div className="d-flex align-items-center gap-2">
+              <Badge bg={selectedIds.length ? "danger" : "secondary"}>
+                Seleccionados: {selectedIds.length}
+              </Badge>
+              <Button
+                variant="danger"
+                disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting}
+                onClick={eliminarSeleccionados}
+                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar seleccionados"}
+              >
+                {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
+              </Button>
+              <Button
+                variant="outline-danger"
+                disabled={!idPlantillaFiltro || bulkDeleting}
+                onClick={eliminarTodosPlantilla}
+                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
+              >
+                {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
+              </Button>
+            </div>
+          ) : null}
           <Button variant="secondary" onClick={() => navigate(-1)}>
             Volver
           </Button>
@@ -621,6 +789,20 @@ const InformesProyecto = () => {
         <Table striped bordered hover size="sm" responsive>
           <thead className="table-light">
             <tr>
+              <th style={{ width: 48, textAlign: "center" }}>
+                <Form.Check
+                  type="checkbox"
+                  ref={headerCheckboxRef}
+                  checked={allSelected}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedIds(allIds);
+                    } else {
+                      setSelectedIds([]);
+                    }
+                  }}
+                />
+              </th>
               <th style={{ width: 80 }}>ID</th>
               <th>Plantilla</th>
               <th>Título</th>
@@ -635,6 +817,22 @@ const InformesProyecto = () => {
 
               return (
                 <tr key={inf.id_informe}>
+                  <td style={{ textAlign: "center" }}>
+                    <Form.Check
+                      type="checkbox"
+                      checked={selectedSet.has(Number(inf.id_informe))}
+                      onChange={(e) => {
+                        const id = Number(inf.id_informe);
+                        if (!id) return;
+                        setSelectedIds((prev) => {
+                          const set = new Set(prev);
+                          if (e.target.checked) set.add(id);
+                          else set.delete(id);
+                          return Array.from(set);
+                        });
+                      }}
+                    />
+                  </td>
                   <td><Badge bg="secondary">{inf.id_informe}</Badge></td>
                   <td>{inf.nombre_plantilla || inf.id_plantilla}</td>
                   <td>{inf.titulo || "-"}</td>
@@ -664,7 +862,7 @@ const InformesProyecto = () => {
                         </Button>
                       )}
 
-                      {puedeEliminar && (
+                      {puedeEliminarAdmin && (
                         <Button variant="danger" onClick={() => eliminarInforme(inf.id_informe)}>
                           Eliminar
                         </Button>
