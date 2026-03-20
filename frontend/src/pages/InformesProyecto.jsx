@@ -740,6 +740,17 @@ const InformesProyecto = () => {
           <Button variant="secondary" onClick={() => navigate(-1)}>
             Volver
           </Button>
+          <Button
+            variant="outline-primary"
+            onClick={() => {
+              const qp = new URLSearchParams();
+              if (idProyecto) qp.set("id_proyecto", String(idProyecto));
+              if (idPlantillaFiltro) qp.set("id_plantilla", String(idPlantillaFiltro));
+              navigate(`/dashboardinformes?${qp.toString()}`);
+            }}
+          >
+            Dashboard V2
+          </Button>
 
           <div className="btn-group">
             <Button variant="outline-danger" onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>

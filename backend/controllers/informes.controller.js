@@ -8,6 +8,7 @@ const puppeteer = require("puppeteer");
 const ExcelJS = require("exceljs");
 const pool = require("../db");
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ImageRun, PageOrientation } = require("docx");
+const { parseInformeLatLng } = require("../helpers/informesGeoSummary");
 
 const BASE_UPLOAD_PATH = path.resolve(path.join(__dirname, "..", "uploads"));
 
@@ -2441,24 +2442,15 @@ async function deletePregunta(req, res) {
     const { plantilla } = req.query;
 
     try {
-      const params = [idProyecto, userId, isAdmin];
-      let whereExtra = "";
-
-      if (plantilla) {
-        params.push(Number(plantilla));
-        whereExtra += ` AND i.id_plantilla = $${params.length} `;
-      }
-
-      whereExtra += `
-        AND (
-          $3 = true
-          OR p.id_creador = $2
-          OR (
-            COALESCE(p.activo, true) = true
-            AND pu.id_usuario IS NOT NULL
-          )
-        )
-      `;
+      const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
+      const baseParams = [idProyecto];
+      const scope = buildInformeVisibleScope({
+        userId,
+        isAdmin,
+        plantillaId: plantilla,
+        startIndex: baseParams.length + 1,
+      });
+      const params = baseParams.concat(scope.params);
 
       const q = `
         SELECT
@@ -2468,9 +2460,9 @@ async function deletePregunta(req, res) {
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
-        AND pu.id_usuario = $2
+        AND pu.id_usuario = $${scope.userParamIndex}
         WHERE i.id_proyecto = $1
-        ${whereExtra}
+        ${scope.whereSql}
         ORDER BY i.fecha_creado DESC, i.id_informe DESC
       `;
 
@@ -2587,69 +2579,6 @@ async function deletePregunta(req, res) {
           params
         );
 
-        const toNum = (v) => {
-          if (v == null) return null;
-          const s = String(v).trim().replace(",", ".");
-          const n = Number(s);
-          return Number.isFinite(n) ? n : null;
-        };
-
-        const isLatLng = (lat, lng) =>
-        lat != null && lng != null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
-
-        const parseLatLng = (latRaw, lngRaw, ubicRaw) => {
-          // 1) si hay ubic (json o texto), intentamos parsear primero
-          if (ubicRaw) {
-            const s = String(ubicRaw).trim();
-            if (s) {
-              // a) JSON
-              try {
-                const j = JSON.parse(s);
-
-                // array: puede venir [lat,lng] o [lng,lat]
-                if (Array.isArray(j) && j.length >= 2) {
-                  const a = toNum(j[0]);
-                  const b = toNum(j[1]);
-
-                  // primero [lat,lng]
-                  if (isLatLng(a, b)) return { lat: a, lng: b };
-                  // si no, probamos [lng,lat]
-                  if (isLatLng(b, a)) return { lat: b, lng: a };
-                }
-
-                // objeto {lat,lng} o variantes
-                if (j && typeof j === "object") {
-                  const lat = toNum(j.lat ?? j.latitude);
-                  const lng = toNum(j.lng ?? j.lon ?? j.longitude);
-                  if (isLatLng(lat, lng)) return { lat, lng };
-
-                  // por si viniera invertido en keys raras
-                  const lat2 = toNum(j.lng ?? j.lon ?? j.longitude);
-                  const lng2 = toNum(j.lat ?? j.latitude);
-                  if (isLatLng(lat2, lng2)) return { lat: lat2, lng: lng2 };
-                }
-              } catch {
-                // b) fallback: texto que contenga "num,num" aunque tenga [] o comillas
-                const m = s.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
-                if (m) {
-                  const a = toNum(m[1]);
-                  const b = toNum(m[2]);
-                  if (isLatLng(a, b)) return { lat: a, lng: b };
-                  if (isLatLng(b, a)) return { lat: b, lng: a };
-                }
-              }
-            }
-          }
-
-          // 2) fallback por lat/lng sueltos
-          const lat1 = toNum(latRaw);
-          const lng1 = toNum(lngRaw);
-          if (isLatLng(lat1, lng1)) return { lat: lat1, lng: lng1 };
-          if (isLatLng(lng1, lat1)) return { lat: lng1, lng: lat1 };
-
-          return null;
-        };
-
         const normalizeSemaforo = (raw) => {
           if (raw == null) return { color: null, label: null };
 
@@ -2693,7 +2622,7 @@ async function deletePregunta(req, res) {
     }
 
         const ubicRaw = r.ubic_map_json_text ?? r.ubic_map_text;
-        const parsed = parseLatLng(r.lat_raw, r.lng_raw, ubicRaw);
+        const parsed = parseInformeLatLng(r.lat_raw, r.lng_raw, ubicRaw);
         if (!parsed) continue;
 
         const { lat, lng } = parsed;

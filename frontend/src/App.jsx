@@ -37,6 +37,7 @@ import DashboardTramos from "./pages/DashboardTramos";
 
 import Expedientes from "./pages/Expedientes";
 import GVCatastroDashboard from "./modules/gv/GVCatastroDashboard";
+import GVADashboardInformes from "./modules/gv/gva_informes/GVADashboardInformes";
 import RequirePerm from "./components/RequirePerm";
 import PublicInforme from "./pages/PublicInforme";
 
@@ -505,6 +506,18 @@ function App() {
               <ProtectedRoute>
                 <RequirePerm anyOf={PERMS.DASH_TRAMOS} redirectTo="/">
                   <DashboardTramos />
+                </RequirePerm>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Dashboard informes v2 (base) */}
+          <Route
+            path="dashboardinformes"
+            element={
+              <ProtectedRoute>
+                <RequirePerm anyOf={PERMS.INFORMES} redirectTo="/">
+                  <GVADashboardInformes />
                 </RequirePerm>
               </ProtectedRoute>
             }
