@@ -40,6 +40,7 @@ function normalizeProgresivaValue(value) {
   const raw = toSafeString(value);
   if (!raw) return null;
   let s = stripDiacritics(raw).toUpperCase();
+  s = s.replace(/\([^)]*\)/g, " ");
   s = s.replace(/\bPROGRESIVA\b/g, "");
   s = s.replace(/\bPROG\b/g, "");
   s = s.replace(/\bPK\b/g, "");
@@ -59,6 +60,26 @@ function normalizeProgresivaValue(value) {
 
   s = s.replace(/[-.]+/g, "");
   return s || null;
+}
+
+function detectLinkValueKind(value) {
+  const raw = toSafeString(value);
+  if (!raw) return "unknown";
+
+  const s = stripDiacritics(raw).toUpperCase().trim();
+  if (!s) return "unknown";
+
+  if (/^\d+$/.test(s)) return "tramo";
+  if (/^\d+\.\d+$/.test(s)) return "subtramo";
+  if (
+    /\bPK\b/.test(s) ||
+    /\d+\s*\+\s*\d+/.test(s) ||
+    /\bPROG(?:RESIVA)?\b/.test(s)
+  ) {
+    return "progresiva";
+  }
+
+  return "unknown";
 }
 
 function emptyDim() {
@@ -198,7 +219,8 @@ async function buildSubtramoCatalog({ idProyecto, db }) {
       st.id_proyecto_subtramo,
       st.id_proyecto_tramo,
       st.descripcion,
-      st.id_vial_subtramo
+      st.id_vial_subtramo,
+      t.id_vial_tramo
     FROM ema.proyecto_subtramos st
     JOIN ema.proyecto_tramos t ON t.id_proyecto_tramo = st.id_proyecto_tramo
     WHERE t.id_proyecto = $1
@@ -222,6 +244,7 @@ async function buildSubtramoCatalog({ idProyecto, db }) {
     entries.set(String(id), {
       id: String(id),
       idTramo: r.id_proyecto_tramo != null ? String(r.id_proyecto_tramo) : null,
+      idVialTramo: r.id_vial_tramo != null ? String(r.id_vial_tramo) : null,
       descripcion,
       idVial,
       label,
@@ -344,6 +367,36 @@ function matchProgresivaValueToCatalog({ rawValue, normalizedValue, catalog }) {
   return { matched: false, match_mode: "none", resolved_id: null, resolved_aux_id: null, label: null };
 }
 
+function emptyMatch() {
+  return {
+    matched: false,
+    match_mode: "none",
+    resolved_id: null,
+    resolved_aux_id: null,
+    label: null,
+  };
+}
+
+function buildDerivedTramoMatchFromSubtramo({ subMatch, subCatalog, tramoCatalog }) {
+  if (!subMatch?.matched || !subMatch?.resolved_id || !subCatalog?.entries) {
+    return emptyMatch();
+  }
+
+  const subEntry = subCatalog.entries.get(String(subMatch.resolved_id));
+  const tramoId = subEntry?.idVialTramo ? String(subEntry.idVialTramo) : null;
+  if (!tramoId) return emptyMatch();
+
+  const tramoEntry = tramoCatalog?.entries?.get(tramoId);
+
+  return {
+    matched: true,
+    match_mode: "derived_from_subtramo",
+    resolved_id: tramoId,
+    resolved_aux_id: subEntry?.idTramo || null,
+    label: tramoEntry?.label || null,
+  };
+}
+
 async function resolveInformesGeoLinks(params = {}) {
   const linkFields = params?.linkFields || {};
   const sourceValues = params?.sourceValues || {};
@@ -366,6 +419,9 @@ async function resolveInformesGeoLinks(params = {}) {
       ? sourceValues?.[String(subtramoFieldId)] ?? sourceValues?.[subtramoFieldId]
       : null;
 
+  const tramoKind = detectLinkValueKind(tramoRaw);
+  const subtramoKind = detectLinkValueKind(subtramoRaw);
+
   const tramoNorm = normalizeTramoValue(tramoRaw);
   const progNorm = normalizeProgresivaValue(progRaw);
   const subtramoNorm = normalizeSubtramoValue(subtramoRaw);
@@ -377,10 +433,26 @@ async function resolveInformesGeoLinks(params = {}) {
   const subCat =
     catalogs?.subtramo || (idProyecto ? await buildSubtramoCatalog({ idProyecto, db }) : null);
 
-  const tramoMatch =
+  const tramoDirectMatch =
     tramoCat && tramoNorm
       ? matchTramoValueToCatalog({ rawValue: tramoRaw, normalizedValue: tramoNorm, catalog: tramoCat })
-      : { matched: false, match_mode: "none", resolved_id: null, resolved_aux_id: null, label: null };
+      : emptyMatch();
+  const tramoAsSubtramoMatch =
+    subCat && tramoNorm && tramoKind === "subtramo"
+      ? matchSubtramoValueToCatalog({
+          rawValue: tramoRaw,
+          normalizedValue: normalizeSubtramoValue(tramoRaw),
+          catalog: subCat,
+        })
+      : emptyMatch();
+  const derivedTramoFromTramoValue =
+    tramoAsSubtramoMatch.matched && tramoCat
+      ? buildDerivedTramoMatchFromSubtramo({
+          subMatch: tramoAsSubtramoMatch,
+          subCatalog: subCat,
+          tramoCatalog: tramoCat,
+        })
+      : emptyMatch();
   const progMatch =
     progCat && progNorm
       ? matchProgresivaValueToCatalog({
@@ -388,23 +460,67 @@ async function resolveInformesGeoLinks(params = {}) {
           normalizedValue: progNorm,
           catalog: progCat,
         })
-      : { matched: false, match_mode: "none", resolved_id: null, resolved_aux_id: null, label: null };
-  const subMatch =
+      : emptyMatch();
+  const subFieldMatch =
     subCat && subtramoNorm
       ? matchSubtramoValueToCatalog({
           rawValue: subtramoRaw,
           normalizedValue: subtramoNorm,
           catalog: subCat,
         })
-      : { matched: false, match_mode: "none", resolved_id: null, resolved_aux_id: null, label: null };
+      : emptyMatch();
+
+  const tramoMatch =
+    tramoKind === "subtramo" && derivedTramoFromTramoValue.matched
+      ? derivedTramoFromTramoValue
+      : tramoDirectMatch;
+
+  const subMatch =
+    subFieldMatch.matched
+      ? subFieldMatch
+      : tramoKind === "subtramo" && tramoAsSubtramoMatch.matched
+      ? {
+          ...tramoAsSubtramoMatch,
+          match_mode:
+            tramoAsSubtramoMatch.match_mode === "none"
+              ? "resolved_from_tramo_value"
+              : `${tramoAsSubtramoMatch.match_mode}:from_tramo_value`,
+        }
+      : emptyMatch();
+
+  const derivedTramoFromSubField =
+    !tramoMatch.matched && subMatch.matched && tramoCat
+      ? buildDerivedTramoMatchFromSubtramo({
+          subMatch,
+          subCatalog: subCat,
+          tramoCatalog: tramoCat,
+        })
+      : emptyMatch();
+
+  const tramoFinalMatch = !tramoMatch.matched && derivedTramoFromSubField.matched
+    ? derivedTramoFromSubField
+    : tramoMatch;
 
   return buildEmptyLinkageResult({
     tramo: {
-      source_kind: tramoFieldId != null ? "id_pregunta" : null,
-      source_ref: tramoFieldId != null ? String(tramoFieldId) : null,
-      source_value: toSafeString(tramoRaw),
+      source_kind:
+        tramoFinalMatch.match_mode === "derived_from_subtramo" && subtramoFieldId != null && !tramoDirectMatch.matched
+          ? "id_pregunta"
+          : tramoFieldId != null
+          ? "id_pregunta"
+          : null,
+      source_ref:
+        tramoFinalMatch.match_mode === "derived_from_subtramo" && subtramoFieldId != null && !tramoDirectMatch.matched
+          ? String(subtramoFieldId)
+          : tramoFieldId != null
+          ? String(tramoFieldId)
+          : null,
+      source_value:
+        tramoFinalMatch.match_mode === "derived_from_subtramo" && subtramoRaw != null && !tramoDirectMatch.matched
+          ? toSafeString(subtramoRaw)
+          : toSafeString(tramoRaw),
       normalized_value: tramoNorm,
-      ...tramoMatch,
+      ...tramoFinalMatch,
     },
     progresiva: {
       source_kind: progresivaFieldId != null ? "id_pregunta" : null,
@@ -414,10 +530,30 @@ async function resolveInformesGeoLinks(params = {}) {
       ...progMatch,
     },
     subtramo: {
-      source_kind: subtramoFieldId != null ? "id_pregunta" : null,
-      source_ref: subtramoFieldId != null ? String(subtramoFieldId) : null,
-      source_value: toSafeString(subtramoRaw),
-      normalized_value: subtramoNorm,
+      source_kind:
+        subFieldMatch.matched || subtramoFieldId != null
+          ? "id_pregunta"
+          : tramoKind === "subtramo" && tramoFieldId != null
+          ? "id_pregunta"
+          : null,
+      source_ref:
+        subFieldMatch.matched || subtramoFieldId != null
+          ? String(subtramoFieldId)
+          : tramoKind === "subtramo" && tramoFieldId != null
+          ? String(tramoFieldId)
+          : null,
+      source_value:
+        subFieldMatch.matched || subtramoFieldId != null
+          ? toSafeString(subtramoRaw)
+          : tramoKind === "subtramo"
+          ? toSafeString(tramoRaw)
+          : null,
+      normalized_value:
+        subFieldMatch.matched || subtramoFieldId != null
+          ? subtramoNorm
+          : tramoKind === "subtramo"
+          ? normalizeSubtramoValue(tramoRaw)
+          : null,
       ...subMatch,
     },
     meta: { source_type: "informes" },

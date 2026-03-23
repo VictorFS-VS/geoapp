@@ -1,5 +1,6 @@
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const API_URL = BASE.endsWith("/api") ? BASE : `${BASE}/api`;
+const HOST_BASE = BASE.replace(/\/api\/?$/i, "");
 
 function authHeaders() {
   const token =
@@ -112,6 +113,57 @@ function asFeatureCollection(payload) {
   return null;
 }
 
+function isLngLatPair(pair) {
+  if (!Array.isArray(pair) || pair.length < 2) return false;
+  const lng = Number(pair[0]);
+  const lat = Number(pair[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  return Math.abs(lng) <= 180 && Math.abs(lat) <= 90;
+}
+
+function geometryLooksWgs84(geom) {
+  if (!geom?.coordinates) return false;
+
+  const walk = (node) => {
+    if (!Array.isArray(node)) return false;
+    if (node.length >= 2 && typeof node[0] === "number" && typeof node[1] === "number") {
+      return isLngLatPair(node);
+    }
+    return node.every((child) => walk(child));
+  };
+
+  return walk(geom.coordinates);
+}
+
+function normalizeProgresivasFeatureCollection(fc) {
+  const featureCollection =
+    fc?.type === "FeatureCollection" && Array.isArray(fc.features)
+      ? fc
+      : { type: "FeatureCollection", features: [] };
+
+  let dropped = 0;
+  const features = featureCollection.features.filter((feature) => {
+    const geom = feature?.geometry;
+    if (!geom?.type || !geom?.coordinates) {
+      dropped += 1;
+      return false;
+    }
+    if (!geometryLooksWgs84(geom)) {
+      dropped += 1;
+      return false;
+    }
+    return true;
+  });
+
+  if (dropped > 0 && import.meta.env.DEV) {
+    console.warn(
+      `[gva_tramos] Progresivas descartadas por geometria fuera de rango: ${dropped}`
+    );
+  }
+
+  return { type: "FeatureCollection", features };
+}
+
 async function fetchJson(url) {
   const resp = await fetch(url, { headers: { ...authHeaders() } });
   const ct = resp.headers.get("content-type") || "";
@@ -124,6 +176,21 @@ async function fetchJson(url) {
   }
 
   return data;
+}
+
+export async function fetchInformeDetalle(idInforme) {
+  if (!idInforme) throw new Error("idInforme es requerido");
+  return fetchJson(`${API_URL}/informes/${Number(idInforme)}`);
+}
+
+export function resolveInformeFotoUrl(rutaArchivo) {
+  if (!rutaArchivo) return "";
+  const clean = String(rutaArchivo).trim().replace(/^\/+/, "");
+  if (!clean) return "";
+  if (clean.startsWith("http://") || clean.startsWith("https://")) return clean;
+  if (clean.startsWith("api/uploads/")) return `${HOST_BASE}/${clean}`;
+  if (clean.startsWith("uploads/")) return `${HOST_BASE}/${clean}`;
+  return `${HOST_BASE}/uploads/${clean}`;
 }
 
 export async function fetchTramosGeojson(idProyecto) {
@@ -147,5 +214,5 @@ export async function fetchProgresivasGeojson(idProyecto) {
   const url = `${API_URL}/mantenimiento/${Number(idProyecto)}/progresivas`;
   const json = await fetchJson(url);
   const fc = asFeatureCollection(json);
-  return fc || { type: "FeatureCollection", features: [] };
+  return normalizeProgresivasFeatureCollection(fc);
 }
