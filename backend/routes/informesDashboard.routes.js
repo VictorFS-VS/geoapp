@@ -7,6 +7,7 @@ const router = express.Router();
 const {
   getPlantillasPorProyecto,
   getChartsAgregados,
+  getDashboardGeoLinks,
 } = require("../controllers/informesDashboard.controller");
 const {
   getPlantillaDashboardMetadata,
@@ -45,6 +46,13 @@ router.get(
   "/charts",
   requirePerm("informes.dashboard.charts.read"),
   getChartsAgregados
+);
+
+// POST /api/informes-dashboard/geo-links
+router.post(
+  "/geo-links",
+  requirePerm("informes.read"),
+  getDashboardGeoLinks
 );
 
 module.exports = router;

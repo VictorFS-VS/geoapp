@@ -13,8 +13,21 @@ export async function getResumen(params = {}) {
   const qp = new URLSearchParams();
   if (params.id_proyecto) qp.set("id_proyecto", String(params.id_proyecto));
   if (params.id_plantilla) qp.set("id_plantilla", String(params.id_plantilla));
-  if (params.desde) qp.set("desde", String(params.desde));
-  if (params.hasta) qp.set("hasta", String(params.hasta));
+  if (params.date_from) {
+    qp.set("date_from", String(params.date_from));
+  } else if (params.desde) {
+    qp.set("date_from", String(params.desde));
+  }
+  if (params.date_to) {
+    qp.set("date_to", String(params.date_to));
+  } else if (params.hasta) {
+    qp.set("date_to", String(params.hasta));
+  }
+  if (params.date_field_id) qp.set("date_field_id", String(params.date_field_id));
+  if (params.time_grouping) qp.set("time_grouping", String(params.time_grouping));
+  if (params.search_text && String(params.search_text).trim()) {
+    qp.set("search_text", String(params.search_text).trim());
+  }
   if (params.solo_cerrados !== undefined) {
     qp.set("solo_cerrados", params.solo_cerrados ? "1" : "0");
   }
@@ -23,6 +36,28 @@ export async function getResumen(params = {}) {
       qp.set("filters", JSON.stringify(params.filters));
     } catch (e) {
       throw new Error("No se pudo serializar filters");
+    }
+  }
+  if (
+    params.interactive_filters &&
+    Array.isArray(params.interactive_filters) &&
+    params.interactive_filters.length > 0
+  ) {
+    try {
+      qp.set("interactive_filters", JSON.stringify(params.interactive_filters));
+    } catch (e) {
+      throw new Error("No se pudo serializar interactive_filters");
+    }
+  }
+  if (
+    params.search_field_ids &&
+    Array.isArray(params.search_field_ids) &&
+    params.search_field_ids.length > 0
+  ) {
+    try {
+      qp.set("search_field_ids", JSON.stringify(params.search_field_ids));
+    } catch (e) {
+      throw new Error("No se pudo serializar search_field_ids");
     }
   }
   if (

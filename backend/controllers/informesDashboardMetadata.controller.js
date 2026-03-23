@@ -41,6 +41,51 @@ function isFilterableType(tipo) {
   ].includes(t);
 }
 
+function isSearchableType(tipo) {
+  const t = normType(tipo);
+  if (!t) return false;
+  if (t.includes("mapa") || t.includes("coord")) return false;
+  if (t.includes("imagen") || t.includes("foto") || t.includes("archivo") || t.includes("upload")) return false;
+  if (t.includes("json")) return false;
+  if (t.includes("fecha") || t === "date" || t === "datetime") return false;
+  if (t.includes("numero") || t.includes("num") || t.includes("decimal") || t.includes("rango")) return false;
+  return [
+    "select",
+    "combo",
+    "opcion",
+    "opciones",
+    "radio",
+    "semaforo",
+    "bool",
+    "boolean",
+    "si_no",
+    "sino",
+    "yesno",
+    "texto",
+    "text",
+    "textarea",
+    "string",
+  ].includes(t);
+}
+
+function isStructuredFilterableType(tipo) {
+  const t = normType(tipo);
+  if (!t) return false;
+  return [
+    "select",
+    "combo",
+    "opcion",
+    "opciones",
+    "radio",
+    "semaforo",
+    "bool",
+    "boolean",
+    "si_no",
+    "sino",
+    "yesno",
+  ].includes(t);
+}
+
 function isChartableType(tipo) {
   const t = normType(tipo);
   if (!t) return false;
@@ -60,6 +105,18 @@ function isChartableType(tipo) {
     "si_no",
     "sino",
     "yesno",
+  ].includes(t);
+}
+
+function isDateableType(tipo) {
+  const t = normType(tipo);
+  if (!t) return false;
+  return [
+    "fecha",
+    "date",
+    "datetime",
+    "fecha_hora",
+    "timestamp",
   ].includes(t);
 }
 
@@ -163,7 +220,21 @@ async function getPlantillaDashboardMetadata(req, res) {
     );
 
     const preguntasBySeccion = new Map();
+    const temporalSources = [
+      {
+        id: "__created_at",
+        label: "Fecha de carga",
+        kind: "created_at",
+        dateable: true,
+        default: true,
+      },
+    ];
     for (const q of preguntasRes.rows || []) {
+      const dateable = isDateableType(q.tipo);
+      const searchable = isSearchableType(q.tipo);
+      const filterable = isFilterableType(q.tipo);
+      const structuredFilterable = isStructuredFilterableType(q.tipo);
+      const resultable = isResultableType(q.tipo);
       const list = preguntasBySeccion.get(q.id_seccion) || [];
       list.push({
         id_pregunta: Number(q.id_pregunta),
@@ -173,15 +244,28 @@ async function getPlantillaDashboardMetadata(req, res) {
         opciones: Array.isArray(q.opciones_json) ? q.opciones_json : [],
         obligatorio: !!q.obligatorio,
         permite_foto: !!q.permite_foto,
-        filterable: isFilterableType(q.tipo),
+        filterable,
+        structured_filterable: structuredFilterable,
+        searchable,
         chartable: isChartableType(q.tipo),
-        resultable: isResultableType(q.tipo),
+        resultable,
+        dateable,
         availability_label: resultAvailabilityLabel({
-          resultable: isResultableType(q.tipo),
-          filterable: isFilterableType(q.tipo),
+          resultable,
+          filterable,
         }),
       });
       preguntasBySeccion.set(q.id_seccion, list);
+
+      if (dateable) {
+        temporalSources.push({
+          id: Number(q.id_pregunta),
+          label: q.etiqueta || `Pregunta ${q.id_pregunta}`,
+          kind: "field",
+          dateable: true,
+          default: false,
+        });
+      }
     }
 
     const secciones = (seccionesRes.rows || []).map((s) => ({
@@ -203,6 +287,7 @@ async function getPlantillaDashboardMetadata(req, res) {
         id_proyecto,
       },
       secciones,
+      temporal_sources: temporalSources,
     });
   } catch (err) {
     console.error("getPlantillaDashboardMetadata:", err);
