@@ -78,6 +78,185 @@ function normalizeLabel(v) {
   return s;
 }
 
+function isSummaryCandidateType(tipo) {
+  const t = String(tipo || "").trim().toLowerCase();
+  if (!t) return false;
+  if (
+    t.includes("mapa") ||
+    t.includes("coord") ||
+    t.includes("imagen") ||
+    t.includes("foto") ||
+    t.includes("archivo") ||
+    t.includes("upload") ||
+    t.includes("json") ||
+    t.includes("fecha") ||
+    t === "date" ||
+    t === "datetime" ||
+    isNumeric(t)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function shouldSkipSummaryLabel(label) {
+  const txt = normText(label || "");
+  if (!txt) return true;
+  const blacklist = [
+    "lat",
+    "latitud",
+    "lon",
+    "long",
+    "longitud",
+    "coordenada",
+    "coordenadas",
+    "mapa",
+    "ubicacion",
+    "ubicac",
+    "gps",
+    "foto",
+    "fotos",
+    "imagen",
+    "archivo",
+    "fecha",
+    "hora",
+    "titulo",
+    "nombre de plantilla",
+    "plantilla",
+  ];
+  return blacklist.some((token) => txt.includes(token));
+}
+
+function normalizeSummaryText(rawValue, tipo) {
+  if (rawValue === null || rawValue === undefined) return null;
+  const t = String(tipo || "").trim().toLowerCase();
+
+  if (isBoolean(t)) {
+    const normalized = normalizeLabel(rawValue);
+    return normalized || null;
+  }
+
+  if (t === "semaforo" || t.includes("semaforo")) {
+    const sem = normalizeSemaforoRaw(rawValue);
+    return sem.semaforo_label || sem.semaforo_color || null;
+  }
+
+  const text = String(rawValue).trim();
+  if (!text) return null;
+
+  if ((text.startsWith("[") && text.endsWith("]")) || (text.startsWith("{") && text.endsWith("}"))) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        const joined = parsed
+          .map((value) => normalizeLabel(value))
+          .filter(Boolean)
+          .join(", ");
+        return joined || null;
+      }
+      if (parsed && typeof parsed === "object") {
+        const candidate =
+          parsed.label ??
+          parsed.nombre ??
+          parsed.name ??
+          parsed.value ??
+          parsed.descripcion ??
+          null;
+        return normalizeLabel(candidate);
+      }
+    } catch {}
+  }
+
+  return normalizeLabel(text);
+}
+
+function summaryPriority(tipo, etiqueta) {
+  const t = String(tipo || "").trim().toLowerCase();
+  const label = normText(etiqueta || "");
+
+  if (label.includes("descripcion") || label.includes("descripción")) return 1;
+  if (label.includes("detalle") || label.includes("observacion") || label.includes("observación")) return 2;
+  if (label.includes("tipo")) return 3;
+  if (["texto", "text", "textarea", "string"].includes(t)) return 4;
+  if (["select", "combo", "opcion", "opciones", "radio"].includes(t)) return 5;
+  if (["multi", "multiselect", "check", "checkbox"].includes(t)) return 6;
+  if (t === "semaforo" || t.includes("semaforo")) return 7;
+  if (isBoolean(t)) return 8;
+  return 20;
+}
+
+async function buildDashboardInformesSummaryMap({ ids, db }) {
+  const informeIds = Array.isArray(ids)
+    ? ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+    : [];
+  if (!informeIds.length) return new Map();
+
+  const rSummary = await db.query(
+    `
+    SELECT
+      r.id_informe,
+      q.id_pregunta,
+      q.etiqueta,
+      q.tipo,
+      q.orden AS pregunta_orden,
+      s.orden AS seccion_orden,
+      COALESCE(
+        NULLIF(BTRIM(r.valor_texto), ''),
+        CASE
+          WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Sí' ELSE 'No' END
+          WHEN r.valor_json IS NOT NULL THEN r.valor_json::text
+          ELSE NULL
+        END
+      ) AS raw_value
+    FROM ema.informe_respuesta r
+    JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
+    JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+    WHERE r.id_informe = ANY($1::int[])
+    ORDER BY r.id_informe ASC, s.orden ASC, q.orden ASC, q.id_pregunta ASC
+    `,
+    [informeIds]
+  );
+
+  const bestByInforme = new Map();
+
+  for (const row of rSummary.rows || []) {
+    if (!isSummaryCandidateType(row.tipo)) continue;
+    if (shouldSkipSummaryLabel(row.etiqueta)) continue;
+
+    const summaryText = normalizeSummaryText(row.raw_value, row.tipo);
+    if (!summaryText) continue;
+
+    const idInforme = Number(row.id_informe);
+    if (!idInforme) continue;
+
+    const candidate = {
+      summary_field_id: Number(row.id_pregunta) || null,
+      summary_label: row.etiqueta || "Resumen",
+      summary_text: summaryText,
+      priority: summaryPriority(row.tipo, row.etiqueta),
+      seccion_orden: Number(row.seccion_orden) || 9999,
+      pregunta_orden: Number(row.pregunta_orden) || 9999,
+    };
+
+    const prev = bestByInforme.get(idInforme);
+    if (!prev) {
+      bestByInforme.set(idInforme, candidate);
+      continue;
+    }
+
+    const wins =
+      candidate.priority < prev.priority ||
+      (candidate.priority === prev.priority &&
+        (candidate.seccion_orden < prev.seccion_orden ||
+          (candidate.seccion_orden === prev.seccion_orden &&
+            candidate.pregunta_orden < prev.pregunta_orden)));
+
+    if (wins) bestByInforme.set(idInforme, candidate);
+  }
+
+  return bestByInforme;
+}
+
 function chartTypeForPregunta(tipo) {
   const t = String(tipo || "").toLowerCase();
   if (isNumeric(t)) return "bar";
@@ -235,7 +414,8 @@ async function buildDashboardInformesPoints({ ids, db }) {
     : [];
   if (!informeIds.length) return [];
 
-  const rPoints = await db.query(
+  const [rPoints, summaryByInforme] = await Promise.all([
+    db.query(
     `
     SELECT
       i.id_informe,
@@ -292,7 +472,9 @@ async function buildDashboardInformesPoints({ ids, db }) {
     ORDER BY i.fecha_creado DESC, i.id_informe DESC
     `,
     [informeIds]
-  );
+    ),
+    buildDashboardInformesSummaryMap({ ids: informeIds, db }),
+  ]);
 
   const points = [];
   for (const row of rPoints.rows || []) {
@@ -301,6 +483,7 @@ async function buildDashboardInformesPoints({ ids, db }) {
     if (!coords) continue;
 
     const { semaforo_color, semaforo_label } = normalizeSemaforoRaw(row.semaforo_raw);
+    const summary = summaryByInforme.get(Number(row.id_informe)) || null;
     points.push({
       id_informe: Number(row.id_informe),
       id_proyecto: Number(row.id_proyecto) || null,
@@ -310,6 +493,9 @@ async function buildDashboardInformesPoints({ ids, db }) {
       fecha_creado: row.fecha_creado || null,
       id_plantilla: Number(row.id_plantilla) || null,
       nombre_plantilla: row.nombre_plantilla || null,
+      summary_field_id: summary?.summary_field_id || null,
+      summary_label: summary?.summary_label || null,
+      summary_text: summary?.summary_text || null,
       semaforo_color,
       semaforo_label,
     });
@@ -485,15 +671,38 @@ async function getPlantillasPorProyecto(req, res) {
     }
 
     const q = `
+      WITH plantilla_dashboard_meta AS (
+        SELECT
+          s.id_plantilla,
+          COUNT(q.id_pregunta)::int AS dashboard_indicators_count
+        FROM ema.informe_seccion s
+        JOIN ema.informe_pregunta q ON q.id_seccion = s.id_seccion
+        WHERE LOWER(TRIM(COALESCE(q.tipo, ''))) IN (
+          'select',
+          'combo',
+          'opcion',
+          'opciones',
+          'radio',
+          'semaforo',
+          'bool',
+          'boolean',
+          'si_no',
+          'sino',
+          'yesno'
+        )
+        GROUP BY s.id_plantilla
+      )
       SELECT
         i.id_plantilla,
         COALESCE(p.nombre, 'Plantilla ' || i.id_plantilla) AS nombre,
         COUNT(*)::int AS total_informes,
-        MAX(i.fecha_creado)::date AS ultimo
+        MAX(i.fecha_creado)::date AS ultimo,
+        COALESCE(meta.dashboard_indicators_count, 0)::int AS dashboard_indicators_count
       FROM ema.informe i
       LEFT JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+      LEFT JOIN plantilla_dashboard_meta meta ON meta.id_plantilla = i.id_plantilla
       WHERE i.id_proyecto = $1
-      GROUP BY i.id_plantilla, p.nombre
+      GROUP BY i.id_plantilla, p.nombre, meta.dashboard_indicators_count
       ORDER BY total_informes DESC, ultimo DESC NULLS LAST, i.id_plantilla ASC
     `;
     const r = await pool.query(q, [id_proyecto]);

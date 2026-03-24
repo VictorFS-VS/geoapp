@@ -12,7 +12,12 @@ function walkCoordinates(node, bounds) {
   if (node.length >= 2 && typeof node[0] === "number" && typeof node[1] === "number") {
     const lng = Number(node[0]);
     const lat = Number(node[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      Math.abs(lng) <= 180 &&
+      Math.abs(lat) <= 90
+    ) {
       bounds.extend({ lat, lng });
       return true;
     }
@@ -36,6 +41,23 @@ function buildBounds(google, featureCollection) {
   }
 
   return hasAny ? bounds : null;
+}
+
+function boundsSignature(bounds) {
+  if (!bounds) return "";
+  try {
+    const ne = bounds.getNorthEast?.();
+    const sw = bounds.getSouthWest?.();
+    if (!ne || !sw) return "";
+    return [
+      Number(sw.lat?.() ?? 0).toFixed(6),
+      Number(sw.lng?.() ?? 0).toFixed(6),
+      Number(ne.lat?.() ?? 0).toFixed(6),
+      Number(ne.lng?.() ?? 0).toFixed(6),
+    ].join("|");
+  } catch {
+    return "";
+  }
 }
 
 function asFeatureCollection(data) {
@@ -72,6 +94,7 @@ export default function GVAMapDataLayer({
   const clickListenerRef = useRef(null);
   const getFeatureIdRef = useRef(getFeatureId);
   const onFeatureClickRef = useRef(onFeatureClick);
+  const lastBoundsSignatureRef = useRef("");
   const featureCollection = useMemo(() => asFeatureCollection(data), [data]);
   const activeSet = useMemo(() => {
     const next = new Set();
@@ -93,9 +116,7 @@ export default function GVAMapDataLayer({
   useEffect(() => {
     if (!map || !google?.maps?.Data) return;
     if (!layerRef.current) {
-      layerRef.current = new google.maps.Data({ map: visible ? map : null });
-    } else {
-      layerRef.current.setMap(visible ? map : null);
+      layerRef.current = new google.maps.Data({ map: null });
     }
 
     if (!clickListenerRef.current) {
@@ -116,12 +137,23 @@ export default function GVAMapDataLayer({
       }
       if (layerRef.current) {
         try {
+          layerRef.current.forEach((feature) => layerRef.current.remove(feature));
+        } catch {}
+        try {
           layerRef.current.setMap(null);
         } catch {}
         layerRef.current = null;
       }
     };
-  }, [map, google, visible]);
+  }, [map, google]);
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    try {
+      layer.setMap(visible ? map : null);
+    } catch {}
+  }, [map, visible]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -132,31 +164,17 @@ export default function GVAMapDataLayer({
       layer.addGeoJson(featureCollection);
     }
 
-    if (typeof zIndex === "number") {
-      layer.setStyle((feature) => {
-        const props = featureProps(feature);
-        const id = toIdString(getFeatureId?.(props, feature));
-        const isActive = activeSet.has(id);
-        return {
-          ...defaultStyle,
-          ...(isActive ? activeStyle : null),
-          zIndex,
-        };
-      });
-    }
-
     const bounds = visible ? buildBounds(google, featureCollection) : null;
-    onDataBounds?.(bounds);
+    const nextSignature = boundsSignature(bounds);
+    if (nextSignature !== lastBoundsSignatureRef.current) {
+      lastBoundsSignatureRef.current = nextSignature;
+      onDataBounds?.(bounds);
+    }
   }, [
     featureCollection,
     visible,
     google,
-    getFeatureId,
-    activeSet,
-    defaultStyle,
-    activeStyle,
     onDataBounds,
-    zIndex,
   ]);
 
   useEffect(() => {

@@ -455,6 +455,16 @@ function buildDashboardFilters({ id_proyecto, id_plantilla, desde, hasta, solo_c
     params.push(id_plantilla);
   }
 
+  if (desde) {
+    where += ` AND i.fecha_creado::date >= $${idx++}::date`;
+    params.push(desde);
+  }
+
+  if (hasta) {
+    where += ` AND i.fecha_creado::date <= $${idx++}::date`;
+    params.push(hasta);
+  }
+
   if (solo_cerrados) {
     where += ` AND COALESCE(i.cerrado, false) = true`;
   }

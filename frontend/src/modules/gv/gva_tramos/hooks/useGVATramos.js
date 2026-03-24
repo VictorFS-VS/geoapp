@@ -73,53 +73,29 @@ export function useGVATramos({ enabled, payload, cacheKey }) {
     const projectId = Number(payload.id_proyecto);
     if (!projectId) return;
 
-    const selection = data?.submapa?.selection_summary || {};
-    const tramoIds = Array.isArray(selection.tramo_ids) ? selection.tramo_ids : [];
-    const progresivaIds = Array.isArray(selection.progresiva_ids)
-      ? selection.progresiva_ids
-      : [];
-
-    const needTramos = tramoIds.length > 0;
-    const needProgresivas = progresivaIds.length > 0;
-
-    if (!needTramos) {
-      setTramosGeo(null);
-    }
-    if (!needProgresivas) {
-      setProgresivasGeo(null);
-    }
-
-    if (!needTramos && !needProgresivas) {
-      return;
-    }
-
     let cancelled = false;
 
     const run = async () => {
       setGeometryLoading(true);
       setGeometryError("");
       try {
-        if (needTramos) {
-          if (tramosCacheRef.current.has(projectId)) {
-            setTramosGeo(tramosCacheRef.current.get(projectId));
-          } else {
-            const fc = await fetchTramosGeojson(projectId);
-            if (!cancelled) {
-              tramosCacheRef.current.set(projectId, fc);
-              setTramosGeo(fc);
-            }
+        if (tramosCacheRef.current.has(projectId)) {
+          setTramosGeo(tramosCacheRef.current.get(projectId));
+        } else {
+          const fc = await fetchTramosGeojson(projectId);
+          if (!cancelled) {
+            tramosCacheRef.current.set(projectId, fc);
+            setTramosGeo(fc);
           }
         }
 
-        if (needProgresivas) {
-          if (progresivasCacheRef.current.has(projectId)) {
-            setProgresivasGeo(progresivasCacheRef.current.get(projectId));
-          } else {
-            const fc = await fetchProgresivasGeojson(projectId);
-            if (!cancelled) {
-              progresivasCacheRef.current.set(projectId, fc);
-              setProgresivasGeo(fc);
-            }
+        if (progresivasCacheRef.current.has(projectId)) {
+          setProgresivasGeo(progresivasCacheRef.current.get(projectId));
+        } else {
+          const fc = await fetchProgresivasGeojson(projectId);
+          if (!cancelled) {
+            progresivasCacheRef.current.set(projectId, fc);
+            setProgresivasGeo(fc);
           }
         }
       } catch (err) {
@@ -136,7 +112,7 @@ export function useGVATramos({ enabled, payload, cacheKey }) {
     return () => {
       cancelled = true;
     };
-  }, [enabled, payload?.id_proyecto, data?.submapa?.selection_summary]);
+  }, [enabled, payload?.id_proyecto]);
 
   return {
     data,

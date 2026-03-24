@@ -28,9 +28,9 @@ function traducirTipoCampo(tipo) {
 
 function traducirTipoGrafico(tipo) {
   if (tipo === "traffic") return "Semaforo";
-  if (tipo === "bar") return "Barras";
+  if (tipo === "bar") return "Lista";
   if (tipo === "donut") return "Dona";
-  if (tipo === "list") return "Lista";
+  if (tipo === "list") return "Barra";
   return tipo;
 }
 
@@ -151,7 +151,8 @@ export default function GVADashboardInformes() {
     return hasAny ? normalized : null;
   }, [data?.link_fields, metadata?.link_fields, metadata?.plantilla?.link_fields]);
 
-  const canShowSubmapa = geo?.hasGeo === true && !!linkFields;
+  const canShowSubmapa = geo?.hasGeo === true;
+  const hasLinkFields = !!linkFields;
 
   const geoLinksPayload = useMemo(() => {
     if (!canShowSubmapa) return null;
@@ -166,7 +167,7 @@ export default function GVADashboardInformes() {
       date_field_id: appliedDateFieldId || undefined,
       date_from: appliedDateFrom || undefined,
       date_to: appliedDateTo || undefined,
-      link_fields: linkFields,
+      link_fields: linkFields || undefined,
       limit: 50,
     };
   }, [
@@ -606,6 +607,282 @@ export default function GVADashboardInformes() {
     return baseColor;
   };
 
+  const polarToCartesian = (cx, cy, radius, angleInDegrees) => {
+    const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180.0;
+    return {
+      x: cx + radius * Math.cos(angleInRadians),
+      y: cy + radius * Math.sin(angleInRadians),
+    };
+  };
+
+  const describeArc = (cx, cy, radius, startAngle, endAngle) => {
+    const start = polarToCartesian(cx, cy, radius, endAngle);
+    const end = polarToCartesian(cx, cy, radius, startAngle);
+    const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+    return `M ${cx} ${cy} L ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArcFlag} 0 ${end.x} ${end.y} Z`;
+  };
+
+  const getNiceTickStep = (maxValue, targetIntervals = 4) => {
+    if (!Number.isFinite(maxValue) || maxValue <= 0) return 1;
+    const rawStep = maxValue / Math.max(1, targetIntervals);
+    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+    const residual = rawStep / magnitude;
+
+    if (residual <= 1) return magnitude;
+    if (residual <= 2) return 2 * magnitude;
+    if (residual <= 5) return 5 * magnitude;
+    return 10 * magnitude;
+  };
+
+  const buildNiceTicks = (maxValue, targetIntervals = 4) => {
+    if (!Number.isFinite(maxValue) || maxValue <= 0) {
+      return { chartMax: 1, ticks: [0, 1] };
+    }
+
+    const step = getNiceTickStep(maxValue, targetIntervals);
+    const chartMax = Math.max(step, Math.ceil(maxValue / step) * step);
+    const ticks = [];
+
+    for (let value = 0; value <= chartMax; value += step) {
+      ticks.push(value);
+    }
+
+    if (ticks[ticks.length - 1] !== chartMax) {
+      ticks.push(chartMax);
+    }
+
+    return { chartMax, ticks };
+  };
+
+  const renderIndicatorMeta = ({
+    label,
+    count,
+    total,
+    showPercentages,
+    align = "left",
+  }) => {
+    const safeCount = Number(count || 0);
+    const safeTotal = Number(total || 0);
+    const pct = safeTotal > 0 ? ((safeCount / safeTotal) * 100).toFixed(1) : "0.0";
+
+    return (
+      <div style={{ minWidth: 0, textAlign: align }}>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: "#111827",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+          title={label}
+        >
+          {label}
+        </div>
+        <div style={{ marginTop: 2, fontSize: 11, color: "#6b7280" }}>
+          {safeCount} informes
+        </div>
+        {showPercentages ? (
+          <div style={{ fontSize: 11, color: "#6b7280" }}>{pct}% del universo</div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const buildSummaryRenderItems = (items, totalUniverse) => {
+    const realItems = Array.isArray(items) ? items : [];
+    const sumRealCounts = realItems.reduce(
+      (acc, it) => acc + Math.max(0, Number(it?.count || 0)),
+      0
+    );
+    const missingCount =
+      Number(totalUniverse || 0) > 0
+        ? Math.max(0, Number(totalUniverse || 0) - sumRealCounts)
+        : 0;
+
+    return missingCount > 0
+      ? [
+          ...realItems,
+          {
+            label: "Sin responder",
+            count: missingCount,
+            isSynthetic: true,
+          },
+        ]
+      : realItems;
+  };
+
+  const ListAsBars = ({
+    fs,
+    items,
+    kpis,
+    addInteractiveFilter,
+    isInteractiveValueActive,
+    hasActiveInteractiveSelection,
+    getBarItemColor,
+    getActiveTone,
+  }) => {
+    const totalUniverse = Number(kpis?.total_informes || 0);
+    const renderItems = buildSummaryRenderItems(items, totalUniverse);
+    const itemCount = Math.max(renderItems.length, 1);
+    const columnGap = itemCount > 8 ? 6 : 10;
+    const maxCount = renderItems.reduce(
+      (acc, it) => Math.max(acc, Number(it?.count || 0)),
+      0
+    );
+    const { chartMax, ticks } = buildNiceTicks(maxCount, 4);
+    const axisLabelWidth = 30;
+
+    return (
+      <div
+        style={{
+          position: "relative",
+          minHeight: 190,
+          paddingTop: 8,
+          paddingLeft: axisLabelWidth,
+        }}
+      >
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            inset: `8px 0 54px ${axisLabelWidth}px`,
+            pointerEvents: "none",
+            display: "grid",
+            gridTemplateRows: `repeat(${ticks.length}, 1fr)`,
+          }}
+        >
+          {ticks
+            .slice()
+            .reverse()
+            .map((tick) => (
+              <div
+                key={`grid-${tick}`}
+                style={{
+                  position: "relative",
+                  borderTop: "1px solid rgba(148,163,184,0.25)",
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -8,
+                    left: -axisLabelWidth,
+                    fontSize: 10,
+                    color: "#94a3b8",
+                    background: "rgba(255,255,255,0.9)",
+                    paddingRight: 4,
+                    minWidth: axisLabelWidth - 4,
+                    textAlign: "right",
+                  }}
+                >
+                  {tick}
+                </span>
+              </div>
+            ))}
+        </div>
+        <div
+          style={{
+            position: "relative",
+            display: "grid",
+            gridTemplateColumns: `repeat(${itemCount}, minmax(0, 1fr))`,
+            gap: columnGap,
+            alignItems: "end",
+            minHeight: 190,
+          }}
+        >
+          {renderItems.map((it, idx) => {
+            const value = it.label || "(sin valor)";
+            const count = Number(it.count || 0);
+            const isSynthetic = it.isSynthetic === true;
+            const isActive = !isSynthetic && isInteractiveValueActive(fs.id_pregunta, value);
+            const heightPct =
+              chartMax > 0 ? Math.max(8, Math.min(100, (count / chartMax) * 100)) : 0;
+            const baseColor = isSynthetic ? "#9ca3af" : getBarItemColor(idx);
+            return (
+              <div
+                key={`${fs.id_pregunta}-lb-${idx}`}
+                style={{
+                  border: isActive ? "1px solid #111827" : "1px solid transparent",
+                  background: isActive ? "#f3f4f6" : "#ffffff",
+                  borderRadius: 10,
+                  padding: "6px 6px 8px",
+                  cursor: isSynthetic ? "default" : "pointer",
+                }}
+                onClick={
+                  isSynthetic
+                    ? undefined
+                    : () =>
+                        addInteractiveFilter({
+                          id_pregunta: fs.id_pregunta,
+                          label: fs.etiqueta,
+                          tipo: fs.tipo,
+                          value,
+                        })
+                }
+                title={
+                  isSynthetic ? "Categoria informativa" : "Filtrar por este valor"
+                }
+              >
+                <div
+                  style={{
+                    height: 110,
+                    display: "flex",
+                    alignItems: "flex-end",
+                    justifyContent: "center",
+                  }}
+                >
+                  <div
+                    onClick={
+                      isSynthetic
+                        ? undefined
+                        : (event) => {
+                            event.stopPropagation();
+                            addInteractiveFilter({
+                              id_pregunta: fs.id_pregunta,
+                              label: fs.etiqueta,
+                              tipo: fs.tipo,
+                              value,
+                            });
+                          }
+                    }
+                    style={{
+                      width: itemCount > 8 ? 18 : itemCount > 5 ? 22 : 26,
+                      height: `${heightPct}%`,
+                      minHeight: count > 0 ? 8 : 0,
+                      borderRadius: 8,
+                      background: isSynthetic
+                        ? baseColor
+                        : getActiveTone(
+                            baseColor,
+                            isActive,
+                            hasActiveInteractiveSelection
+                          ),
+                      boxShadow: isActive
+                        ? "inset 0 0 0 1px rgba(15,23,42,0.18)"
+                        : "none",
+                      opacity: isSynthetic ? 0.9 : 1,
+                      cursor: isSynthetic ? "default" : "pointer",
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: 6, color: isActive ? "#111827" : "#374151" }}>
+                  {renderIndicatorMeta({
+                    label: value,
+                    count,
+                    total: totalUniverse,
+                    showPercentages,
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ padding: 20 }}>
       <div style={headerStyle}>
@@ -680,7 +957,9 @@ export default function GVADashboardInformes() {
               {showSubmapa ? "Ocultar mapa" : "Mostrar mapa"}
             </button>
             <span style={{ fontSize: 12, color: "#6b7280" }}>
-              Vista base sin geometria (solo vinculaciones).
+              {hasLinkFields
+                ? "Vista de puntos y capas vinculadas del dashboard."
+                : "Vista base de puntos georreferenciados del dashboard."}
             </span>
           </div>
         ) : null}
@@ -1193,9 +1472,9 @@ export default function GVADashboardInformes() {
           >
             {temporalSeries.map((row) => {
               const count = Number(row.count || 0);
-              const percent = Number(row.percent_of_range || 0);
               const width = temporalRangeTotal > 0 ? (count / temporalRangeTotal) * 100 : 0;
               const isActive = isTemporalBucketActive(row, temporal?.time_grouping);
+              const label = formatTemporalLabel(row);
               return (
                 <div
                   key={row.key || row.label}
@@ -1213,7 +1492,7 @@ export default function GVADashboardInformes() {
                   title="Aplicar este rango al dashboard"
                 >
                   <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
-                    {formatTemporalLabel(row)}
+                    {label}
                   </div>
                   <div
                     style={{
@@ -1231,18 +1510,13 @@ export default function GVADashboardInformes() {
                       }}
                     />
                   </div>
-                  <div
-                    style={{
-                      marginTop: 8,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontSize: 12,
-                    }}
-                  >
-                    <span style={{ fontWeight: 700 }}>{count}</span>
-                    {showPercentages ? (
-                      <span style={{ color: "#6b7280" }}>{percent.toFixed(2)}%</span>
-                    ) : null}
+                  <div style={{ marginTop: 8 }}>
+                    {renderIndicatorMeta({
+                      label,
+                      count,
+                      total: temporalRangeTotal,
+                      showPercentages,
+                    })}
                   </div>
                 </div>
               );
@@ -1372,60 +1646,29 @@ export default function GVADashboardInformes() {
                   ) : null}
 
                   {isCounts && chartType === "list" ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {items.map((it, idx) => {
-                        const isActive = isInteractiveValueActive(
-                          fs.id_pregunta,
-                          it.label || "(sin valor)"
-                        );
-                        return (
-                        <div
-                          key={`${fs.id_pregunta}-l-${idx}`}
-                          style={{
-                            border: isActive ? "1px solid #111827" : "1px solid transparent",
-                            background: isActive ? "#f3f4f6" : "transparent",
-                            borderRadius: 10,
-                            padding: "4px 6px",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: 12,
-                              display: "flex",
-                              justifyContent: "space-between",
-                              cursor: "pointer",
-                              color: isActive ? "#111827" : "#374151",
-                            }}
-                            onClick={() =>
-                              addInteractiveFilter({
-                                id_pregunta: fs.id_pregunta,
-                                label: fs.etiqueta,
-                                tipo: fs.tipo,
-                                value: it.label || "(sin valor)",
-                              })
-                            }
-                            title="Filtrar por este valor"
-                          >
-                            <span>{it.label || "(sin valor)"}</span>
-                            <span style={{ fontWeight: 700 }}>
-                              {it.count}
-                              {showPercentages ? ` · ${pctLabel(it.count)}` : ""}
-                            </span>
-                          </div>
-                        </div>
-                        );
-                      })}
-                    </div>
+                    <ListAsBars
+                      fs={fs}
+                      items={items}
+                      kpis={kpis}
+                      addInteractiveFilter={addInteractiveFilter}
+                      isInteractiveValueActive={isInteractiveValueActive}
+                      hasActiveInteractiveSelection={hasActiveInteractiveSelection}
+                      getBarItemColor={getBarItemColor}
+                      getActiveTone={getActiveTone}
+                    />
                   ) : null}
 
                   {isCounts && chartType === "bar" ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {items.map((it, idx) => {
-                        const isActive = isInteractiveValueActive(
+                      {buildSummaryRenderItems(items, kpis.total_informes).map((it, idx) => {
+                        const value = it.label || "(sin valor)";
+                        const count = Number(it.count || 0);
+                        const isSynthetic = it.isSynthetic === true;
+                        const isActive = !isSynthetic && isInteractiveValueActive(
                           fs.id_pregunta,
-                          it.label || "(sin valor)"
+                          value
                         );
-                        const baseColor = getBarItemColor(idx);
+                        const baseColor = isSynthetic ? "#9ca3af" : getBarItemColor(idx);
                         return (
                         <div
                           key={`${fs.id_pregunta}-b-${idx}`}
@@ -1439,26 +1682,30 @@ export default function GVADashboardInformes() {
                           <div
                             style={{
                               fontSize: 12,
-                              display: "flex",
-                              justifyContent: "space-between",
-                              cursor: "pointer",
+                              cursor: isSynthetic ? "default" : "pointer",
                               color: isActive ? "#111827" : "#374151",
                             }}
-                            onClick={() =>
-                              addInteractiveFilter({
-                                id_pregunta: fs.id_pregunta,
-                                label: fs.etiqueta,
-                                tipo: fs.tipo,
-                                value: it.label || "(sin valor)",
-                              })
+                            onClick={
+                              isSynthetic
+                                ? undefined
+                                : () =>
+                                    addInteractiveFilter({
+                                      id_pregunta: fs.id_pregunta,
+                                      label: fs.etiqueta,
+                                      tipo: fs.tipo,
+                                      value,
+                                    })
                             }
-                            title="Filtrar por este valor"
+                            title={
+                              isSynthetic ? "Categoria informativa" : "Filtrar por este valor"
+                            }
                           >
-                            <span>{it.label || "(sin valor)"}</span>
-                            <span style={{ fontWeight: 700 }}>
-                              {it.count}
-                              {showPercentages ? ` · ${pctLabel(it.count)}` : ""}
-                            </span>
+                            {renderIndicatorMeta({
+                              label: value,
+                              count,
+                              total: kpis.total_informes,
+                              showPercentages,
+                            })}
                           </div>
                           <div
                             style={{
@@ -1470,6 +1717,19 @@ export default function GVADashboardInformes() {
                             }}
                           >
                             <div
+                              onClick={
+                                isSynthetic
+                                  ? undefined
+                                  : (event) => {
+                                      event.stopPropagation();
+                                      addInteractiveFilter({
+                                        id_pregunta: fs.id_pregunta,
+                                        label: fs.etiqueta,
+                                        tipo: fs.tipo,
+                                        value,
+                                      });
+                                    }
+                              }
                               style={{
                                 height: "100%",
                                 width:
@@ -1487,6 +1747,8 @@ export default function GVADashboardInformes() {
                                 boxShadow: isActive
                                   ? "inset 0 0 0 1px rgba(15,23,42,0.18)"
                                   : "none",
+                                cursor: isSynthetic ? "default" : "pointer",
+                                opacity: isSynthetic ? 0.9 : 1,
                               }}
                             />
                           </div>
@@ -1559,9 +1821,9 @@ export default function GVADashboardInformes() {
                                   )}
                                   style={{
                                     display: "grid",
-                                    gridTemplateColumns: "14px 1fr auto",
+                                    gridTemplateColumns: "14px 1fr",
                                     gap: 8,
-                                    alignItems: "center",
+                                    alignItems: "start",
                                     fontSize: 12,
                                     cursor: "pointer",
                                     border: isInteractiveValueActive(
@@ -1588,7 +1850,7 @@ export default function GVADashboardInformes() {
                                     })
                                   }
                                   title="Filtrar por este valor"
-                                >
+                                  >
                                   <span
                                     style={{
                                       width: 12,
@@ -1603,15 +1865,12 @@ export default function GVADashboardInformes() {
                                         : "inset 0 0 0 1px rgba(17,24,39,0.08)",
                                     }}
                                   />
-                                  <span style={{ color: "#111827", fontWeight: 600 }}>
-                                    {it.label || "(sin valor)"}
-                                  </span>
-                                  <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
-                                    {it.count}
-                                    {showPercentages
-                                      ? ` (${((Number(it.count || 0) / total) * 100).toFixed(1)}%)`
-                                      : ""}
-                                  </span>
+                                  {renderIndicatorMeta({
+                                    label: it.label || "(sin valor)",
+                                    count: it.count,
+                                    total: kpis.total_informes,
+                                    showPercentages,
+                                  })}
                                 </div>
                               ))}
                             </div>
@@ -1632,16 +1891,20 @@ export default function GVADashboardInformes() {
                       }}
                     >
                       {(() => {
-                        const donutItems = items.slice(0, 5);
+                        const donutItems = buildSummaryRenderItems(
+                          items,
+                          kpis.total_informes
+                        ).slice(0, 6);
                         const total = donutItems.reduce((acc, it) => acc + (it.count || 0), 0) || 1;
                         const colors = ["#111827", "#2563eb", "#16a34a", "#f97316", "#a855f7"];
                         let acc = 0;
-                        const stops = donutItems.map((it, idx) => {
+                        const segments = donutItems.map((it, idx) => {
                           const pct = (it.count || 0) / total;
                           const start = acc;
                           acc += pct;
-                          const baseColor = colors[idx % colors.length];
-                          const isActive = isInteractiveValueActive(
+                          const isSynthetic = it.isSynthetic === true;
+                          const baseColor = isSynthetic ? "#9ca3af" : colors[idx % colors.length];
+                          const isActive = !isSynthetic && isInteractiveValueActive(
                             fs.id_pregunta,
                             it.label || "(sin valor)"
                           );
@@ -1650,24 +1913,63 @@ export default function GVADashboardInformes() {
                             isActive,
                             hasActiveInteractiveSelection
                           );
-                          return `${color} ${Math.round(start * 360)}deg ${Math.round(acc * 360)}deg`;
+                          return {
+                            item: it,
+                            color,
+                            isActive,
+                            isSynthetic,
+                            startAngle: start * 360,
+                            endAngle: acc * 360,
+                          };
                         });
                         return (
                           <div
                             style={{
                               width: 110,
                               height: 110,
-                              borderRadius: "50%",
-                              background: `conic-gradient(${stops.join(", ")})`,
                               position: "relative",
                               display: "grid",
                               placeItems: "center",
-                              boxShadow: hasActiveInteractiveSelection
-                                ? "inset 0 0 0 2px rgba(17,24,39,0.08)"
-                                : "none",
                             }}
                             title={`Total: ${total}`}
                           >
+                            <svg
+                              width="110"
+                              height="110"
+                              viewBox="0 0 110 110"
+                              style={{ position: "absolute", inset: 0, overflow: "visible" }}
+                            >
+                              {segments.map((segment, idx) => (
+                                <path
+                                  key={`${fs.id_pregunta}-donut-${idx}`}
+                                  d={describeArc(
+                                    55,
+                                    55,
+                                    55,
+                                    segment.startAngle,
+                                    segment.endAngle
+                                  )}
+                                  fill={segment.color}
+                                  stroke={segment.isActive ? "#111827" : "#ffffff"}
+                                  strokeWidth={segment.isActive ? 2.5 : 1.5}
+                                  style={{
+                                    cursor: segment.isSynthetic ? "default" : "pointer",
+                                    opacity: segment.isSynthetic ? 0.9 : 1,
+                                  }}
+                                  onClick={
+                                    segment.isSynthetic
+                                      ? undefined
+                                      : () =>
+                                          addInteractiveFilter({
+                                            id_pregunta: fs.id_pregunta,
+                                            label: fs.etiqueta,
+                                            tipo: fs.tipo,
+                                            value: segment.item.label || "(sin valor)",
+                                          })
+                                  }
+                                />
+                              ))}
+                            </svg>
                             <div
                               style={{
                                 width: 54,
@@ -1687,10 +1989,12 @@ export default function GVADashboardInformes() {
                         );
                       })()}
                       <div style={{ fontSize: 11, color: "#6b7280" }}>
-                        {items.slice(0, 5).map((it, idx) => (
+                        {buildSummaryRenderItems(items, kpis.total_informes)
+                          .slice(0, 6)
+                          .map((it, idx) => (
                           <div
                             key={`${fs.id_pregunta}-d-${idx}`}
-                            data-active={isInteractiveValueActive(
+                            data-active={it.isSynthetic !== true && isInteractiveValueActive(
                               fs.id_pregunta,
                               it.label || "(sin valor)"
                             )}
@@ -1699,14 +2003,13 @@ export default function GVADashboardInformes() {
                               justifyContent: "space-between",
                               gap: 8,
                               marginBottom: 4,
-                              cursor: "pointer",
-                              border: isInteractiveValueActive(
+                              border: it.isSynthetic !== true && isInteractiveValueActive(
                                 fs.id_pregunta,
                                 it.label || "(sin valor)"
                               )
                                 ? "1px solid #111827"
                                 : "1px solid transparent",
-                              background: isInteractiveValueActive(
+                              background: it.isSynthetic !== true && isInteractiveValueActive(
                                 fs.id_pregunta,
                                 it.label || "(sin valor)"
                               )
@@ -1714,22 +2017,29 @@ export default function GVADashboardInformes() {
                                 : "transparent",
                               borderRadius: 10,
                               padding: "4px 6px",
+                              cursor: it.isSynthetic ? "default" : "pointer",
                             }}
-                            onClick={() =>
-                              addInteractiveFilter({
-                                id_pregunta: fs.id_pregunta,
-                                label: fs.etiqueta,
-                                tipo: fs.tipo,
-                                value: it.label || "(sin valor)",
-                              })
+                            onClick={
+                              it.isSynthetic
+                                ? undefined
+                                : () =>
+                                    addInteractiveFilter({
+                                      id_pregunta: fs.id_pregunta,
+                                      label: fs.etiqueta,
+                                      tipo: fs.tipo,
+                                      value: it.label || "(sin valor)",
+                                    })
                             }
-                            title="Filtrar por este valor"
+                            title={
+                              it.isSynthetic ? "Categoria informativa" : "Filtrar por este valor"
+                            }
                           >
-                            <span>{it.label || "(sin valor)"}</span>
-                            <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>
-                              {it.count}
-                              {showPercentages ? ` · ${pctLabel(it.count)}` : ""}
-                            </span>
+                            {renderIndicatorMeta({
+                              label: it.label || "(sin valor)",
+                              count: it.count,
+                              total: kpis.total_informes,
+                              showPercentages,
+                            })}
                           </div>
                         ))}
                       </div>
@@ -1773,21 +2083,62 @@ export default function GVADashboardInformes() {
                   <div>Cargando plantillas...</div>
                 ) : plantillasError ? (
                   <div style={{ color: "#b91c1c" }}>{plantillasError}</div>
+                ) : !plantillas.length ? (
+                  <div style={{ fontSize: 13, color: "#6b7280" }}>
+                    No hay plantillas disponibles para este proyecto.
+                  </div>
                 ) : (
-                  <select
-                    value={selectedPlantillaId || ""}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setSelectedPlantillaId(Number.isFinite(v) && v > 0 ? v : null);
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 8,
+                      maxHeight: 250,
+                      overflowY: "auto",
+                      paddingRight: 4,
                     }}
                   >
-                    <option value="">-- Seleccionar plantilla --</option>
                     {plantillas.map((p) => (
-                      <option key={p.id_plantilla} value={p.id_plantilla}>
-                        {p.nombre || `Plantilla #${p.id_plantilla}`}
-                      </option>
+                      <button
+                        key={p.id_plantilla}
+                        type="button"
+                        onClick={() => {
+                          const v = Number(p.id_plantilla);
+                          setSelectedPlantillaId(Number.isFinite(v) && v > 0 ? v : null);
+                        }}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                          gap: 4,
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border:
+                            Number(selectedPlantillaId) === Number(p.id_plantilla)
+                              ? "1px solid #2563eb"
+                              : "1px solid #d1d5db",
+                          background:
+                            Number(selectedPlantillaId) === Number(p.id_plantilla)
+                              ? "linear-gradient(180deg, rgba(219,234,254,0.95) 0%, rgba(239,246,255,0.95) 100%)"
+                              : "#ffffff",
+                          boxShadow:
+                            Number(selectedPlantillaId) === Number(p.id_plantilla)
+                              ? "0 0 0 2px rgba(37,99,235,0.12)"
+                              : "0 1px 2px rgba(15,23,42,0.05)",
+                          textAlign: "left",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, color: "#111827" }}>
+                          {p.nombre || `Plantilla #${p.id_plantilla}`}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#4b5563" }}>
+                          {Number(p.dashboard_indicators_count) || 0} indicadores ·{" "}
+                          {Number(p.total_informes) || 0} informes
+                        </div>
+                      </button>
                     ))}
-                  </select>
+                  </div>
                 )}
                 {metadataLoading ? (
                   <div style={{ marginTop: 6 }}>Cargando metadata...</div>
