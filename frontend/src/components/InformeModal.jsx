@@ -9,22 +9,15 @@ const ENV_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const HOST_BASE = ENV_BASE.replace(/\/api\/?$/i, "");
 const API_URL = HOST_BASE.endsWith("/api") ? HOST_BASE : HOST_BASE + "/api";
 
-/* =========================
-   ✅ SEMÁFORO (tipo: "semaforo")
-   - opciones_json puede venir como:
-     1) ["Verde","Amarillo","Rojo"]
-     2) [{value,label,color}, ...]
-     3) [{nombre,hex}, ...] ✅ NUEVO
-   - EN UI guardamos SIEMPRE: { nombre, hex }
-   - En payload "respuestas" enviamos: { nombre, hex }
-   ========================= */
 const DEFAULT_SEMAFORO = [
   { value: "verde", label: "Verde", color: "#2ECC71" },
   { value: "amarillo", label: "Amarillo", color: "#F1C40F" },
   { value: "rojo", label: "Rojo", color: "#E74C3C" },
 ];
 
-// ---------------- helpers ----------------
+/* =========================
+   Helpers generales
+========================= */
 function authHeaders(extra = {}) {
   const token =
     localStorage.getItem("token") ||
@@ -49,9 +42,6 @@ async function fetchJSON(url, options = {}) {
   return data;
 }
 
-/**
- * ✅ FIX SWEETALERT2 “ATRÁS DEL MODAL”
- */
 function getTopModalEl() {
   return document.querySelector(".modal.show") || document.body;
 }
@@ -73,11 +63,14 @@ async function swalFire(opts) {
 
 function isAnsweredByTipo(tipoRaw, val) {
   const tipo = String(tipoRaw || "").toLowerCase();
+
   switch (tipo) {
     case "si_no":
       return val === true || val === false;
+
     case "multiselect":
       return Array.isArray(val) && val.length > 0;
+
     case "coordenadas":
     case "coordenada":
     case "coords":
@@ -89,24 +82,19 @@ function isAnsweredByTipo(tipoRaw, val) {
         String(val.lat) !== "" &&
         String(val.lng) !== ""
       );
-    case "semaforo": {
-      // ahora es objeto {nombre,hex}
-      if (!val) return false;
-      if (typeof val === "string") return String(val).trim() !== "";
-      if (typeof val === "object") {
-        const n = String(val.nombre || "").trim();
-        const h = String(val.hex || "").trim();
-        return !!(n || h);
-      }
-      return false;
-    }
+
+    case "semaforo":
+      return typeof val === "string" && val.trim() !== "";
+
     default:
       if (val === null || val === undefined) return false;
       return String(val).trim() !== "";
   }
 }
 
-// ✅ parse cond (puede venir como objeto o como string JSON)
+/* =========================
+   Condiciones / visibilidad
+========================= */
 function parseCondMaybe(v) {
   if (!v) return null;
   if (typeof v === "object") return v;
@@ -142,13 +130,8 @@ function evalCond(cond, respuestas) {
     if (r === null || r === undefined) return false;
     if (Array.isArray(r)) return r.length > 0;
     if (typeof r === "object") {
-      // coords
       if ("lat" in r || "lng" in r) {
         return r.lat != null && r.lng != null && String(r.lat) !== "" && String(r.lng) !== "";
-      }
-      // semaforo
-      if ("nombre" in r || "hex" in r) {
-        return String(r.nombre || "").trim() !== "" || String(r.hex || "").trim() !== "";
       }
       return Object.keys(r).length > 0;
     }
@@ -167,16 +150,8 @@ function evalCond(cond, respuestas) {
     return s;
   };
 
-  // ✅ si comparan con semáforo, normalizamos a "hex" o "nombre"
-  const normalizeForCompare = (x) => {
-    if (x && typeof x === "object" && ("nombre" in x || "hex" in x)) {
-      return (x.hex && String(x.hex).trim()) || (x.nombre && String(x.nombre).trim()) || "";
-    }
-    return norm(x);
-  };
-
-  const rn = normalizeForCompare(r);
-  const vn = normalizeForCompare(v);
+  const rn = norm(r);
+  const vn = norm(v);
 
   switch (op) {
     case "has_value":
@@ -213,6 +188,9 @@ function isRequiredNow(p, respuestas) {
   return base || cond;
 }
 
+/* =========================
+   Fotos / archivos
+========================= */
 function groupFotosByPregunta(fotos = []) {
   const m = {};
   for (const f of fotos || []) {
@@ -224,6 +202,45 @@ function groupFotosByPregunta(fotos = []) {
   return m;
 }
 
+function fotoUrl(ruta_archivo) {
+  if (!ruta_archivo) return "";
+  const s = String(ruta_archivo).trim();
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+
+  const clean = s.replace(/^\/+/, "");
+  if (clean.startsWith("api/uploads/")) return `${HOST_BASE}/${clean}`;
+  if (clean.startsWith("uploads/")) return `${HOST_BASE}/${clean}`;
+
+  return `${HOST_BASE}/uploads/${clean}`;
+}
+
+function splitImageLinksText(value) {
+  if (value == null) return [];
+
+  if (Array.isArray(value)) {
+    return value.map((x) => String(x || "").trim()).filter(Boolean);
+  }
+
+  const s = String(value || "").trim();
+  if (!s) return [];
+
+  return s
+    .split(/\r?\n|[,;]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function normalizeImageLinksText(value) {
+  return splitImageLinksText(value).join("\n");
+}
+
+function isExternalUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+/* =========================
+   Opciones / formatos
+========================= */
 function parseOpciones(opciones_json) {
   if (!opciones_json) return [];
   if (Array.isArray(opciones_json)) return opciones_json;
@@ -233,14 +250,6 @@ function parseOpciones(opciones_json) {
   } catch {
     return [];
   }
-}
-
-function fotoUrl(ruta_archivo) {
-  if (!ruta_archivo) return "";
-  const clean = String(ruta_archivo).replace(/^\/+/, "");
-  if (clean.startsWith("http://") || clean.startsWith("https://")) return clean;
-  if (clean.startsWith("uploads/")) return `${HOST_BASE}/${clean}`;
-  return `${HOST_BASE}/uploads/${clean}`;
 }
 
 function fmtDate(v) {
@@ -254,7 +263,9 @@ function fmtDate(v) {
   }
 }
 
-// ✅ helpers coordenadas
+/* =========================
+   Coordenadas
+========================= */
 function isValidCoordPair(lat, lng) {
   if (lat === null || lat === undefined || lng === null || lng === undefined) return false;
   const la = Number(String(lat).trim().replace(",", "."));
@@ -276,7 +287,9 @@ function normalizeCoordObj(v) {
   };
 }
 
-// ✅ multiselect: normaliza respuestas que llegan como texto
+/* =========================
+   Multiselect
+========================= */
 function normalizeMultiFromText(val) {
   if (Array.isArray(val)) return val.filter((x) => String(x).trim() !== "");
   if (val === null || val === undefined) return [];
@@ -289,126 +302,103 @@ function normalizeMultiFromText(val) {
         if (Array.isArray(j)) return j.filter((x) => String(x).trim() !== "");
       } catch {}
     }
-    const parts = s.split(/[,;|]/).map((x) => x.trim()).filter(Boolean);
-    return parts;
+    return s.split(/[,;|]/).map((x) => x.trim()).filter(Boolean);
   }
   return [];
 }
 
 /* =========================
-   ✅ SEMÁFORO helpers NUEVOS
-   ========================= */
-
-// normaliza opciones para devolver siempre: { nombre, hex, value?, label?, color? }
+   Semáforo
+========================= */
 function normalizeSemaforoOptions(rawOpciones) {
   const arr = parseOpciones(rawOpciones);
+
   if (!arr || !arr.length) {
-    // map default -> nuevo formato
     return DEFAULT_SEMAFORO.map((o) => ({
-      nombre: o.label,
-      hex: o.color,
       value: o.value,
       label: o.label,
       color: o.color,
     }));
   }
 
-  // 1) strings
   if (typeof arr[0] === "string") {
-    return arr.map((s) => {
-      const label = String(s).trim();
-      const value = label.toLowerCase().replace(/\s+/g, "_");
-      const l = value;
-      const hex =
-        l.includes("verde") ? "#2ECC71" : l.includes("amar") ? "#F1C40F" : l.includes("rojo") ? "#E74C3C" : "#64748b";
-      return { nombre: label, hex, value, label, color: hex };
-    });
+    return arr
+      .map((s) => {
+        const label = String(s).trim();
+        if (!label) return null;
+        const value = label.toLowerCase().replace(/\s+/g, "_");
+        const l = value;
+        const color =
+          l.includes("verde")
+            ? "#2ECC71"
+            : l.includes("amar")
+              ? "#F1C40F"
+              : l.includes("rojo")
+                ? "#E74C3C"
+                : "#e9ecef";
+        return { value, label, color };
+      })
+      .filter(Boolean);
   }
 
-  // 2) objects
   return arr
     .map((o) => {
       if (!o || typeof o !== "object") return null;
 
-      // soportar: {value,label,color}
       const value = String(o.value ?? "").trim();
-      const label = String(o.label ?? "").trim();
-      const color = String(o.color ?? o.colour ?? "").trim();
+      const label = String(o.label ?? o.text ?? value).trim();
+      const color = String(o.color ?? o.hex ?? "").trim();
 
-      // soportar: {nombre, hex}
-      const nombre = String(o.nombre ?? label ?? value ?? "").trim();
-      const hex = String(o.hex ?? color ?? "").trim();
-
-      const finalHex = hex || "#64748b";
-      const finalLabel = nombre || label || value;
-      const finalValue = value || (finalLabel ? finalLabel.toLowerCase().replace(/\s+/g, "_") : "");
-
-      if (!finalLabel) return null;
+      if (!value) return null;
 
       return {
-        nombre: finalLabel,
-        hex: finalHex,
-        value: finalValue,
-        label: finalLabel,
-        color: finalHex,
+        value,
+        label: label || value,
+        color: color || "#e9ecef",
       };
     })
     .filter(Boolean);
 }
 
-// detecta si un string es HEX
-function isHexColor(s) {
-  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(s || "").trim());
-}
-
-// intenta armar {nombre,hex} desde distintos formatos que puedan venir de DB
 function normalizeSemaforoAnswer(valueFromDb, opciones_json) {
   const opts = normalizeSemaforoOptions(opciones_json);
 
-  if (valueFromDb == null) return null;
+  if (valueFromDb == null) return "";
 
-  // si viene objeto ya
+  if (typeof valueFromDb === "string") {
+    const s = valueFromDb.trim();
+    if (!s) return "";
+
+    const byValue = opts.find((o) => String(o.value).toLowerCase() === s.toLowerCase());
+    if (byValue) return byValue.value;
+
+    const byLabel = opts.find((o) => String(o.label).toLowerCase() === s.toLowerCase());
+    if (byLabel) return byLabel.value;
+
+    return s;
+  }
+
   if (typeof valueFromDb === "object" && !Array.isArray(valueFromDb)) {
-    const nombre = String(valueFromDb.nombre || valueFromDb.label || valueFromDb.value || "").trim();
+    const nombre = String(valueFromDb.nombre || valueFromDb.label || "").trim();
     const hex = String(valueFromDb.hex || valueFromDb.color || "").trim();
-    const hexOk = isHexColor(hex) ? hex : "";
 
-    // si no tiene hex, intentar encontrar por nombre
-    if (!hexOk && nombre) {
-      const hit = opts.find((o) => String(o.nombre).toLowerCase() === nombre.toLowerCase());
-      return { nombre, hex: hit?.hex || "" };
+    if (hex) {
+      const byHex = opts.find((o) => String(o.color).toLowerCase() === hex.toLowerCase());
+      if (byHex) return byHex.value;
     }
 
-    // si tiene hex pero no nombre
-    if (hexOk && !nombre) {
-      const hit = opts.find((o) => String(o.hex).toLowerCase() === hexOk.toLowerCase());
-      return { nombre: hit?.nombre || "Color", hex: hexOk };
+    if (nombre) {
+      const byLabel = opts.find((o) => String(o.label).toLowerCase() === nombre.toLowerCase());
+      if (byLabel) return byLabel.value;
     }
-
-    return { nombre: nombre || "Color", hex: hexOk };
   }
 
-  const s = String(valueFromDb).trim();
-  if (!s) return null;
-
-  // si viene hex directo
-  if (isHexColor(s)) {
-    const hit = opts.find((o) => String(o.hex).toLowerCase() === s.toLowerCase());
-    return { nombre: hit?.nombre || "Color", hex: s.toUpperCase() };
-  }
-
-  // si viene value ("verde") o nombre ("Verde")
-  const hit =
-    opts.find((o) => String(o.value).toLowerCase() === s.toLowerCase()) ||
-    opts.find((o) => String(o.nombre).toLowerCase() === s.toLowerCase()) ||
-    opts.find((o) => String(o.label).toLowerCase() === s.toLowerCase());
-
-  if (hit) return { nombre: hit.nombre, hex: hit.hex };
-
-  // fallback: guardar nombre sin hex
-  return { nombre: s, hex: "" };
+  return "";
 }
 
+/* =========================
+   Component
+========================= */
 export default function InformeModal({
   show,
   onHide,
@@ -428,6 +418,7 @@ export default function InformeModal({
   const [respuestas, setRespuestas] = useState({});
   const [fotosActuales, setFotosActuales] = useState({});
   const [fotosNuevas, setFotosNuevas] = useState({});
+  const [linksNuevos, setLinksNuevos] = useState({});
   const [fotosAEliminar, setFotosAEliminar] = useState([]);
 
   const [deletingFotoId, setDeletingFotoId] = useState(null);
@@ -470,7 +461,6 @@ export default function InformeModal({
               try {
                 const obj = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
 
-                // coords guardadas como [lat,lng]
                 if (
                   Array.isArray(obj) &&
                   obj.length >= 2 &&
@@ -483,27 +473,23 @@ export default function InformeModal({
                   return;
                 }
 
-                // ✅ semaforo guardado como objeto
                 if (tipo === "semaforo") {
                   mapResp[idP] = normalizeSemaforoAnswer(obj, p?.opciones_json);
                   return;
                 }
 
-                // objeto genérico
                 if (obj && typeof obj === "object") {
                   const norm = normalizeCoordObj(obj);
                   mapResp[idP] = norm ? norm : obj;
                   return;
                 }
 
-                // primitivos
                 if (tipo === "multiselect") {
                   mapResp[idP] = normalizeMultiFromText(obj);
                 } else {
                   mapResp[idP] = obj;
                 }
               } catch {
-                // fallback texto
                 if (tipo === "multiselect") {
                   mapResp[idP] = normalizeMultiFromText(r.valor_texto);
                 } else if (tipo === "semaforo") {
@@ -533,6 +519,7 @@ export default function InformeModal({
 
           setFotosActuales(groupFotosByPregunta(p0?.fotos || []));
           setFotosNuevas({});
+          setLinksNuevos({});
           setFotosAEliminar([]);
         };
 
@@ -554,7 +541,6 @@ export default function InformeModal({
     };
 
     run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, idInforme, initialData]);
 
   const secciones = useMemo(() => {
@@ -575,7 +561,9 @@ export default function InformeModal({
       .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
   }, [data]);
 
-  const setResp = (idPreg, value) => setRespuestas((prev) => ({ ...prev, [Number(idPreg)]: value }));
+  const setResp = (idPreg, value) => {
+    setRespuestas((prev) => ({ ...prev, [Number(idPreg)]: value }));
+  };
 
   const onPickFotos = (idPregunta, files) => {
     const arr = Array.from(files || []).filter(Boolean);
@@ -583,6 +571,13 @@ export default function InformeModal({
 
     const ref = fileInputRefs.current?.[Number(idPregunta)];
     if (ref) ref.value = "";
+  };
+
+  const onChangeLinks = (idPregunta, text) => {
+    setLinksNuevos((prev) => ({
+      ...prev,
+      [Number(idPregunta)]: normalizeImageLinksText(text),
+    }));
   };
 
   const eliminarFoto = async (idFoto) => {
@@ -594,7 +589,7 @@ export default function InformeModal({
     const confirm = await swalFire({
       icon: "warning",
       title: "Eliminar foto",
-      text: "Se eliminará ahora mismo (base de datos y archivo). ¿Continuar?",
+      text: "Se eliminará ahora mismo. ¿Continuar?",
       showCancelButton: true,
       confirmButtonText: "Sí, eliminar",
       cancelButtonText: "Cancelar",
@@ -651,8 +646,13 @@ export default function InformeModal({
             const fid = Number(f.id_foto || f.id);
             return !delSet.has(fid);
           });
+
           const nuevas = fotosNuevas?.[idP] || [];
-          if ((actuales.length || 0) + (nuevas.length || 0) === 0) faltantes.push(p.etiqueta);
+          const links = splitImageLinksText(linksNuevos?.[idP]);
+
+          if ((actuales.length || 0) + (nuevas.length || 0) + (links.length || 0) === 0) {
+            faltantes.push(p.etiqueta);
+          }
           return;
         }
 
@@ -666,11 +666,13 @@ export default function InformeModal({
 
   const handleGuardar = async () => {
     const { ok, faltantes } = validarAntesDeGuardar();
+
     if (!ok) {
       const htmlLista =
         '<ul style="text-align:left; margin:0; padding-left:1.2rem;">' +
         faltantes.map((f) => `<li>${f}</li>`).join("") +
         "</ul>";
+
       await swalFire({ icon: "warning", title: "Faltan obligatorios", html: htmlLista });
       return;
     }
@@ -681,9 +683,7 @@ export default function InformeModal({
       const fd = new FormData();
       fd.append("titulo", titulo || "");
 
-      // ✅ Construir payload y normalizar por tipo
       const respuestasPayload = { ...(respuestas || {}) };
-
       const preguntasById = new Map((data?.preguntas || []).map((p) => [Number(p.id_pregunta), p]));
 
       Object.keys(respuestasPayload).forEach((k) => {
@@ -692,7 +692,6 @@ export default function InformeModal({
         const tipo = String(p?.tipo || "").toLowerCase();
         const v = respuestasPayload[k];
 
-        // ✅ coords object -> [lat,lng]
         if (v && typeof v === "object" && !Array.isArray(v) && ("lat" in v || "lng" in v)) {
           const norm = normalizeCoordObj(v);
           if (!norm) {
@@ -708,16 +707,27 @@ export default function InformeModal({
           }
         }
 
-        // ✅ arrays trim
         if (Array.isArray(respuestasPayload[k])) {
           respuestasPayload[k] = respuestasPayload[k].map((x) => String(x).trim()).filter(Boolean);
         }
 
-        // ✅ SEMÁFORO: asegurar objeto {nombre,hex}
         if (tipo === "semaforo") {
-          const normalized = normalizeSemaforoAnswer(v, p?.opciones_json);
-          respuestasPayload[k] = normalized ? { nombre: normalized.nombre, hex: normalized.hex } : null;
+          respuestasPayload[k] = typeof v === "string" ? v : String(v ?? "");
         }
+      });
+
+      Object.entries(linksNuevos || {}).forEach(([idPreg, text]) => {
+        const idP = Number(idPreg);
+        if (!Number.isFinite(idP) || idP <= 0) return;
+
+        const p = preguntasById.get(idP);
+        const tipo = String(p?.tipo || "").toLowerCase();
+        if (tipo !== "imagen") return;
+
+        const links = splitImageLinksText(text);
+        if (!links.length) return;
+
+        respuestasPayload[idP] = links;
       });
 
       fd.append("respuestas", JSON.stringify(respuestasPayload));
@@ -746,6 +756,7 @@ export default function InformeModal({
         timer: 900,
         showConfirmButton: false,
       });
+
       onSaved?.();
       onHide?.();
     } catch (e) {
@@ -755,66 +766,72 @@ export default function InformeModal({
     }
   };
 
-  /* =========================
-     ✅ Render control (incluye semáforo)
-     ========================= */
   const renderSemaforo = (p) => {
     const id = Number(p.id_pregunta);
     const opts = normalizeSemaforoOptions(p.opciones_json);
 
-    const current = respuestas?.[id]; // objeto
-    const curNorm = normalizeSemaforoAnswer(current, p.opciones_json);
-
-    const currentHex = curNorm?.hex ? String(curNorm.hex).toLowerCase() : "";
-    const currentNombre = curNorm?.nombre ? String(curNorm.nombre).toLowerCase() : "";
+    const current = typeof respuestas?.[id] === "string" ? respuestas[id] : "";
 
     return (
-      <div className="d-flex flex-wrap gap-2">
-        {opts.map((o) => {
-          const selByHex = currentHex && String(o.hex).toLowerCase() === currentHex;
-          const selByName = currentNombre && String(o.nombre).toLowerCase() === currentNombre;
-          const selected = selByHex || selByName;
+      <div>
+        <div className="d-flex flex-wrap gap-2">
+          {opts.map((o) => {
+            const selected = current === o.value;
 
-          return (
-            <button
-              key={`${o.nombre}_${o.hex}`}
+            return (
+              <button
+                key={`${o.value}_${o.color}`}
+                type="button"
+                disabled={readOnly}
+                onClick={() => setResp(id, o.value)}
+                style={{
+                  border: selected ? "2px solid #111827" : "1px solid #e5e7eb",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  minWidth: 140,
+                  background: "#fff",
+                  cursor: readOnly ? "not-allowed" : "pointer",
+                }}
+                title={`${o.label} (${o.value})`}
+              >
+                <div className="d-flex align-items-center gap-2">
+                  <span
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 999,
+                      background: o.color || "#64748b",
+                      border: "1px solid rgba(0,0,0,.12)",
+                      display: "inline-block",
+                    }}
+                  />
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>{o.label}</div>
+                </div>
+
+                <div className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  {o.value || "\u00A0"}
+                </div>
+
+                <div className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                  {selected ? "Seleccionado" : "\u00A0"}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {!readOnly && current ? (
+          <div className="mt-2">
+            <Button
               type="button"
-              disabled={readOnly}
-              onClick={() => setResp(id, { nombre: o.nombre, hex: o.hex })}
-              style={{
-                border: selected ? "2px solid #111827" : "1px solid #e5e7eb",
-                borderRadius: 10,
-                padding: "10px 12px",
-                minWidth: 140,
-                background: "#fff",
-                cursor: readOnly ? "not-allowed" : "pointer",
-              }}
-              title={`${o.nombre} ${o.hex}`}
+              size="sm"
+              variant="outline-danger"
+              onClick={() => setResp(id, "")}
             >
-              <div className="d-flex align-items-center gap-2">
-                <span
-                  style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: 999,
-                    background: o.hex || "#64748b",
-                    border: "1px solid rgba(0,0,0,.12)",
-                    display: "inline-block",
-                  }}
-                />
-                <div style={{ fontWeight: 800, fontSize: 14 }}>{o.nombre}</div>
-              </div>
-
-              <div className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
-                {o.hex || "\u00A0"}
-              </div>
-
-              <div className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>
-                {selected ? "Seleccionado" : "\u00A0"}
-              </div>
-            </button>
-          );
-        })}
+              Limpiar
+            </Button>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -936,7 +953,9 @@ export default function InformeModal({
                 onChange={(coords) => {
                   if (readOnly) return;
 
-                  let lat, lng;
+                  let lat;
+                  let lng;
+
                   if (Array.isArray(coords) && coords.length >= 2) {
                     lat = coords[0];
                     lng = coords[1];
@@ -967,16 +986,46 @@ export default function InformeModal({
           );
         }
 
-        case "imagen":
+        case "imagen": {
+          const linksText = linksNuevos?.[id] ?? "";
+
           return (
-            <div className="text-muted" style={{ fontSize: 13 }}>
-              {readOnly ? "Imágenes adjuntas." : "Adjuntá imágenes abajo y guardá."}
+            <div>
+              <div className="text-muted mb-2" style={{ fontSize: 13 }}>
+                {readOnly
+                  ? "Imágenes adjuntas."
+                  : "Podés adjuntar archivos abajo o pegar links directos a imágenes."}
+              </div>
+
+              {!readOnly && (
+                <>
+                  <Form.Control
+                    as="textarea"
+                    rows={3}
+                    placeholder={"Pegá uno o varios links de imagen.\nUno por línea o separados por coma."}
+                    value={linksText}
+                    onChange={(e) => onChangeLinks(id, e.target.value)}
+                  />
+                  <div className="text-muted mt-1" style={{ fontSize: 12 }}>
+                    Ejemplo:
+                    <br />
+                    https://sitio.com/foto1.jpg
+                    <br />
+                    https://sitio.com/foto2.png
+                  </div>
+                </>
+              )}
             </div>
           );
+        }
 
         default:
           return (
-            <Form.Control value={val ?? ""} disabled={readOnly} onChange={(e) => setResp(id, e.target.value)} />
+            <Form.Control
+              value={val ?? ""}
+              disabled={readOnly}
+              onChange={(e) => setResp(id, e.target.value)}
+            />
           );
       }
     })();
@@ -1004,13 +1053,14 @@ export default function InformeModal({
 
     const actuales = fotosActuales?.[idPreg] || [];
     const nuevas = fotosNuevas?.[idPreg] || [];
+    const linksPreview = splitImageLinksText(linksNuevos?.[idPreg]);
 
     return (
       <Row className="mb-4">
         <Col md={5} className="pe-md-4">
-          <div className="fw-semibold">Fotos</div>
+          <div className="fw-semibold">Fotos / links</div>
           <div className="text-muted" style={{ fontSize: 12 }}>
-            {(actuales?.length || 0) > 0 ? `Adjuntas: ${actuales.length}` : "Sin fotos"}
+            {(actuales?.length || 0) > 0 ? `Adjuntas: ${actuales.length}` : "Sin recursos guardados"}
           </div>
         </Col>
 
@@ -1025,24 +1075,24 @@ export default function InformeModal({
                 onChange={(e) => onPickFotos(idPreg, e.target.files)}
               />
               <div className="text-muted mt-1" style={{ fontSize: 12 }}>
-                Las nuevas fotos se suben al guardar.
+                Los archivos nuevos se suben al guardar.
               </div>
             </div>
           )}
 
           {actuales.length > 0 ? (
-            <div className="d-flex flex-wrap gap-2">
+            <div className="d-flex flex-wrap gap-2 mb-2">
               {actuales.map((f) => {
                 const idFoto = Number(f.id_foto || f.id);
                 const url = fotoUrl(f.ruta_archivo);
-
                 const deletingThis = Number(deletingFotoId) === Number(idFoto);
+                const externa = isExternalUrl(f.ruta_archivo);
 
                 return (
                   <div
                     key={idFoto}
                     style={{
-                      width: 160,
+                      width: 170,
                       border: "1px solid #e5e7eb",
                       borderRadius: 8,
                       padding: 6,
@@ -1051,10 +1101,26 @@ export default function InformeModal({
                     }}
                   >
                     <a href={url} target="_blank" rel="noreferrer">
-                      <div style={{ width: "100%", height: 100, overflow: "hidden", borderRadius: 6 }}>
-                        <img src={url} alt="foto" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      <div
+                        style={{
+                          width: "100%",
+                          height: 100,
+                          overflow: "hidden",
+                          borderRadius: 6,
+                          background: "#f8fafc",
+                        }}
+                      >
+                        <img
+                          src={url}
+                          alt="foto"
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
                       </div>
                     </a>
+
+                    <div className="mt-2 text-muted" style={{ fontSize: 11 }}>
+                      {externa ? "Link externo" : "Archivo interno"}
+                    </div>
 
                     {!readOnly && (
                       <Button
@@ -1072,13 +1138,70 @@ export default function InformeModal({
               })}
             </div>
           ) : (
-            <div className="text-muted">-</div>
+            <div className="text-muted mb-2">-</div>
           )}
 
           {!readOnly && nuevas.length > 0 && (
             <Alert variant="info" className="mt-2 py-2">
-              Se seleccionaron <b>{nuevas.length}</b> fotos nuevas (se suben al guardar).
+              Se seleccionaron <b>{nuevas.length}</b> archivos nuevos.
             </Alert>
+          )}
+
+          {!readOnly && linksPreview.length > 0 && (
+            <div className="mt-2">
+              <div className="fw-semibold mb-2" style={{ fontSize: 13 }}>
+                Links a agregar
+              </div>
+
+              <div className="d-flex flex-wrap gap-2">
+                {linksPreview.map((link, idx) => {
+                  const url = fotoUrl(link);
+                  return (
+                    <div
+                      key={`${idPreg}_link_${idx}`}
+                      style={{
+                        width: 170,
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 8,
+                        padding: 6,
+                        background: "#fff",
+                      }}
+                    >
+                      <a href={url} target="_blank" rel="noreferrer">
+                        <div
+                          style={{
+                            width: "100%",
+                            height: 100,
+                            overflow: "hidden",
+                            borderRadius: 6,
+                            background: "#f8fafc",
+                          }}
+                        >
+                          <img
+                            src={url}
+                            alt="preview link"
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                        </div>
+                      </a>
+
+                      <div
+                        className="mt-2 text-muted"
+                        style={{
+                          fontSize: 11,
+                          wordBreak: "break-all",
+                          maxHeight: 36,
+                          overflow: "hidden",
+                        }}
+                        title={link}
+                      >
+                        {link}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </Col>
       </Row>
@@ -1129,58 +1252,69 @@ export default function InformeModal({
             <span>Cargando...</span>
           </div>
         ) : !data ? (
-          <Alert variant="warning">No hay datos para mostrar.</Alert>
+          <Alert variant="warning" className="mb-0">
+            No se pudo cargar el informe.
+          </Alert>
         ) : (
           <>
             {headerInfo}
-            <hr />
 
             {!readOnly && (
-              <Form.Group className="mb-3">
-                <Form.Label style={{ fontWeight: 600 }}>Título (opcional)</Form.Label>
-                <Form.Control value={titulo} onChange={(e) => setTitulo(e.target.value)} placeholder="Título del informe" />
-              </Form.Group>
+              <div className="mb-3 mt-3">
+                <Form.Label className="fw-semibold">Título</Form.Label>
+                <Form.Control
+                  value={titulo ?? ""}
+                  onChange={(e) => setTitulo(e.target.value)}
+                  disabled={saving}
+                />
+              </div>
             )}
 
-            {(secciones || []).map((sec) => (
-              <div key={sec.id_seccion} className="mb-3">
-                <div
-                  style={{
-                    padding: "8px 10px",
-                    border: "1px solid #e5e7eb",
-                    borderRadius: 6,
-                    background: "#f8fafc",
-                    fontWeight: 700,
-                  }}
-                >
-                  {sec.titulo}
-                </div>
+            {(secciones || []).map((sec) => {
+              const visiblePreguntas = (sec.preguntas || []).filter((p) => isVisible(p, respuestas));
+              if (!visiblePreguntas.length) return null;
 
-                <div className="mt-3">
-                  {(sec.preguntas || []).map((p) => {
-                    if (!isVisible(p, respuestas)) return null;
-                    return (
-                      <div key={p.id_pregunta}>
-                        {renderControl(p)}
-                        {renderFotosPregunta(p)}
-                      </div>
-                    );
-                  })}
+              return (
+                <div key={sec.id_seccion} className="mb-4">
+                  <div
+                    className="fw-bold mb-3"
+                    style={{
+                      fontSize: 16,
+                      borderBottom: "1px solid #e5e7eb",
+                      paddingBottom: 8,
+                    }}
+                  >
+                    {sec.titulo || sec.nombre || `Sección ${sec.id_seccion}`}
+                  </div>
+
+                  {visiblePreguntas.map((p) => (
+                    <div key={p.id_pregunta}>
+                      {renderControl(p)}
+                      {renderFotosPregunta(p)}
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </>
         )}
       </Modal.Body>
 
       <Modal.Footer>
-        <Button variant="secondary" onClick={onHide} disabled={saving || deletingFotoId != null}>
-          {readOnly ? "Cerrar" : "Cancelar"}
+        <Button variant="secondary" onClick={onHide} disabled={saving}>
+          Cerrar
         </Button>
 
         {!readOnly && (
-          <Button variant="primary" onClick={handleGuardar} disabled={saving || loading || !idInforme || deletingFotoId != null}>
-            {saving ? "Guardando..." : "Guardar cambios"}
+          <Button variant="primary" onClick={handleGuardar} disabled={saving || loading}>
+            {saving ? (
+              <>
+                <Spinner animation="border" size="sm" className="me-2" />
+                Guardando...
+              </>
+            ) : (
+              "Guardar cambios"
+            )}
           </Button>
         )}
       </Modal.Footer>

@@ -100,12 +100,20 @@ function canonicalKey(raw) {
    Helpers: parsing Excel
 ========================= */
 function pickFirstSheet(arrayBuffer) {
-  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const wb = XLSX.read(arrayBuffer, {
+    type: "array",
+    cellDates: true,
+    raw: false,
+  });
+
   const sheetName = wb.SheetNames?.[0];
   if (!sheetName) throw new Error("El Excel no tiene hojas.");
 
   const sh = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sh, { defval: "" });
+  const rows = XLSX.utils.sheet_to_json(sh, {
+    defval: "",
+    raw: false,
+  });
 
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("El Excel no contiene filas válidas o el encabezado no está bien ubicado.");
@@ -130,6 +138,100 @@ function parsePreguntaIdFromHeader(header) {
   if (m4) return Number(m4[1]);
 
   return null;
+}
+
+/* =========================
+   Helpers: fechas Excel
+========================= */
+function isExcelSerialDate(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 20000 && value < 80000;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function excelSerialToDateString(serial) {
+  try {
+    const parsed = XLSX.SSF.parse_date_code(serial);
+    if (!parsed || !parsed.y || !parsed.m || !parsed.d) return String(serial);
+    return `${parsed.y}-${pad2(parsed.m)}-${pad2(parsed.d)}`;
+  } catch {
+    return String(serial);
+  }
+}
+
+function jsDateToDateString(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function looksLikeDateString(v) {
+  if (typeof v !== "string") return false;
+  const s = v.trim();
+
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(s) ||
+    /^\d{2}\/\d{2}\/\d{4}$/.test(s) ||
+    /^\d{2}-\d{2}-\d{4}$/.test(s)
+  );
+}
+
+function normalizeDateString(v) {
+  if (v instanceof Date) {
+    return jsDateToDateString(v);
+  }
+
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return s;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [dd, mm, yyyy] = s.split("/");
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
+      const [dd, mm, yyyy] = s.split("-");
+      return `${yyyy}-${mm}-${dd}`;
+    }
+  }
+
+  return v;
+}
+
+function isPreguntaFecha(pregunta) {
+  const tipo = String(pregunta?.tipo || "").trim().toLowerCase();
+  const etiqueta = normKey(pregunta?.etiqueta || pregunta?.titulo || "");
+
+  return (
+    tipo === "fecha" ||
+    tipo === "date" ||
+    tipo === "datetime" ||
+    etiqueta.includes("fecha")
+  );
+}
+
+function normalizeExcelValueForPregunta(value, pregunta) {
+  if (value === "" || value === null || value === undefined) return value;
+
+  if (isPreguntaFecha(pregunta)) {
+    if (value instanceof Date) {
+      return jsDateToDateString(value);
+    }
+
+    if (isExcelSerialDate(value)) {
+      return excelSerialToDateString(value);
+    }
+
+    if (looksLikeDateString(value)) {
+      return normalizeDateString(value);
+    }
+  }
+
+  return value;
 }
 
 /* =========================
@@ -648,7 +750,12 @@ export default function ImportarRespuestasExcelModal({
         if (latCol && cm.col === latCol) continue;
         if (lngCol && cm.col === lngCol) continue;
 
-        const v = r[cm.col];
+        let v = r[cm.col];
+        if (v === "" || v === null || v === undefined) continue;
+
+        const pregunta = preguntasById.get(Number(idPreg));
+        v = normalizeExcelValueForPregunta(v, pregunta);
+
         if (v === "" || v === null || v === undefined) continue;
 
         respuestas[String(idPreg)] = v;
@@ -728,6 +835,8 @@ export default function ImportarRespuestasExcelModal({
 
       const buf = await f.arrayBuffer();
       const rows = pickFirstSheet(buf);
+
+      console.log("Preview Excel rows:", rows.slice(0, 3));
 
       const keys = Object.keys(rows[0] || {});
       if (!keys.length) throw new Error("No detecté encabezados en la primera fila.");

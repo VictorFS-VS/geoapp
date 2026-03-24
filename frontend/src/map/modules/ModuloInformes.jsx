@@ -182,7 +182,7 @@ function informeRowsMatchTramo(rows = [], tramoFilter = {}) {
 }
 
 /* =========================================================
-   ✅ HEX helpers
+   ✅ HEX helpers + lógica nueva para semáforo
    ========================================================= */
 function normalizeHexColor(v) {
   if (!v) return null;
@@ -198,6 +198,11 @@ const SEMAFORO_NAME_TO_HEX = {
   amarillo: "#FACC15",
   naranja: "#FB923C",
   rojo: "#EF4444",
+
+  // compatibilidad adicional por niveles
+  bajo: "#58FD6C",
+  medio: "#FACC15",
+  alto: "#EF4444",
 };
 
 function hexToRgba(hex) {
@@ -219,8 +224,10 @@ function hexToCssColor(hex) {
   const h = normalizeHexColor(hex);
   if (!h) return null;
   if (h.length === 7) return h;
+
   const rgba = hexToRgba(h);
   if (!rgba) return null;
+
   return `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, ${rgba.a.toFixed(3)})`;
 }
 
@@ -232,69 +239,162 @@ function normColorName(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+/* =========================================================
+   ✅ Helpers JSON / tipo
+   ========================================================= */
+function parseJsonIfNeeded(val) {
+  if (val == null) return null;
+
+  if (typeof val === "object") return val;
+
+  const s = String(val).trim();
+  if (!s) return null;
+
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return val;
+    }
+  }
+
+  return val;
+}
+
+function isSemaforoType(props) {
+  const p = props || {};
+
+  const t = String(
+    p.tipo ??
+    p.tipo_pregunta ??
+    p.tipoPregunta ??
+    p.field_type ??
+    p.fieldType ??
+    p.tipo_campo ??
+    p.tipoCampo ??
+    p.input_type ??
+    ""
+  )
+    .trim()
+    .toLowerCase();
+
+  return t === "semaforo";
+}
+
+/* =========================================================
+   ✅ Parser flexible de semáforo
+   ========================================================= */
 function parseSemaforoAny(x) {
   if (x == null) return null;
 
+  // string simple
   if (typeof x === "string") {
     const s = x.trim();
+    if (!s) return null;
+
+    // si es JSON string, intentar parsear
+    if (s.startsWith("{") || s.startsWith("[")) {
+      try {
+        return parseSemaforoAny(JSON.parse(s));
+      } catch {
+        // sigue abajo como string normal
+      }
+    }
+
+    // si ya es hex
     const hx = normalizeHexColor(s);
     if (hx) return { nombre: null, hex: hx };
 
+    // si es nombre de color / nivel
     const key = normColorName(s);
     const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
     return hx2 ? { nombre: s, hex: hx2 } : null;
   }
 
+  // objeto
   if (typeof x === "object" && !Array.isArray(x)) {
-    const nombre = x.nombre ?? x.name ?? x.label ?? x.color_name ?? null;
-    const hexRaw = x.hex ?? x.color ?? x.value ?? x.semaforo_hex ?? null;
+    const nombre =
+      x.nombre ??
+      x.name ??
+      x.label ??
+      x.text ??
+      x.descripcion ??
+      x.color_name ??
+      x.semaforo_nombre ??
+      null;
+
+    const hexRaw =
+      x.hex ??
+      x.color ??
+      x.colour ??
+      x.value ??
+      x.semaforo_hex ??
+      x.semaforoColor ??
+      x.semaforo_color ??
+      null;
 
     const hx = normalizeHexColor(hexRaw);
-    if (hx) return { nombre: nombre ? String(nombre).trim() : null, hex: hx };
+    if (hx) {
+      return {
+        nombre: nombre ? String(nombre).trim() : null,
+        hex: hx,
+      };
+    }
 
     if (nombre) {
       const key = normColorName(nombre);
       const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
-      return hx2 ? { nombre: String(nombre).trim(), hex: hx2 } : null;
+      return hx2
+        ? { nombre: String(nombre).trim(), hex: hx2 }
+        : null;
     }
   }
 
   return null;
 }
 
+/* =========================================================
+   ✅ Obtiene semáforo desde props
+   Nueva lógica:
+   1) Si el tipo es semáforo => prioriza hex de valor_json
+   2) Luego semaforo_json
+   3) Luego semaforo
+   4) Luego campos alternativos
+   ========================================================= */
 function getSemaforoFromProps(props) {
   const p = props || {};
 
+  // -----------------------------------------------------
+  // 1) Si es tipo semáforo, priorizar valor_json -> hex
+  // -----------------------------------------------------
+  if (isSemaforoType(p)) {
+    const valorObj = parseJsonIfNeeded(p.valor_json ?? p.valorJson ?? null);
+    let s = parseSemaforoAny(valorObj);
+    if (s?.hex) return s;
+
+    const semJsonObj = parseJsonIfNeeded(p.semaforo_json ?? p.semaforoJson ?? null);
+    s = parseSemaforoAny(semJsonObj);
+    if (s?.hex) return s;
+
+    s = parseSemaforoAny(p.semaforo);
+    if (s?.hex) return s;
+  }
+
+  // -----------------------------------------------------
+  // 2) Compatibilidad general
+  // -----------------------------------------------------
   let s = parseSemaforoAny(p.semaforo);
   if (s?.hex) return s;
 
   const semJsonRaw = p.semaforo_json ?? p.semaforoJson ?? null;
   if (semJsonRaw != null) {
-    let val = semJsonRaw;
-    if (typeof val === "string") {
-      const st = val.trim();
-      if (st.startsWith("{") || st.startsWith("[")) {
-        try {
-          val = JSON.parse(st);
-        } catch {}
-      }
-    }
-    s = parseSemaforoAny(val);
+    s = parseSemaforoAny(parseJsonIfNeeded(semJsonRaw));
     if (s?.hex) return s;
   }
 
   const vj = p.valor_json ?? p.valorJson ?? null;
   if (vj != null) {
-    let val = vj;
-    if (typeof val === "string") {
-      const st = val.trim();
-      if (st.startsWith("{") || st.startsWith("[")) {
-        try {
-          val = JSON.parse(st);
-        } catch {}
-      }
-    }
-    s = parseSemaforoAny(val);
+    s = parseSemaforoAny(parseJsonIfNeeded(vj));
     if (s?.hex) return s;
   }
 
@@ -315,8 +415,12 @@ function getMarkerColorCssFromProps(props) {
   if (sem?.hex) return hexToCssColor(sem.hex);
   return null;
 }
+
 const getMarkerColorFromProps = getMarkerColorCssFromProps;
 
+/* =========================================================
+   ✅ Coordenadas
+   ========================================================= */
 function normalizeCoordsValue(v) {
   if (v == null || v === "") return null;
 
@@ -326,6 +430,7 @@ function normalizeCoordsValue(v) {
       const lng = toNum(v[1]);
       return lat != null && lng != null ? { lat, lng } : null;
     }
+
     const lat = toNum(v.lat ?? v.latitude);
     const lng = toNum(v.lng ?? v.lon ?? v.longitude);
     return lat != null && lng != null ? { lat, lng } : null;

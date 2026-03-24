@@ -1079,7 +1079,7 @@ async function deletePlantilla(req, res) {
   }
 }
 
-// âœ… DELETE DEFINITIVO (SOLO ADMIN)
+// DELETE DEFINITIVO (SOLO ADMIN)
 async function hardDeletePlantilla(req, res) {
   const idPlantilla = Number(req.params.id);
   const tipo = Number(req.user?.tipo_usuario ?? req.user?.tipo ?? req.user?.group_id);
@@ -1931,16 +1931,21 @@ async function deletePregunta(req, res) {
 
   // POST /api/informes (crear)
   async function crearInforme(req, res) {
-    const { id_plantilla, id_proyecto, titulo, respuestas } = req.body;
+    const { id_plantilla, id_proyecto, id_link, titulo, respuestas } = req.body;
 
     const idPlantilla = Number(id_plantilla);
     if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
-      return res.status(400).json({ ok: false, error: "id_plantilla invÃ¡lido" });
+      return res.status(400).json({ ok: false, error: "id_plantilla inválido" });
     }
 
     const idProyecto = id_proyecto ? Number(id_proyecto) : null;
     if (id_proyecto && (!Number.isFinite(idProyecto) || idProyecto <= 0)) {
-      return res.status(400).json({ ok: false, error: "id_proyecto invÃ¡lido" });
+      return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
+    }
+
+    const idLink = id_link ? Number(id_link) : null;
+    if (id_link && (!Number.isFinite(idLink) || idLink <= 0)) {
+      return res.status(400).json({ ok: false, error: "id_link inválido" });
     }
 
     let respuestasObj = {};
@@ -1961,7 +1966,7 @@ async function deletePregunta(req, res) {
     try {
       await client.query("BEGIN");
 
-      // âœ… IMPORTANTE: incluir opciones_json (semaforo)
+      // ✅ IMPORTANTE: incluir opciones_json (semaforo)
       const qRes = await client.query(
         `
         SELECT
@@ -2019,14 +2024,67 @@ async function deletePregunta(req, res) {
         if (isRequired) requiredSet.add(qid);
       }
 
-      // âœ… required no-imagen
+      function getRespuestaRawPorPregunta(qid) {
+        if (Object.prototype.hasOwnProperty.call(respuestasObj, String(qid))) {
+          return respuestasObj[String(qid)];
+        }
+        return _getAnswerValueFromObj(respuestasObj, qid);
+      }
+
+      function isNonEmptyImageLink(val) {
+        if (val === null || val === undefined) return false;
+
+        if (Array.isArray(val)) {
+          return val.some((x) => isNonEmptyImageLink(x));
+        }
+
+        if (typeof val === "object") {
+          if (typeof val.url === "string" && val.url.trim()) return true;
+          if (typeof val.ruta === "string" && val.ruta.trim()) return true;
+          if (typeof val.path === "string" && val.path.trim()) return true;
+          return false;
+        }
+
+        if (typeof val === "string") {
+          return !!val.trim();
+        }
+
+        return false;
+      }
+
+      function extractImageLinks(val) {
+        if (val === null || val === undefined) return [];
+
+        if (Array.isArray(val)) {
+          return val
+            .flatMap((x) => extractImageLinks(x))
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+        }
+
+        if (typeof val === "object") {
+          const candidates = [val.url, val.ruta, val.path];
+          return candidates
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+        }
+
+        if (typeof val === "string") {
+          const s = val.trim();
+          return s ? [s] : [];
+        }
+
+        return [];
+      }
+
+      // ✅ required no-imagen
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
 
         if (String(q.tipo).toLowerCase() === "imagen") continue;
 
-        const raw = _getAnswerValueFromObj(respuestasObj, qid);
+        const raw = getRespuestaRawPorPregunta(qid);
         const val = _coerceValue(raw);
 
         if (raw === undefined || isEmptyAnswer(val)) {
@@ -2034,7 +2092,7 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // âœ… required imagen (en create: debe venir archivo)
+      // ✅ required imagen (ahora: archivo O link/ruta)
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
@@ -2042,7 +2100,11 @@ async function deletePregunta(req, res) {
 
         const field = `fotos_${qid}`;
         const tieneArchivos = !!files?.[field];
-        if (!tieneArchivos) {
+
+        const raw = getRespuestaRawPorPregunta(qid);
+        const tieneLink = isNonEmptyImageLink(raw);
+
+        if (!tieneArchivos && !tieneLink) {
           invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
         }
       }
@@ -2056,7 +2118,7 @@ async function deletePregunta(req, res) {
         });
       }
 
-      // âœ… validar ID Ãºnico antes de crear
+      // ✅ validar ID único antes de crear
       await validarPreguntasUnicas({
         client,
         idPlantilla,
@@ -2066,20 +2128,22 @@ async function deletePregunta(req, res) {
         excludeInformeId: null,
       });
 
-      // âœ… crear informe
+      // ✅ crear informe
       const infRes = await client.query(
         `
-        INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
-        VALUES ($1, $2, $3)
+        INSERT INTO ema.informe (id_plantilla, id_proyecto, id_link, titulo)
+        VALUES ($1, $2, $3, $4)
         RETURNING *
         `,
-        [idPlantilla, idProyecto, titulo || null]
+        [idPlantilla, idProyecto, idLink, titulo || null]
       );
 
       const informe = infRes.rows[0];
       const idInforme = informe.id_informe;
 
-      // âœ… guardar respuestas (solo visibles)
+      // ✅ guardar respuestas (solo visibles)
+      // ✅ IMPORTANTE: las preguntas tipo imagen NO se guardan en informe_respuesta,
+      //    porque ahora se guardan siempre en ema.informe_foto, ya sea archivo o link
       for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
         const idPregunta = Number(idPreguntaStr);
         if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
@@ -2087,6 +2151,10 @@ async function deletePregunta(req, res) {
         const q = preguntasById.get(idPregunta);
         if (!q) continue;
         if (!visibleSet.has(idPregunta)) continue;
+
+        if (String(q.tipo || "").trim().toLowerCase() === "imagen") {
+          continue;
+        }
 
         const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
 
@@ -2122,7 +2190,7 @@ async function deletePregunta(req, res) {
         );
       }
 
-      // âœ… subir fotos segura
+      // ✅ preparar carpeta para archivos físicos
       const uploadsRoot = path.join(__dirname, "..", "uploads");
       const baseDir = path.join(
         uploadsRoot,
@@ -2133,6 +2201,39 @@ async function deletePregunta(req, res) {
       );
       await fs.promises.mkdir(baseDir, { recursive: true });
 
+      // ✅ 1) guardar links/rutas de preguntas imagen en ema.informe_foto
+      for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
+        const idPregunta = Number(idPreguntaStr);
+        if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+
+        const q = preguntasById.get(idPregunta);
+        if (!q) continue;
+        if (!visibleSet.has(idPregunta)) continue;
+
+        const esImagen = String(q.tipo || "").trim().toLowerCase() === "imagen";
+        const permite = !!q.permite_foto || esImagen;
+        if (!permite) continue;
+
+        const links = extractImageLinks(valorRaw);
+        if (!links.length) continue;
+
+        let ordenFoto = 1;
+
+        for (const link of links) {
+          await client.query(
+            `
+            INSERT INTO ema.informe_foto
+              (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
+            VALUES ($1, $2, $3, $4, $5)
+            `,
+            [idInforme, idPregunta, null, link, ordenFoto]
+          );
+
+          ordenFoto++;
+        }
+      }
+
+      // ✅ 2) subir fotos físicas seguras
       for (const [fieldName, fileOrFiles] of Object.entries(files)) {
         if (!fieldName.startsWith("fotos_")) continue;
 
@@ -2146,8 +2247,19 @@ async function deletePregunta(req, res) {
         const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
         if (!permite) continue;
 
+        // continuar orden después de los links ya insertados
+        const countPrev = await client.query(
+          `
+          SELECT COUNT(*)::int AS total
+          FROM ema.informe_foto
+          WHERE id_informe = $1 AND id_pregunta = $2
+          `,
+          [idInforme, idPregunta]
+        );
+
+        let ordenFoto = Number(countPrev.rows?.[0]?.total || 0) + 1;
+
         const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-        let ordenFoto = 1;
 
         for (const f of archivos) {
           const safeName = sanitizeFilename(f.name || "foto.jpg");
@@ -2672,7 +2784,7 @@ async function deletePregunta(req, res) {
 
     const idInforme = Number(id);
     if (!Number.isFinite(idInforme) || idInforme <= 0) {
-      return res.status(400).json({ ok: false, error: "ID invÃ¡lido" });
+      return res.status(400).json({ ok: false, error: "ID inválido" });
     }
 
     let respuestasObj = undefined;
@@ -2680,7 +2792,9 @@ async function deletePregunta(req, res) {
       try {
         respuestasObj =
           typeof respuestas === "string" ? JSON.parse(respuestas || "{}") : respuestas || {};
-        if (!respuestasObj || typeof respuestasObj !== "object") respuestasObj = {};
+        if (!respuestasObj || typeof respuestasObj !== "object" || Array.isArray(respuestasObj)) {
+          respuestasObj = {};
+        }
       } catch {
         respuestasObj = {};
       }
@@ -2693,7 +2807,9 @@ async function deletePregunta(req, res) {
           typeof delete_fotos_json === "string"
             ? JSON.parse(delete_fotos_json)
             : delete_fotos_json;
+
         if (!Array.isArray(deleteIds)) deleteIds = [];
+
         deleteIds = deleteIds
           .map((x) => Number(x))
           .filter((n) => Number.isFinite(n) && n > 0);
@@ -2713,10 +2829,12 @@ async function deletePregunta(req, res) {
         "SELECT * FROM ema.informe WHERE id_informe = $1 FOR UPDATE",
         [idInforme]
       );
+
       if (!infRes.rowCount) {
         await client.query("ROLLBACK");
         return res.status(404).json({ ok: false, error: "Informe no encontrado" });
       }
+
       const informe = infRes.rows[0];
 
       if (titulo !== undefined) {
@@ -2730,7 +2848,6 @@ async function deletePregunta(req, res) {
         );
       }
 
-      // âœ… incluir opciones_json
       const qRes = await client.query(
         `
         SELECT
@@ -2794,16 +2911,79 @@ async function deletePregunta(req, res) {
         if (isRequired) requiredSet.add(qid);
       }
 
-      // âœ… VALIDACIÃ“N REQUIRED
+      function getRespuestaRawPorPregunta(qid) {
+        if (respuestasObj === undefined) return undefined;
+
+        if (Object.prototype.hasOwnProperty.call(respuestasObj, String(qid))) {
+          return respuestasObj[String(qid)];
+        }
+
+        return _getAnswerValueFromObj(respuestasObj, qid);
+      }
+
+      function isNonEmptyImageLink(val) {
+        if (val === null || val === undefined) return false;
+
+        if (Array.isArray(val)) {
+          return val.some((x) => isNonEmptyImageLink(x));
+        }
+
+        if (typeof val === "object") {
+          if (typeof val.url === "string" && val.url.trim()) return true;
+          if (typeof val.ruta === "string" && val.ruta.trim()) return true;
+          if (typeof val.path === "string" && val.path.trim()) return true;
+          return false;
+        }
+
+        if (typeof val === "string") {
+          return !!val.trim();
+        }
+
+        return false;
+      }
+
+      function extractImageLinks(val) {
+        if (val === null || val === undefined) return [];
+
+        if (Array.isArray(val)) {
+          return val
+            .flatMap((x) => extractImageLinks(x))
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+        }
+
+        if (typeof val === "object") {
+          const candidates = [val.url, val.ruta, val.path];
+          return candidates
+            .map((x) => String(x || "").trim())
+            .filter(Boolean);
+        }
+
+        if (typeof val === "string") {
+          const s = val.trim();
+          return s ? [s] : [];
+        }
+
+        return [];
+      }
+
+      function isExternalUrl(value) {
+        return /^https?:\/\//i.test(String(value || "").trim());
+      }
+
+      // =========================
+      // VALIDACIÓN REQUIRED
+      // =========================
       if (respuestasObj !== undefined) {
         const invalid = [];
 
+        // Required no imagen
         for (const qid of requiredSet) {
           const q = preguntasById.get(qid);
           if (!q) continue;
           if (String(q.tipo).toLowerCase() === "imagen") continue;
 
-          const raw = _getAnswerValueFromObj(respuestasObj, qid);
+          const raw = getRespuestaRawPorPregunta(qid);
           const val = _coerceValue(raw);
 
           if (raw === undefined || isEmptyAnswer(val)) {
@@ -2811,6 +2991,7 @@ async function deletePregunta(req, res) {
           }
         }
 
+        // Required imagen = existentes no borradas + links nuevos + archivos nuevos
         for (const qid of requiredSet) {
           const q = preguntasById.get(qid);
           if (!q) continue;
@@ -2819,7 +3000,7 @@ async function deletePregunta(req, res) {
           const curFotos = await client.query(
             `
             SELECT id_foto
-              FROM ema.informe_foto
+            FROM ema.informe_foto
             WHERE id_informe = $1 AND id_pregunta = $2
             `,
             [idInforme, qid]
@@ -2835,7 +3016,10 @@ async function deletePregunta(req, res) {
             ? (Array.isArray(files[field]) ? files[field].length : 1)
             : 0;
 
-          const totalFinal = quedanDespuesDeBorrar + newUploads;
+          const raw = getRespuestaRawPorPregunta(qid);
+          const nuevosLinks = extractImageLinks(raw).length;
+
+          const totalFinal = quedanDespuesDeBorrar + newUploads + nuevosLinks;
 
           if (totalFinal <= 0) {
             invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
@@ -2851,7 +3035,6 @@ async function deletePregunta(req, res) {
           });
         }
 
-        // âœ… validar ID Ãºnico excluyendo el mismo informe
         await validarPreguntasUnicas({
           client,
           idPlantilla: Number(informe.id_plantilla),
@@ -2862,12 +3045,14 @@ async function deletePregunta(req, res) {
         });
       }
 
-      // âœ… BORRADO DE FOTOS (DB + FS)
+      // =========================
+      // BORRADO DE FOTOS (DB + FS)
+      // =========================
       if (deleteIds.length) {
         const { rows: fotosDel } = await client.query(
           `
           SELECT id_foto, ruta_archivo
-            FROM ema.informe_foto
+          FROM ema.informe_foto
           WHERE id_informe = $1 AND id_foto = ANY($2::int[])
           `,
           [idInforme, deleteIds]
@@ -2883,9 +3068,13 @@ async function deletePregunta(req, res) {
 
         for (const f of fotosDel) {
           try {
-            const abs = path.resolve(
-              path.join(uploadsRoot, String(f.ruta_archivo || "").replace(/\//g, path.sep))
-            );
+            const ruta = String(f.ruta_archivo || "").trim();
+
+            // ✅ si era URL externa, no se intenta borrar del disco
+            if (isExternalUrl(ruta)) continue;
+
+            const abs = path.resolve(path.join(uploadsRoot, ruta.replace(/\//g, path.sep)));
+
             if (abs.startsWith(uploadsRoot + path.sep)) {
               await fs.promises.unlink(abs).catch(() => {});
             }
@@ -2893,7 +3082,9 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // âœ… REEMPLAZO DE RESPUESTAS (solo visibles)
+      // =========================
+      // REEMPLAZO DE RESPUESTAS
+      // =========================
       if (respuestasObj !== undefined) {
         await client.query("DELETE FROM ema.informe_respuesta WHERE id_informe = $1", [idInforme]);
 
@@ -2908,6 +3099,11 @@ async function deletePregunta(req, res) {
           const q = preguntasById.get(idPregunta);
           if (!q) continue;
           if (!visibleSet.has(idPregunta)) continue;
+
+          // ✅ Las preguntas tipo imagen no van a informe_respuesta
+          if (String(q.tipo || "").trim().toLowerCase() === "imagen") {
+            continue;
+          }
 
           const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
 
@@ -2944,7 +3140,9 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // âœ… SUBIDA DE FOTOS SEGURA
+      // =========================
+      // CARPETA BASE
+      // =========================
       const baseDir = path.join(
         uploadsRoot,
         "proyectos",
@@ -2954,6 +3152,58 @@ async function deletePregunta(req, res) {
       );
       await fs.promises.mkdir(baseDir, { recursive: true });
 
+      // =========================
+      // LINKS / RUTAS DE IMAGEN
+      // =========================
+      if (respuestasObj !== undefined) {
+        for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
+          let idPregunta = Number(idPreguntaStr);
+          if (!Number.isFinite(idPregunta) || idPregunta <= 0) {
+            const key = String(idPreguntaStr || "").trim().toLowerCase();
+            idPregunta = labelToId[key] || NaN;
+          }
+          if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
+
+          const q = preguntasById.get(idPregunta);
+          if (!q) continue;
+          if (!visibleSet.has(idPregunta)) continue;
+
+          const esImagen = String(q.tipo || "").trim().toLowerCase() === "imagen";
+          const permite = !!q.permite_foto || esImagen;
+          if (!permite) continue;
+
+          const links = extractImageLinks(valorRaw);
+          if (!links.length) continue;
+
+          const last = await client.query(
+            `
+            SELECT COALESCE(MAX(orden),0) AS max_orden
+            FROM ema.informe_foto
+            WHERE id_informe = $1 AND id_pregunta = $2
+            `,
+            [idInforme, idPregunta]
+          );
+
+          let ordenFoto = Number(last.rows?.[0]?.max_orden || 0) + 1;
+
+          for (const link of links) {
+            await client.query(
+              `
+              INSERT INTO ema.informe_foto
+                (id_informe, id_pregunta, descripcion, ruta_archivo, orden)
+              VALUES ($1, $2, $3, $4, $5)
+              `,
+              [idInforme, idPregunta, null, link, ordenFoto]
+            );
+
+            ordenFoto++;
+          }
+        }
+      }
+
+      // =========================
+      // SUBIDA DE FOTOS FÍSICAS
+      // =========================
       for (const [fieldName, fileOrFiles] of Object.entries(files)) {
         if (!fieldName.startsWith("fotos_")) continue;
 
@@ -2962,7 +3212,6 @@ async function deletePregunta(req, res) {
 
         const q = preguntasById.get(idPregunta);
         if (!q) continue;
-
         if (!visibleSet.has(idPregunta)) continue;
 
         const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
@@ -2971,14 +3220,16 @@ async function deletePregunta(req, res) {
         const last = await client.query(
           `
           SELECT COALESCE(MAX(orden),0) AS max_orden
-            FROM ema.informe_foto
+          FROM ema.informe_foto
           WHERE id_informe = $1 AND id_pregunta = $2
           `,
           [idInforme, idPregunta]
         );
+
         let ordenFoto = Number(last.rows?.[0]?.max_orden || 0) + 1;
 
         const archivos = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+
         for (const f of archivos) {
           const safeName = sanitizeFilename(f.name || "foto.jpg");
           const safeExt = pickSafeImageExt(safeName, f.mimetype);
@@ -3020,9 +3271,7 @@ async function deletePregunta(req, res) {
     }
   }
 
-  /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    5) DELETE /api/informes/:id/fotos/:idFoto
-  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* 5) DELETE /api/informes/:id/fotos/:idFoto */
   async function deleteInformeFoto(req, res) {
     const idInforme = Number(req.params.id);
     const idFoto = Number(req.params.idFoto);
@@ -3743,10 +3992,8 @@ async function publicSubmitShareForm(req, res) {
   }
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-   7) GET /api/informes/proyecto/:idProyecto/export/excel?plantilla=ID
-â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-// âœ… Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
+// 7) GET /api/informes/proyecto/:idProyecto/export/excel?plantilla=ID
+// Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
 // GET /api/informes/proyecto/:idProyecto/export/excel?kobo=1
 // (opcional) ?plantilla=ID  (si querÃ©s mantenerlo)
 async function exportProyectoInformesExcel(req, res) {
@@ -5303,5 +5550,3 @@ module.exports = {
   publicGetShareForm,
   publicSubmitShareForm,
 };
-
-
