@@ -191,7 +191,7 @@ const PERMS = {
 
   REPORTES: ["reportes.read", "reportes.create", "reportes.update", "reportes.delete"],
 
-  NDVI: ["use_change.read", "use_change.create"],//, "ndvi.read", "ndvi.create", "ndvi.update"
+  NDVI: ["ndvi.read", "ndvi.create", "ndvi.update"],
 };
 
 /* =========================

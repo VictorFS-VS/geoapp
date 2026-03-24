@@ -36,11 +36,12 @@ function toPointItems(points, getPointInfo) {
 
 function buildMarkerContent(info, isActive) {
   const node = document.createElement("div");
+  const borderColor = info?.borderColor || (isActive ? "#0f172a" : "#ffffff");
   node.style.width = isActive ? "18px" : "16px";
   node.style.height = isActive ? "18px" : "16px";
   node.style.borderRadius = "999px";
   node.style.background = info?.color || "#2563eb";
-  node.style.border = isActive ? "3px solid #0f172a" : "2px solid #ffffff";
+  node.style.border = isActive ? `3px solid ${borderColor}` : `2px solid ${borderColor}`;
   node.style.boxShadow = isActive
     ? "0 0 0 4px rgba(15, 23, 42, 0.18)"
     : "0 2px 10px rgba(15, 23, 42, 0.18)";
@@ -70,6 +71,7 @@ export default function GVAMapPointLayer({
   google,
   points,
   visible = true,
+  enablePopup = true,
   activeId = null,
   onPointClick,
   onOpenPoint,
@@ -351,12 +353,12 @@ export default function GVAMapPointLayer({
     };
 
     const run = async () => {
-      if (!map || !google?.maps?.InfoWindow || !visible || !items.length) {
+      if (!map || !visible || !items.length) {
         cleanupMarkers();
         return;
       }
 
-      if (!infoWindowRef.current) {
+      if (enablePopup && google?.maps?.InfoWindow && !infoWindowRef.current) {
         infoWindowRef.current = new google.maps.InfoWindow();
       }
 
@@ -407,6 +409,10 @@ export default function GVAMapPointLayer({
         marker.__isAdvanced = isAdvanced;
 
         const handleClick = () => {
+          if (!enablePopup || !infoWindowRef.current) {
+            onPointClickRef.current?.(entry.raw);
+            return;
+          }
           const popup = buildPopupContent(entry);
           openPopupEntryRef.current = entry;
           infoWindowRef.current.setContent(popup);
@@ -446,6 +452,7 @@ export default function GVAMapPointLayer({
   }, [map, google, items, visible]);
 
   useEffect(() => {
+    if (!enablePopup) return;
     const openEntry = openPopupEntryRef.current;
     if (!visible || !openEntry || !infoWindowRef.current) return;
     try {
@@ -573,7 +580,7 @@ export default function GVAMapPointLayer({
       infoWindowRef.current.open({ map, anchor: pointEntry.marker });
       openPopupEntryRef.current = pointEntry;
     } catch {}
-  }, [getPointPopupState, onSelectPopupPhoto, visible, map]);
+  }, [getPointPopupState, onSelectPopupPhoto, visible, map, enablePopup]);
 
   useEffect(() => {
     for (const entry of markersRef.current) {

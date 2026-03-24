@@ -440,6 +440,7 @@ export default function Expedientes() {
   // ✅ subir polígono (multi)
   const [polyFiles, setPolyFiles] = useState([]);
   const [polyBusy, setPolyBusy] = useState(false);
+  const [polyUploadNotice, setPolyUploadNotice] = useState(null);
 
   // DBI
   const [dbiCodigo, setDbiCodigo] = useState("");
@@ -610,23 +611,34 @@ export default function Expedientes() {
     if (!current) return;
 
     if (!polyFiles.length) {
-      return alert("Seleccioná archivos: SHP+DBF+SHX (juntos) o ZIP/KML/KMZ (y opcional GeoJSON).");
+      setPolyUploadNotice({
+        tone: "warning",
+        message: "Seleccioná archivos: SHP+DBF+SHX (juntos) o ZIP/KML/KMZ (y opcional GeoJSON).",
+      });
+      return;
     }
 
     if (polyInvalidTriads) {
-      return alert("Tenés sets SHP incompletos. Completá .shp + .dbf + .shx o subí un ZIP/KMZ.");
+      setPolyUploadNotice({
+        tone: "warning",
+        message: "Tenés sets SHP incompletos. Completá .shp + .dbf + .shx o subí un ZIP/KMZ.",
+      });
+      return;
     }
 
     if (polyRuleViolations.length) {
       const need = tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA o MEJORAS";
-      return alert(
-        `Regla de nombre:\n` +
-          `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.\n\n` +
-          `No cumplen:\n- ${polyRuleViolations.map((x) => x.name).join("\n- ")}`
-      );
+      setPolyUploadNotice({
+        tone: "warning",
+        message:
+          `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.`,
+        details: polyRuleViolations.map((x) => x.name).filter(Boolean),
+      });
+      return;
     }
 
     setPolyBusy(true);
+    setPolyUploadNotice(null);
     try {
       const fd = new FormData();
       polyFiles.forEach((f) => fd.append("files", f));
@@ -648,10 +660,14 @@ export default function Expedientes() {
         Number(resp?.summary?.inserted || 0);
 
       if (!ok) {
-        throw new Error(resp?.message || "Falló la carga del polígono (backend no confirmó OK).");
+        const err = new Error(resp?.message || "Falló la carga del polígono (backend no confirmó OK).");
+        err.payload = resp;
+        throw err;
       }
       if (inserted <= 0) {
-        throw new Error(resp?.message || "No se insertaron geometrías. No se marcará la etapa.");
+        const err = new Error(resp?.message || "No se insertaron geometrías. No se marcará la etapa.");
+        err.payload = resp;
+        throw err;
       }
 
       await setEtapa("plano_georef", true, etapas?.plano_georef?.obs || "");
@@ -667,10 +683,26 @@ export default function Expedientes() {
 
       await loadPlanoGeo(current.id_expediente, tipoCarpeta, true);
       setPolyFiles([]);
-
-      alert("Plano georreferenciado cargado OK. Se marcó la etapa.");
+      setPolyUploadNotice({
+        tone: "success",
+        message: "Plano georreferenciado cargado OK. Se marcó la etapa.",
+        ok: true,
+        inserted,
+        byTable: resp?.byTable || {},
+      });
     } catch (e) {
-      alert(String(e?.message || e));
+      setPolyUploadNotice({
+        tone: "warning",
+        ok: false,
+        message: String(e?.message || e),
+        inserted: Number(e?.payload?.inserted || e?.payload?.total_inserted || e?.payload?.count || 0) || 0,
+        byTable: e?.payload?.byTable || {},
+        details: Array.isArray(e?.payload?.debug)
+          ? e.payload.debug
+              .map((item) => item?.baseUnique || item?.base || item?.logicalBase || "")
+              .filter(Boolean)
+          : [],
+      });
     } finally {
       setPolyBusy(false);
     }
@@ -2561,7 +2593,10 @@ export default function Expedientes() {
                                       multiple
                                       accept=".shp,.dbf,.shx,.zip,.kml,.kmz,.rar,.geojson,.json,.gpkg,.gpx,.gml,.dxf"
                                       disabled={!geometryEditable || !editable || polyBusy}
-                                      onChange={(ev) => setPolyFiles(Array.from(ev.target.files || []))}
+                                      onChange={(ev) => {
+                                        setPolyFiles(Array.from(ev.target.files || []));
+                                        setPolyUploadNotice(null);
+                                      }}
                                     />
                                     <Button
                                       variant="success"
@@ -2571,6 +2606,74 @@ export default function Expedientes() {
                                       {polyBusy ? "Subiendo..." : "Cargar polígono"}
                                     </Button>
                                   </div>
+
+                                  {polyUploadNotice && (
+                                    <div
+                                      className="mt-2"
+                                      style={{
+                                        background: polyUploadNotice.tone === "success" ? "#eef8e8" : "#fff8db",
+                                        border: `1px solid ${polyUploadNotice.tone === "success" ? "#b7d7a8" : "#f3d36a"}`,
+                                        borderRadius: 10,
+                                        padding: "10px 12px",
+                                      }}
+                                    >
+                                      <div className="d-flex align-items-start justify-content-between gap-2 flex-wrap">
+                                        <div className="d-flex align-items-center gap-2">
+                                          <span
+                                            aria-hidden="true"
+                                            style={{
+                                              width: 20,
+                                              height: 20,
+                                              borderRadius: "50%",
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              justifyContent: "center",
+                                              background: polyUploadNotice.tone === "success" ? "#d9ead3" : "#fce5a3",
+                                              color: "#6b5200",
+                                              fontWeight: 700,
+                                              fontSize: 12,
+                                            }}
+                                          >
+                                            !
+                                          </span>
+                                          <div className="fw-semibold" style={{ color: "#6b5200" }}>
+                                            {polyUploadNotice.tone === "success" ? "Carga procesada" : "Atención de carga"}
+                                          </div>
+                                        </div>
+                                        <div className="d-flex gap-2 flex-wrap">
+                                          <Badge bg={polyUploadNotice.ok ? "success" : "warning"} text={polyUploadNotice.ok ? undefined : "dark"}>
+                                            {polyUploadNotice.ok ? "OK" : "Aviso"}
+                                          </Badge>
+                                          {Number.isFinite(Number(polyUploadNotice.inserted)) &&
+                                            Number(polyUploadNotice.inserted) > 0 && (
+                                              <Badge bg="warning" text="dark">
+                                                Insertadas: {Number(polyUploadNotice.inserted)}
+                                              </Badge>
+                                            )}
+                                          {Object.keys(polyUploadNotice.byTable || {}).map((table) => (
+                                            <Badge key={table} bg="light" text="dark" pill>
+                                              {table.split(".").pop()}: {polyUploadNotice.byTable[table]}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      </div>
+                                      <div className="mt-1" style={{ color: "#5c4a00" }}>
+                                        {polyUploadNotice.message}
+                                      </div>
+                                      {Array.isArray(polyUploadNotice.details) && polyUploadNotice.details.length > 0 && (
+                                        <details className="mt-2">
+                                          <summary style={{ cursor: "pointer", color: "#6b5200" }}>Ver detalle técnico</summary>
+                                          <div className="d-flex gap-2 flex-wrap mt-2">
+                                            {polyUploadNotice.details.slice(0, 8).map((detail) => (
+                                              <Badge key={detail} bg="warning" text="dark" pill>
+                                                {detail}
+                                              </Badge>
+                                            ))}
+                                          </div>
+                                        </details>
+                                      )}
+                                    </div>
+                                  )}
 
                                   {polyFiles.length > 0 && (
                                     <div className="small">
