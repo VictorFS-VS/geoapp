@@ -1,4 +1,4 @@
-﻿// src/map/modules/ModuloInformes.jsx
+// src/map/modules/ModuloInformes.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InformeModal from "@/components/InformeModal";
 import { Modal, Button, Spinner, Form } from "react-bootstrap";
@@ -12,9 +12,8 @@ const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const API_URL = BASE.endsWith("/api") ? BASE : BASE + "/api";
 const HOST_BASE = BASE.replace(/\/api\/?$/i, "");
 
-// ✅ default actual (si NO hay semáforo)
+// ✅ default actual (si NO hay semáforo) (puede ser #RRGGBBAA)
 const DEFAULT_POINT_COLOR = "#db1732ff";
-const TRACE_INF_MARKERS = false; // ← activado temporalmente para validación
 
 /* =========================================================
    ✅ Paleta estable para colores por plantilla
@@ -74,115 +73,42 @@ const toNum = (v) => {
 };
 
 /* =========================================================
-   ✅ Helpers de texto / tramo
+   ✅ TRAMOS helpers
+   - Normaliza "10,1" => "10.1"
+   - Extrae el primer número válido de label/valor
    ========================================================= */
-function normTxt(v = "") {
-  return String(v || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function normalizeTramoKey(v) {
-  if (v == null) return "";
+  if (v == null) return null;
+  const s = String(v)
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(",", ".");
+  if (!s) return null;
 
-  let s = String(v)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+  const m = s.match(/(\d+(?:\.\d+)?)/);
+  return m ? m[1] : null;
+}
+
+function tramoKeyFromLabel(label) {
+  return normalizeTramoKey(label);
+}
+
+function tramoKeyFromRespuesta(valor) {
+  return normalizeTramoKey(valor);
+}
+
+function isEtiquetaTramo(etiqueta) {
+  const s = String(etiqueta || "")
+    .trim()
     .toLowerCase()
-    .trim();
-
-  if (!s) return "";
-
-  s = s
-    .replace(/\btramo\b/g, "")
-    .replace(/\bsub\s*tramo\b/g, "")
-    .replace(/\bsubtramo\b/g, "")
-    .replace(/\s+/g, "")
-    .replace(/[_./\\-]+/g, "");
-
-  const m = s.match(/[0-9]+[a-z0-9]*/g);
-  if (!m || !m.length) return "";
-
-  return m.join("");
-}
-
-function getActiveTramoKeyFromFilter(tramoFilter) {
-  return normalizeTramoKey(
-    tramoFilter?.activeTramoKey || tramoFilter?.activeTramoLabel || ""
-  );
-}
-
-function isPreguntaTramo(etiqueta = "") {
-  const e = normTxt(etiqueta);
-  return (
-    e === "tramo" ||
-    e === "tramos" ||
-    e === "sub tramo" ||
-    e === "sub tramos" ||
-    e === "subtramo" ||
-    e === "subtramos" ||
-    e.includes("tramo")
-  );
-}
-
-function extractTramoKeysFromText(valor = "") {
-  const raw = String(valor ?? "")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .trim();
-
-  if (!raw) return [];
-
-  const found = new Set();
-
-  const addCandidate = (txt) => {
-    const k = normalizeTramoKey(txt);
-    if (k) found.add(k);
-  };
-
-  addCandidate(raw);
-
-  const patterns = [
-    /\b(?:sub\s*tramo|subtramo|tramo)\s*[:#-]?\s*([0-9a-z]+(?:[\s._/-]*[0-9a-z]+)*)\b/gi,
-    /\b([0-9]+(?:[\s._/-]*[a-z0-9]+)+)\b/gi,
-    /\b([0-9]+[a-z]+[0-9a-z]*)\b/gi,
-    /\b([a-z]*[0-9]+[a-z0-9-]*)\b/gi,
-  ];
-
-  for (const re of patterns) {
-    for (const m of raw.matchAll(re)) {
-      if (m[1]) addCandidate(m[1]);
-    }
-  }
-
-  return Array.from(found);
-}
-
-function informeRowsMatchTramo(rows = [], tramoFilter = {}) {
-  if (!tramoFilter?.enabled) return true;
-
-  const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
-  if (!activeKey) return true;
-
-  for (const row of rows || []) {
-    const etiqueta = row?.etiqueta || row?.pregunta || row?.label || "";
-    const valor = row?.valor || row?.respuesta || row?.value || "";
-
-    if (!isPreguntaTramo(etiqueta)) continue;
-
-    const keys = extractTramoKeysFromText(valor);
-    if (keys.includes(activeKey)) return true;
-  }
-
-  return false;
+    .replace(/[\u0300-\u036f]/g, "");
+  return s === "tramo" || s === "tramos" || s.includes("tramo");
 }
 
 /* =========================================================
-   ✅ HEX helpers + lógica nueva para semáforo
+   ✅ HEX helpers (FIX ALPHA)
+   - Acepta #RRGGBB y #RRGGBBAA
    ========================================================= */
 function normalizeHexColor(v) {
   if (!v) return null;
@@ -198,11 +124,6 @@ const SEMAFORO_NAME_TO_HEX = {
   amarillo: "#FACC15",
   naranja: "#FB923C",
   rojo: "#EF4444",
-
-  // compatibilidad adicional por niveles
-  bajo: "#58FD6C",
-  medio: "#FACC15",
-  alto: "#EF4444",
 };
 
 function hexToRgba(hex) {
@@ -224,10 +145,8 @@ function hexToCssColor(hex) {
   const h = normalizeHexColor(hex);
   if (!h) return null;
   if (h.length === 7) return h;
-
   const rgba = hexToRgba(h);
   if (!rgba) return null;
-
   return `rgba(${rgba.r}, ${rgba.g}, ${rgba.b}, ${rgba.a.toFixed(3)})`;
 }
 
@@ -239,162 +158,69 @@ function normColorName(s) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-/* =========================================================
-   ✅ Helpers JSON / tipo
-   ========================================================= */
-function parseJsonIfNeeded(val) {
-  if (val == null) return null;
-
-  if (typeof val === "object") return val;
-
-  const s = String(val).trim();
-  if (!s) return null;
-
-  if (s.startsWith("{") || s.startsWith("[")) {
-    try {
-      return JSON.parse(s);
-    } catch {
-      return val;
-    }
-  }
-
-  return val;
-}
-
-function isSemaforoType(props) {
-  const p = props || {};
-
-  const t = String(
-    p.tipo ??
-    p.tipo_pregunta ??
-    p.tipoPregunta ??
-    p.field_type ??
-    p.fieldType ??
-    p.tipo_campo ??
-    p.tipoCampo ??
-    p.input_type ??
-    ""
-  )
-    .trim()
-    .toLowerCase();
-
-  return t === "semaforo";
-}
-
-/* =========================================================
-   ✅ Parser flexible de semáforo
-   ========================================================= */
 function parseSemaforoAny(x) {
   if (x == null) return null;
 
-  // string simple
   if (typeof x === "string") {
     const s = x.trim();
-    if (!s) return null;
-
-    // si es JSON string, intentar parsear
-    if (s.startsWith("{") || s.startsWith("[")) {
-      try {
-        return parseSemaforoAny(JSON.parse(s));
-      } catch {
-        // sigue abajo como string normal
-      }
-    }
-
-    // si ya es hex
     const hx = normalizeHexColor(s);
     if (hx) return { nombre: null, hex: hx };
 
-    // si es nombre de color / nivel
     const key = normColorName(s);
     const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
     return hx2 ? { nombre: s, hex: hx2 } : null;
   }
 
-  // objeto
   if (typeof x === "object" && !Array.isArray(x)) {
-    const nombre =
-      x.nombre ??
-      x.name ??
-      x.label ??
-      x.text ??
-      x.descripcion ??
-      x.color_name ??
-      x.semaforo_nombre ??
-      null;
-
-    const hexRaw =
-      x.hex ??
-      x.color ??
-      x.colour ??
-      x.value ??
-      x.semaforo_hex ??
-      x.semaforoColor ??
-      x.semaforo_color ??
-      null;
+    const nombre = x.nombre ?? x.name ?? x.label ?? x.color_name ?? null;
+    const hexRaw = x.hex ?? x.color ?? x.value ?? x.semaforo_hex ?? null;
 
     const hx = normalizeHexColor(hexRaw);
-    if (hx) {
-      return {
-        nombre: nombre ? String(nombre).trim() : null,
-        hex: hx,
-      };
-    }
+    if (hx) return { nombre: nombre ? String(nombre).trim() : null, hex: hx };
 
     if (nombre) {
       const key = normColorName(nombre);
       const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
-      return hx2
-        ? { nombre: String(nombre).trim(), hex: hx2 }
-        : null;
+      return hx2 ? { nombre: String(nombre).trim(), hex: hx2 } : null;
     }
   }
 
   return null;
 }
 
-/* =========================================================
-   ✅ Obtiene semáforo desde props
-   Nueva lógica:
-   1) Si el tipo es semáforo => prioriza hex de valor_json
-   2) Luego semaforo_json
-   3) Luego semaforo
-   4) Luego campos alternativos
-   ========================================================= */
 function getSemaforoFromProps(props) {
   const p = props || {};
 
-  // -----------------------------------------------------
-  // 1) Si es tipo semáforo, priorizar valor_json -> hex
-  // -----------------------------------------------------
-  if (isSemaforoType(p)) {
-    const valorObj = parseJsonIfNeeded(p.valor_json ?? p.valorJson ?? null);
-    let s = parseSemaforoAny(valorObj);
-    if (s?.hex) return s;
-
-    const semJsonObj = parseJsonIfNeeded(p.semaforo_json ?? p.semaforoJson ?? null);
-    s = parseSemaforoAny(semJsonObj);
-    if (s?.hex) return s;
-
-    s = parseSemaforoAny(p.semaforo);
-    if (s?.hex) return s;
-  }
-
-  // -----------------------------------------------------
-  // 2) Compatibilidad general
-  // -----------------------------------------------------
   let s = parseSemaforoAny(p.semaforo);
   if (s?.hex) return s;
 
   const semJsonRaw = p.semaforo_json ?? p.semaforoJson ?? null;
   if (semJsonRaw != null) {
-    s = parseSemaforoAny(parseJsonIfNeeded(semJsonRaw));
+    let val = semJsonRaw;
+    if (typeof val === "string") {
+      const st = val.trim();
+      if (st.startsWith("{") || st.startsWith("[")) {
+        try {
+          val = JSON.parse(st);
+        } catch {}
+      }
+    }
+    s = parseSemaforoAny(val);
     if (s?.hex) return s;
   }
 
   const vj = p.valor_json ?? p.valorJson ?? null;
   if (vj != null) {
-    s = parseSemaforoAny(parseJsonIfNeeded(vj));
+    let val = vj;
+    if (typeof val === "string") {
+      const st = val.trim();
+      if (st.startsWith("{") || st.startsWith("[")) {
+        try {
+          val = JSON.parse(st);
+        } catch {}
+      }
+    }
+    s = parseSemaforoAny(val);
     if (s?.hex) return s;
   }
 
@@ -416,11 +242,9 @@ function getMarkerColorCssFromProps(props) {
   return null;
 }
 
+// ✅ alias
 const getMarkerColorFromProps = getMarkerColorCssFromProps;
 
-/* =========================================================
-   ✅ Coordenadas
-   ========================================================= */
 function normalizeCoordsValue(v) {
   if (v == null || v === "") return null;
 
@@ -430,7 +254,6 @@ function normalizeCoordsValue(v) {
       const lng = toNum(v[1]);
       return lat != null && lng != null ? { lat, lng } : null;
     }
-
     const lat = toNum(v.lat ?? v.latitude);
     const lng = toNum(v.lng ?? v.lon ?? v.longitude);
     return lat != null && lng != null ? { lat, lng } : null;
@@ -461,6 +284,7 @@ const fotoUrl = (ruta_archivo) => {
   if (s.startsWith("http://") || s.startsWith("https://")) return s;
 
   const clean = s.replace(/^\/+/, "");
+
   if (clean.startsWith("api/uploads/")) return `${HOST_BASE}/${clean}`;
   if (clean.startsWith("uploads/")) return `${HOST_BASE}/${clean}`;
 
@@ -499,35 +323,6 @@ const computeBoundsFromPoints = (google, features) => {
     return null;
   }
 };
-
-/* =========================================================
-   ✅ DEDUPE de puntos
-   ========================================================= */
-function dedupePointFeatures(features = []) {
-  const map = new Map();
-
-  for (const f of features || []) {
-    if (f?.geometry?.type !== "Point") continue;
-
-    const p = f.properties || {};
-    const idInf =
-      Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-
-    const [lngRaw, latRaw] = f.geometry.coordinates || [];
-    const lat = toNum(latRaw);
-    const lng = toNum(lngRaw);
-
-    if (lat == null || lng == null) continue;
-
-    const key = idInf
-      ? `INF:${idInf}`
-      : `XY:${lat.toFixed(6)},${lng.toFixed(6)}`;
-
-    if (!map.has(key)) map.set(key, f);
-  }
-
-  return Array.from(map.values());
-}
 
 function buildChartStatsFromRows(rows = []) {
   const stats = {
@@ -722,25 +517,24 @@ export default function ModuloInformes({
   onHasData,
   onHasCharts,
   onChartsInfo,
-  tramoFilter,
 }) {
   const pid = Number(idProyecto);
-  const loadSeqRef = useRef(0);
 
+  // markers
   const markersRef = useRef([]);
   const selectedMarkerRef = useRef(null);
   const selectedMarkerOriginalContentRef = useRef(null);
   const lastFeaturesRef = useRef([]);
   const didLoadRef = useRef(false);
-  const loadPointsAbortRef = useRef(null);
 
+  // ✅ evita re-centrar por cambios de UI
   const autoFitEnabledRef = useRef(true);
-  const detalleTramoCacheRef = useRef(new Map());
 
   const [loading, setLoading] = useState(false);
   const [count, setCount] = useState(0);
 
   const [listOpen, setListOpen] = useState(true);
+
   const [selectedPoint, setSelectedPoint] = useState(null);
   const [rightOpen, setRightOpen] = useState(false);
 
@@ -751,8 +545,14 @@ export default function ModuloInformes({
   const [detalleIdInforme, setDetalleIdInforme] = useState(null);
 
   const [fotosModalOpen, setFotosModalOpen] = useState(false);
-  const [gestorNotificacionesOpen, setGestorNotificacionesOpen] = useState(false);
 
+  // ✅ Gestor de notificaciones del proyecto
+  const [gestorNotificacionesOpen, setGestorNotificacionesOpen] =
+    useState(false);
+
+  /* =========================
+     Charts fallback interno
+     ========================= */
   const [chartsOpen, setChartsOpen] = useState(false);
   const [chartsStats, setChartsStats] = useState(null);
   const [chartsError, setChartsError] = useState(null);
@@ -777,6 +577,9 @@ export default function ModuloInformes({
     autoFitEnabledRef.current = false;
   };
 
+  /* =========================
+     ✅ cache para disponibilidad charts
+     ========================= */
   const chartsReportedRef = useRef({
     pid: null,
     has: null,
@@ -796,19 +599,44 @@ export default function ModuloInformes({
     ts: 0,
   });
 
+  /* =========================
+     ✅ menú ⋯ + buscador respuestas INLINE
+     ========================= */
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const [busqPreguntaId, setBusqPreguntaId] = useState("all");
+  // ✅ BUSCADOR por respuestas
+  const [busqPreguntaId, setBusqPreguntaId] = useState("all"); // "all" | "<id_pregunta>"
   const [busqQ, setBusqQ] = useState("");
   const [busqLoading, setBusqLoading] = useState(false);
   const [busqError, setBusqError] = useState(null);
   const [busqResults, setBusqResults] = useState([]);
-  const [preguntasOptions, setPreguntasOptions] = useState([]);
+  const [preguntasOptions, setPreguntasOptions] = useState([]); // [{id, etiqueta}]
+
+  // ✅ aplicar resultados al mapa (ocultar otros puntos)
   const [busqApplyToMap, setBusqApplyToMap] = useState(true);
 
+  // ✅ debounce + abort para búsquedas
   const busqDebounceRef = useRef(null);
   const busqAbortRef = useRef(null);
 
+  // =========================
+  // ✅ Filtro por TRAMO (desde pregunta Tramo/Tramos)
+  // =========================
+  const [tramoFilterLabel, setTramoFilterLabel] = useState("all"); // "all" | "Tramo 10"
+  const [tramoFilterKey, setTramoFilterKey] = useState(null); // "10" | "10.1"
+  const [tramoLoading, setTramoLoading] = useState(false);
+
+  const tramoPreguntaIds = useMemo(() => {
+    return (preguntasOptions || [])
+      .filter((p) => isEtiquetaTramo(p.etiqueta))
+      .map((p) => Number(p.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }, [preguntasOptions]);
+
+  // id_informe -> tramoKey detectado
+  const informeTramoKeyRef = useRef(new Map());
+
+  // helper setMap universal (AdvancedMarker / Marker)
   const setMarkerMap = (mk, m) => {
     if (!mk) return;
     if ("map" in mk) {
@@ -817,35 +645,41 @@ export default function ModuloInformes({
         return;
       } catch {}
     }
+    if (typeof mk.setMap === "function") mk.setMap(m);
   };
 
+  /* =========================
+     ✅ filtros por plantilla / informe
+     ========================= */
   const [filtroPlantillaId, setFiltroPlantillaId] = useState("all");
   const [filtroInformeId, setFiltroInformeId] = useState("all");
   const [filtrosOpen, setFiltrosOpen] = useState(false);
 
+  // ✅ DATA combos
   const [filtroData, setFiltroData] = useState({
     map: {},
     plantillas: [],
     informes: [],
   });
 
+  // meta cache: { pid, map, ts }
   const informesMetaRef = useRef({ pid: null, map: {}, ts: 0 });
+
+  // ✅ cache nombre plantilla
   const plantillaNameCacheRef = useRef({});
 
+  // mounted guard
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      try {
-        loadPointsAbortRef.current?.abort?.();
-      } catch {}
-      try {
-        busqAbortRef.current?.abort?.();
-      } catch {}
     };
   }, []);
 
+  /* =========================
+     ✅ Helpers internos para meta
+     ========================= */
   function pickMetaFromInformeDetail(data) {
     const root = data?.data ?? data ?? {};
 
@@ -890,52 +724,37 @@ export default function ModuloInformes({
     return { plantillaId, plantillaNombre, titulo };
   }
 
-  const fetchGeoJSON = useCallback(async (url, parentSignal) => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 25000);
+  const fetchGeoJSON = useCallback(async (url, signal) => {
+    const resp = await fetch(url, { headers: { ...authHeaders() }, signal });
+    if (handle401(resp))
+      throw new Error("Sesión expirada. Iniciá sesión de nuevo.");
 
-    const onAbort = () => ctrl.abort();
-    try {
-      parentSignal?.addEventListener?.("abort", onAbort, { once: true });
-    } catch {}
+    const ct = resp.headers.get("content-type") || "";
+    const isJson =
+      ct.includes("application/json") || ct.includes("application/geo+json");
 
-    try {
-      const resp = await fetch(url, {
-        headers: { ...authHeaders() },
-        signal: ctrl.signal,
-      });
-
-      if (handle401(resp)) throw new Error("Sesión expirada. Iniciá sesión de nuevo.");
-
-      const ct = resp.headers.get("content-type") || "";
-      const isJson =
-        ct.includes("application/json") || ct.includes("application/geo+json");
-
-      if (!resp.ok) {
-        let msg = `HTTP ${resp.status}`;
-        try {
-          if (isJson) {
-            const j = await resp.json();
-            msg = j?.error || j?.message || msg;
-          } else {
-            msg = (await resp.text()) || msg;
-          }
-        } catch {}
-        throw new Error(msg);
-      }
-
-      if (isJson) return await resp.json();
-
-      const txt = await resp.text();
-      return txt ? JSON.parse(txt) : {};
-    } finally {
-      clearTimeout(timer);
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
       try {
-        parentSignal?.removeEventListener?.("abort", onAbort);
+        if (isJson) {
+          const j = await resp.json();
+          msg = j?.error || j?.message || msg;
+        } else {
+          msg = (await resp.text()) || msg;
+        }
       } catch {}
+      throw new Error(msg);
     }
+
+    if (isJson) return await resp.json();
+
+    const txt = await resp.text();
+    return txt ? JSON.parse(txt) : {};
   }, []);
 
+  /* ======================================================
+   * ✅ traer TODOS los informes del proyecto
+   * ====================================================== */
   const fetchInformeIdsByProyecto = useCallback(async (pidIn) => {
     const p = Number(pidIn || 0);
     if (!p) return [];
@@ -1013,6 +832,9 @@ export default function ModuloInformes({
     return arr;
   }
 
+  /* ======================================================
+   * ✅ META de informes
+   * ====================================================== */
   const ensureInformesMeta = useCallback(async () => {
     if (!pid) return { map: {}, plantillas: [], informes: [] };
 
@@ -1059,7 +881,10 @@ export default function ModuloInformes({
             } else {
               const looksGeneric =
                 !nombreFinal ||
-                String(nombreFinal).trim().toLowerCase().startsWith("plantilla #");
+                String(nombreFinal)
+                  .trim()
+                  .toLowerCase()
+                  .startsWith("plantilla #");
 
               if (looksGeneric) {
                 const pl = await fetchJsonSafe(
@@ -1117,6 +942,9 @@ export default function ModuloInformes({
     };
   }, [pid, fetchInformeIdsByProyecto]);
 
+  /* ======================================================
+   * ✅ loadFiltroData
+   * ====================================================== */
   const loadFiltroData = useCallback(async () => {
     if (!pid) {
       const empty = { map: {}, plantillas: [], informes: [] };
@@ -1131,9 +959,7 @@ export default function ModuloInformes({
     try {
       const urlPts = `${API_URL}/informes/proyecto/${pid}/puntos?_ts=${Date.now()}`;
       const dataPts = await fetchGeoJSON(urlPts);
-      featuresAll = dedupePointFeatures(
-        Array.isArray(dataPts?.features) ? dataPts.features : []
-      );
+      featuresAll = Array.isArray(dataPts?.features) ? dataPts.features : [];
     } catch {
       featuresAll = [];
     }
@@ -1183,6 +1009,9 @@ export default function ModuloInformes({
     return safe;
   }, [pid, ensureInformesMeta, fetchGeoJSON]);
 
+  /* ======================================================
+   * ✅ availability charts reporter
+   * ====================================================== */
   const reportChartsAvailability = useCallback(
     async (features) => {
       if (typeof onHasCharts !== "function") return;
@@ -1222,7 +1051,10 @@ export default function ModuloInformes({
       }
 
       const ac = new AbortController();
-      const { plantilla, plantillaId } = await tryGetPlantillaFromInformeIds(ids, ac.signal);
+      const { plantilla, plantillaId } = await tryGetPlantillaFromInformeIds(
+        ids,
+        ac.signal
+      );
 
       chartsPayloadRef.current = {
         ids,
@@ -1262,25 +1094,24 @@ export default function ModuloInformes({
     [pid, onHasCharts, fetchInformeIdsByProyecto]
   );
 
+  /* ======================================================
+   * ✅ CHEQUEO DE DATA
+   * ====================================================== */
   const checkHasPuntos = useCallback(async () => {
     if (!pid) return;
     try {
       const url = `${API_URL}/informes/proyecto/${pid}/puntos`;
       const data = await fetchGeoJSON(url);
 
-      const features = dedupePointFeatures(
-        Array.isArray(data?.features) ? data.features : []
-      );
-      const pointCount = features.filter((f) => f?.geometry?.type === "Point").length;
+      const features = Array.isArray(data?.features) ? data.features : [];
+      const pointCount = features.filter((f) => f?.geometry?.type === "Point")
+        .length;
 
       if (typeof onHasData === "function") onHasData(pointCount > 0);
+
       lastFeaturesRef.current = features;
 
-      Promise.resolve()
-        .then(() => reportChartsAvailability(features))
-        .catch((e) => {
-          console.warn("reportChartsAvailability error:", e);
-        });
+      await reportChartsAvailability(features);
     } catch (e) {
       console.warn("checkHasPuntos error:", e);
       if (typeof onHasData === "function") onHasData(true);
@@ -1299,17 +1130,16 @@ export default function ModuloInformes({
   }, [panelOpen, onPanelOpenChange]);
 
   const clearMarkers = useCallback(() => {
-    for (const m of markersRef.current || []) {
-      if (!m) continue;
-      try {
-        if ("map" in m) {
+    markersRef.current.forEach((m) => {
+      if (!m) return;
+      if ("map" in m) {
+        try {
           m.map = null;
-        } else if (typeof m.setMap === "function") {
-          m.setMap(null);
-        }
-      } catch {}
-    }
-
+          return;
+        } catch {}
+      }
+      if (typeof m.setMap === "function") m.setMap(null);
+    });
     markersRef.current = [];
     lastFeaturesRef.current = [];
     selectedMarkerRef.current = null;
@@ -1393,7 +1223,13 @@ export default function ModuloInformes({
 
     markersRef.current.forEach((mk) => {
       if (!mk) return;
-      setMarkerMap(mk, enabled ? m : null);
+      if ("map" in mk) {
+        try {
+          mk.map = enabled ? m : null;
+          return;
+        } catch {}
+      }
+      if (typeof mk.setMap === "function") mk.setMap(enabled ? m : null);
     });
   }, [enabled, map]);
 
@@ -1421,6 +1257,10 @@ export default function ModuloInformes({
     [highlightMarker]
   );
 
+  /* =========================================================
+     ✅ IMPORTANTÍSIMO (FIX TDZ):
+     pointsIndexByInformeId / puntosList DEBEN existir antes de buscarRespuestas
+     ========================================================= */
   const pointsIndexByInformeId = useMemo(() => {
     const feats = lastFeaturesRef.current || [];
     const metaMap = informesMetaRef.current?.map || {};
@@ -1532,55 +1372,9 @@ export default function ModuloInformes({
       });
   }, [pid, count]);
 
-  const zoomToPoint = useCallback(
-    (lat, lng, zoom = 19) => {
-      if (!map) return;
-      if (lat == null || lng == null) return;
-
-      const pos = { lat: Number(lat), lng: Number(lng) };
-      if (!Number.isFinite(pos.lat) || !Number.isFinite(pos.lng)) return;
-
-      autoFitEnabledRef.current = false;
-      map.panTo(pos);
-
-      try {
-        map.setZoom(zoom);
-      } catch {}
-    },
-    [map]
-  );
-
-  const focusSearchResult = useCallback(
-    (item) => {
-      if (!item) return;
-
-      const idInf = Number(item?.id_informe) || null;
-
-      openPointPanel(item.props);
-
-      if (item.lat != null && item.lng != null) {
-        zoomToPoint(item.lat, item.lng, 19);
-        return;
-      }
-
-      const mk = (markersRef.current || []).find(
-        (m) => Number(m?.__idInforme) === idInf
-      );
-
-      if (mk?.position) {
-        const pos =
-          typeof mk.position?.toJSON === "function"
-            ? mk.position.toJSON()
-            : mk.position;
-
-        if (pos?.lat != null && pos?.lng != null) {
-          zoomToPoint(pos.lat, pos.lng, 19);
-        }
-      }
-    },
-    [openPointPanel, zoomToPoint]
-  );
-
+  /* =========================
+     ✅ BUSCAR RESPUESTAS (backend)
+     ========================= */
   const buscarRespuestas = useCallback(async () => {
     const q = String(busqQ || "").trim();
     if (q.length < 2) {
@@ -1589,6 +1383,7 @@ export default function ModuloInformes({
       return;
     }
 
+    // ✅ abort request anterior si existe
     try {
       busqAbortRef.current?.abort?.();
     } catch {}
@@ -1605,7 +1400,9 @@ export default function ModuloInformes({
       qs.set("limit", "80");
       qs.set("_ts", String(Date.now()));
 
+      // ✅ endpoint
       const url = `${API_URL}/informes/proyecto/${pid}/buscar-respuestas?${qs.toString()}`;
+
       const resp = await fetch(url, { headers: { ...authHeaders() }, signal });
       if (handle401(resp)) return;
 
@@ -1615,37 +1412,48 @@ export default function ModuloInformes({
       }
 
       const items = (Array.isArray(data?.items) && data.items) || [];
-      const uniq = new Map();
 
-      for (const it of items) {
+      // ✅ Enriquecer con coords desde pointsIndexByInformeId
+      const mapped = items.map((it) => {
         const idInf = Number(it.id_informe) || null;
-        const idPregunta = Number(it.id_pregunta) || null;
-        const valorTxt = String(it.valor ?? "").trim().toLowerCase();
-
         const found = idInf ? pointsIndexByInformeId.get(idInf) : null;
 
-        const row = {
+        return {
           id_informe: idInf,
           titulo:
             it.titulo ||
             found?.props?.titulo ||
             (idInf ? `Informe #${idInf}` : ""),
-          id_pregunta: idPregunta,
+          id_pregunta: Number(it.id_pregunta) || null,
           etiqueta:
             it.etiqueta ||
-            (idPregunta ? `Pregunta #${idPregunta}` : ""),
+            (it.id_pregunta ? `Pregunta #${it.id_pregunta}` : ""),
           valor: it.valor ?? "",
           lat: found?.lat ?? null,
           lng: found?.lng ?? null,
           props: found?.props ?? { id_informe: idInf, titulo: it.titulo },
         };
+      });
 
-        const key = `${idInf || 0}-${idPregunta || 0}-${valorTxt}`;
-        if (!uniq.has(key)) uniq.set(key, row);
-      }
-
-      const mapped = Array.from(uniq.values());
       setBusqResults(mapped);
+
+      // ✅ si estamos buscando por pregunta Tramo/Tramos, guardamos mapping id_informe -> tramoKey
+      const pidSel = busqPreguntaId !== "all" ? Number(busqPreguntaId) : null;
+      const isTramoSearch =
+        (pidSel && tramoPreguntaIds.includes(pidSel)) ||
+        (mapped?.[0]?.etiqueta && isEtiquetaTramo(mapped[0].etiqueta));
+
+      if (isTramoSearch) {
+        const mm = new Map();
+        for (const it of mapped) {
+          const idInf = Number(it?.id_informe) || null;
+          if (!idInf) continue;
+          const k = tramoKeyFromRespuesta(it?.valor);
+          if (!k) continue;
+          mm.set(idInf, k);
+        }
+        informeTramoKeyRef.current = mm;
+      }
     } catch (e) {
       if (String(e?.name) === "AbortError") return;
       setBusqError(e?.message || "No se pudo buscar.");
@@ -1653,8 +1461,15 @@ export default function ModuloInformes({
     } finally {
       if (mountedRef.current) setBusqLoading(false);
     }
-  }, [busqQ, busqPreguntaId, pid, pointsIndexByInformeId]);
+  }, [
+    busqQ,
+    busqPreguntaId,
+    pid,
+    pointsIndexByInformeId,
+    tramoPreguntaIds,
+  ]);
 
+  // ✅ búsqueda en vivo (debounce)
   useEffect(() => {
     const q = String(busqQ || "").trim();
 
@@ -1675,41 +1490,112 @@ export default function ModuloInformes({
     };
   }, [busqQ, busqPreguntaId, buscarRespuestas]);
 
+  // ✅ aplicar filtro TRAMO: fuerza búsqueda por pregunta Tramo/Tramos + key
+  const aplicarFiltroPorTramo = useCallback(
+    async (labelOrKey) => {
+      const key = tramoKeyFromLabel(labelOrKey) || normalizeTramoKey(labelOrKey);
+
+      setTramoFilterLabel(labelOrKey || "all");
+      setTramoFilterKey(key);
+
+      if (!key) {
+        informeTramoKeyRef.current = new Map();
+        return;
+      }
+
+      const pidPregunta =
+        tramoPreguntaIds.length > 0 ? Number(tramoPreguntaIds[0]) : null;
+
+      if (!pidPregunta) {
+        alerts.toast.error(
+          'No encontré una pregunta "Tramo/Tramos" en la lista de preguntas.'
+        );
+        return;
+      }
+
+      try {
+        setTramoLoading(true);
+
+        // setea búsqueda por pregunta tramo + key (ej 10 / 10.1)
+        setBusqPreguntaId(String(pidPregunta));
+        setBusqQ(String(key));
+
+        // fuerza búsqueda inmediata (no esperar debounce)
+        await buscarRespuestas();
+      } finally {
+        if (mountedRef.current) setTramoLoading(false);
+      }
+    },
+    [tramoPreguntaIds, buscarRespuestas]
+  );
+
+  // ✅ aplicar filtro de búsqueda + tramo al mapa (ocultar puntos)
   useEffect(() => {
+    if (!enabled) return;
     if (!map) return;
 
     const q = String(busqQ || "").trim();
     const searching = q.length >= 2;
 
-    if (!enabled) {
-      (markersRef.current || []).forEach((mk) => setMarkerMap(mk, null));
-      return;
-    }
-
     if (!busqApplyToMap) {
-      (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
-      return;
-    }
-
-    if (!searching) {
-      (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
+      (markersRef.current || []).forEach((mk) =>
+        setMarkerMap(mk, enabled ? map : null)
+      );
       return;
     }
 
     if (busqLoading) return;
 
-    const ids = new Set(
-      (busqResults || [])
-        .map((r) => Number(r?.id_informe))
-        .filter((n) => Number.isFinite(n) && n > 0)
-    );
+    // set por búsqueda (texto)
+    let idsFromSearch = null;
+    if (searching) {
+      idsFromSearch = new Set(
+        (busqResults || [])
+          .map((r) => Number(r?.id_informe))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      );
+    }
+
+    // set por tramo seleccionado
+    let idsFromTramo = null;
+    if (tramoFilterKey) {
+      const mm = informeTramoKeyRef.current || new Map();
+      idsFromTramo = new Set();
+      for (const [idInf, k] of mm.entries()) {
+        if (String(k) === String(tramoFilterKey)) idsFromTramo.add(Number(idInf));
+      }
+      // si todavía no hay mapping, no forzamos vacío
+      if (idsFromTramo.size === 0) idsFromTramo = null;
+    }
+
+    const hasAnyFilter = !!idsFromSearch || !!idsFromTramo;
+
+    if (!hasAnyFilter) {
+      (markersRef.current || []).forEach((mk) =>
+        setMarkerMap(mk, enabled ? map : null)
+      );
+      return;
+    }
 
     (markersRef.current || []).forEach((mk) => {
-      const idInf = Number(mk?.__idInforme) || null;
-      const visible = ids.has(idInf);
-      setMarkerMap(mk, visible ? map : null);
+      const idInf = Number(mk?.__idInforme);
+      if (!idInf) return setMarkerMap(mk, null);
+
+      let visible = true;
+      if (idsFromSearch) visible = visible && idsFromSearch.has(idInf);
+      if (idsFromTramo) visible = visible && idsFromTramo.has(idInf);
+
+      setMarkerMap(mk, visible && enabled ? map : null);
     });
-  }, [busqQ, busqResults, busqLoading, busqApplyToMap, enabled, map]);
+  }, [
+    busqQ,
+    busqResults,
+    busqLoading,
+    busqApplyToMap,
+    enabled,
+    map,
+    tramoFilterKey,
+  ]);
 
   const loadPreguntasOptions = useCallback(async () => {
     if (!pid) return [];
@@ -1745,346 +1631,70 @@ export default function ModuloInformes({
     autoFitEnabledRef.current = false;
   };
 
-  const fetchInformeRowsLite = useCallback(async (idInforme, parentSignal) => {
-    if (!idInforme) return [];
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-
-    const onAbort = () => ctrl.abort();
-    try {
-      parentSignal?.addEventListener?.("abort", onAbort, { once: true });
-    } catch {}
-
-    try {
-      const resp = await fetch(`${API_URL}/informes/${idInforme}`, {
-        headers: { ...authHeaders() },
-        signal: ctrl.signal,
-      });
-
-      if (handle401(resp)) return [];
-
-      const ct = resp.headers.get("content-type") || "";
-      const isJson = ct.includes("application/json");
-      const data = isJson ? await resp.json() : null;
-
-      if (!resp.ok || data?.ok === false) return [];
-
-      if (Array.isArray(data?.rows)) return data.rows;
-      if (Array.isArray(data?.data?.rows)) return data.data.rows;
-
-      const preguntas = data?.preguntas || data?.data?.preguntas || [];
-      const respuestas = data?.respuestas || data?.data?.respuestas || [];
-
-      const mapResp = new Map();
-      for (const r of respuestas) {
-        const idp = r?.id_pregunta;
-        if (!idp) continue;
-        const v = formatRespuestaValue(r);
-        mapResp.set(idp, v || "");
-      }
-
-      return preguntas.map((p) => ({
-        id_pregunta: p.id_pregunta,
-        etiqueta: p.etiqueta || `Pregunta ${p.id_pregunta}`,
-        valor: mapResp.get(p.id_pregunta) || "-",
-      }));
-    } catch (e) {
-      if (String(e?.name) === "AbortError") return [];
-      return [];
-    } finally {
-      clearTimeout(timer);
-      try {
-        parentSignal?.removeEventListener?.("abort", onAbort);
-      } catch {}
-    }
-  }, []);
-
-  const doesInformeMatchTramo = useCallback(
-    async (idInforme, props, signal) => {
-      if (!tramoFilter?.enabled) return true;
-
-      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
-      if (!activeKey) return true;
-
-      const idInf = Number(idInforme) || null;
-      if (!idInf) return false;
-
-      const cacheKey = `${idInf}|${activeKey}`;
-      if (detalleTramoCacheRef.current.has(cacheKey)) {
-        return !!detalleTramoCacheRef.current.get(cacheKey);
-      }
-
-      const directCandidates = [
-        props?.tramo,
-        props?.TRAMO,
-        props?.subtramo,
-        props?.sub_tramo,
-        props?.subTramo,
-        props?.tramos,
-        props?.subtramos,
-        props?.label_tramo,
-        props?.tramo_label,
-        props?.nombre_tramo,
-        props?.descripcion_tramo,
-      ].filter((x) => x != null && x !== "");
-
-      for (const candidate of directCandidates) {
-        const keys = extractTramoKeysFromText(candidate);
-        if (keys.includes(activeKey)) {
-          detalleTramoCacheRef.current.set(cacheKey, true);
-          return true;
-        }
-      }
-
-      const rows = await fetchInformeRowsLite(idInf, signal);
-      const ok = informeRowsMatchTramo(rows, tramoFilter);
-
-      detalleTramoCacheRef.current.set(cacheKey, !!ok);
-      return !!ok;
-    },
-    [tramoFilter, fetchInformeRowsLite]
-  );
-
-  const filterFeaturesByTramoSelection = useCallback(
-    async (features, signal) => {
-      if (!tramoFilter?.enabled) return features;
-
-      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
-      if (!activeKey) return features;
-
-      const ids = Array.from(
-        new Set(
-          (features || [])
-            .filter((f) => f?.geometry?.type === "Point")
-            .map((f) => {
-              const p = f.properties || {};
-              return Number(
-                p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk
-              ) || null;
-            })
-            .filter(Boolean)
-        )
-      );
-
-      if (!ids.length) return [];
-
-      const resultMap = new Map();
-      const CONC = 3;
-      let cursor = 0;
-
-      async function worker() {
-        while (cursor < ids.length) {
-          if (signal?.aborted) return;
-
-          const idx = cursor++;
-          const idInf = ids[idx];
-
-          const feature = (features || []).find((f) => {
-            const p = f?.properties || {};
-            const n =
-              Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-            return n === idInf;
-          });
-
-          const props = feature?.properties || {};
-
-          try {
-            const ok = await doesInformeMatchTramo(idInf, props, signal);
-            resultMap.set(idInf, !!ok);
-          } catch (e) {
-            console.warn("doesInformeMatchTramo error:", idInf, e);
-            resultMap.set(idInf, true);
-          }
-        }
-      }
-
-      await Promise.all(
-        Array.from({ length: Math.min(CONC, ids.length) }, () => worker())
-      );
-
-      return (features || []).filter((f) => {
-        if (f?.geometry?.type !== "Point") return false;
-        const p = f.properties || {};
-        const idInf =
-          Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-        return !!resultMap.get(idInf);
-      });
-    },
-    [tramoFilter, doesInformeMatchTramo]
-  );
-
+  /* ======================================================
+   * ✅ cargar puntos (con filtro y color por plantilla)
+   * ====================================================== */
   const loadInformesPoints = useCallback(async () => {
     if (!google || !map || !pid) return;
 
-    const seq = ++loadSeqRef.current;
-
-    try {
-      loadPointsAbortRef.current?.abort?.();
-    } catch {}
-
     const ac = new AbortController();
-    loadPointsAbortRef.current = ac;
 
     setLoading(true);
-
     try {
       clearMarkers();
 
-      // ✅ Guard de primer arranque: asegurar que el mapa tenga tiles cargados
-      // antes de instanciar AdvancedMarkerElement con mapId.
-      //
-      // Problema en F5: el primer load de informes puede ocurrir antes de que
-      // el mapa procese internamente su mapId. A diferencia de `idle` (que puede
-      // haber disparado ya antes de adjuntar el listener), aquí:
-      //   1. Verificamos getBounds() → si no es null, el mapa ya está listo.
-      //   2. Si no está listo, esperamos el primero de: tilesloaded, idle, o 4s.
-      // `addListenerOnce` + flag `done` garantizan idempotencia.
-      // Recargar omite este guard (didLoadRef.current === true).
-      if (!didLoadRef.current) {
-        const mapHasBounds = () => {
-          try { return !!map?.getBounds?.(); } catch { return false; }
-        };
-
-        if (!mapHasBounds()) {
-          await new Promise((resolve) => {
-            let done = false;
-            const finish = () => { if (!done) { done = true; resolve(); } };
-            try {
-              google.maps.event.addListenerOnce(map, "tilesloaded", finish);
-              google.maps.event.addListenerOnce(map, "idle", finish);
-              // Timeout de seguridad: 4s. Luego del timeout, getBounds puede
-              // seguir siendo null (mapa sin proyección), pero procedemos igual.
-              setTimeout(finish, 4000);
-            } catch {
-              resolve();
-            }
-          });
-          // Verificar que la carga sigue siendo válida tras la espera
-          if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-        }
-      }
-
-
-      let metaMap = {};
-      if (informesMetaRef.current?.pid === pid) {
-        metaMap = informesMetaRef.current.map || {};
-      }
-
-      Promise.resolve()
-        .then(() => ensureInformesMeta())
-        .then((meta) => {
-          if (!mountedRef.current || !meta) return;
-
-          informesMetaRef.current = {
-            pid,
-            map: meta?.map || {},
-            ts: Date.now(),
-          };
-
-          setFiltroData({
-            map: meta?.map || {},
-            plantillas: meta?.plantillas || [],
-            informes: meta?.informes || [],
-          });
-        })
-        .catch(() => {});
+      // ✅ aseguramos combos/meta antes de pintar
+      const meta = await loadFiltroData();
+      const metaMap = meta?.map || {};
 
       const qs = new URLSearchParams();
       if (filtroInformeId !== "all") qs.set("informe", String(filtroInformeId));
-      if (filtroPlantillaId !== "all") qs.set("plantilla", String(filtroPlantillaId));
+      if (filtroPlantillaId !== "all")
+        qs.set("plantilla", String(filtroPlantillaId));
       qs.set("_ts", String(Date.now()));
 
       const url = `${API_URL}/informes/proyecto/${pid}/puntos?${qs.toString()}`;
-      const data = await fetchGeoJSON(url, ac.signal);
-      if (ac.signal.aborted || seq !== loadSeqRef.current) return;
 
+      const data = await fetchGeoJSON(url, ac.signal);
       if (data?.ok === false) {
         throw new Error(data?.error || "No se pudieron cargar los puntos.");
       }
 
       let features = Array.isArray(data?.features) ? data.features : [];
-      features = dedupePointFeatures(features);
+      lastFeaturesRef.current = features;
 
       const infId =
         filtroInformeId === "all" ? null : Number(filtroInformeId) || null;
 
+      // ✅ FILTRO LOCAL SOLO por informe
       if (infId) {
         features = features.filter((f) => {
           if (f?.geometry?.type !== "Point") return false;
           const p = f.properties || {};
           const idInf =
-            Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
+            Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) ||
+            null;
           return idInf && Number(idInf) === Number(infId);
         });
+        lastFeaturesRef.current = features;
       }
 
-      const tramoActivoKey = getActiveTramoKeyFromFilter(tramoFilter);
-
-      if (tramoFilter?.enabled && tramoActivoKey) {
-        try {
-          features = await filterFeaturesByTramoSelection(features, ac.signal);
-        } catch {
-          features = [];
-        }
-      }
-
-      if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-
-      lastFeaturesRef.current = features;
-
-      const pointCount = features.filter((f) => f?.geometry?.type === "Point").length;
+      const pointCount = features.filter((f) => f?.geometry?.type === "Point")
+        .length;
       if (typeof onHasData === "function") onHasData(pointCount > 0);
 
-      let markerLib = null;
-      let markerImportError = null;
+      await reportChartsAvailability(features);
+
       try {
-        markerLib = await google.maps.importLibrary("marker");
-      } catch (e) {
-        markerImportError = e;
-        console.warn("[ModuloInformes] importLibrary('marker') fallo:", e);
-      }
+        await google.maps.importLibrary("marker");
+      } catch {}
 
-      const AdvancedMarker =
-        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
-      const caps = typeof map?.getMapCapabilities === "function"
-        ? map.getMapCapabilities?.()
-        : null;
-      const advAvailable = caps?.isAdvancedMarkersAvailable;
-      if (caps && advAvailable !== true) {
-        throw new Error(
-          "AdvancedMarkerElement requires a mapId configured on the Google Map instance."
-        );
-      }
-
-      if (!caps) {
-        const mapId = map?.__e3a?.mapId || map?.mapId || null;
-        if (!mapId) {
-          // API sin getMapCapabilities: continuar para no romper comportamiento antiguo.
-        }
-      }
-
-      const canUseAdvanced = !!AdvancedMarker;
-
-      // Política explícita:
-      // - Priorizar siempre advanced markers.
-      // - No usar legacy Marker (deprecado).
-      // - Si falla import y no hay advanced disponible, abortar carga (no fallback silencioso).
-      if (!canUseAdvanced && markerImportError) {
-        throw new Error(
-          "No se pudo inicializar Google Advanced Marker en informes (import marker fallo)."
-        );
-      }
-
-      const markerPathStats = {
-        advContent: 0,
-        legacy: 0,
-      };
+      const AdvancedMarker = google?.maps?.marker?.AdvancedMarkerElement;
+      const PinElement = google?.maps?.marker?.PinElement;
 
       const created = [];
 
       for (const f of features) {
-        if (ac.signal.aborted || seq !== loadSeqRef.current) break;
         if (f?.geometry?.type !== "Point") continue;
 
         const [lng, lat] = f.geometry.coordinates || [];
@@ -2095,7 +1705,10 @@ export default function ModuloInformes({
 
         const idInf =
           Number(
-            props.id_informe ?? props.idInforme ?? props.id ?? props.id_informe_fk
+            props.id_informe ??
+              props.idInforme ??
+              props.id ??
+              props.id_informe_fk
           ) || null;
 
         const title = props.titulo || (idInf ? `Informe #${idInf}` : "Informe");
@@ -2137,7 +1750,35 @@ export default function ModuloInformes({
           __markerColor: markerColorCss,
         };
 
-        let mk = null;
+        if (AdvancedMarker && PinElement) {
+          const pin = new PinElement({
+            background: markerColorCss,
+            borderColor: "#ffffff",
+            glyphColor: "#ffffff",
+            glyph: "📍",
+            scale: 1.1,
+          });
+
+          const mk = new AdvancedMarker({
+            map: enabled ? map : null,
+            position: pos,
+            content: pin.element,
+            title,
+          });
+
+          mk.__idInforme = idInf;
+          mk.__plantillaId = plantillaId;
+          mk.__markerColor = markerColorCss;
+          mk.__baseMap = map;
+
+          try {
+            mk.zIndex = 999999;
+          } catch {}
+
+          mk.addListener("gmp-click", () => openPointPanel(propsEnriched));
+          created.push(mk);
+          continue;
+        }
 
         if (AdvancedMarker) {
           const el = document.createElement("div");
@@ -2148,85 +1789,60 @@ export default function ModuloInformes({
           el.style.border = "3px solid #fff";
           el.style.boxShadow = "0 6px 16px rgba(0,0,0,.22)";
 
-          mk = new AdvancedMarker({
-            map: null,
+          const mk = new AdvancedMarker({
+            map: enabled ? map : null,
             position: pos,
             content: el,
             title,
           });
-          markerPathStats.advContent += 1;
+
+          mk.__idInforme = idInf;
+          mk.__plantillaId = plantillaId;
+          mk.__markerColor = markerColorCss;
+          mk.__baseMap = map;
+
+          try {
+            mk.zIndex = 999999;
+          } catch {}
 
           mk.addListener("gmp-click", () => openPointPanel(propsEnriched));
-        } else {
-          // No hay AdvancedMarker disponible: no usar legacy Marker.
+          created.push(mk);
           continue;
         }
 
-        if (!mk) continue;
+        const mk = new google.maps.Marker({
+          map: enabled ? map : null,
+          position: pos,
+          title,
+        });
 
         mk.__idInforme = idInf;
         mk.__plantillaId = plantillaId;
         mk.__markerColor = markerColorCss;
         mk.__baseMap = map;
 
-        try {
-          if ("zIndex" in mk) mk.zIndex = 999999;
-          else if (typeof mk.setZIndex === "function") mk.setZIndex(999999);
-        } catch {}
+        if (typeof mk.setZIndex === "function") mk.setZIndex(999999);
 
+        mk.addListener("click", () => openPointPanel(propsEnriched));
         created.push(mk);
-      }
-
-      if (ac.signal.aborted || seq !== loadSeqRef.current) {
-        for (const mk of created) {
-          try {
-            if ("map" in mk) mk.map = null;
-            else if (typeof mk.setMap === "function") mk.setMap(null);
-          } catch {}
-        }
-        return;
       }
 
       markersRef.current = created;
       setCount(created.length);
 
-      // Adjuntar los markers en una segunda pasada evita condiciones de carrera
-      // sutiles durante la construcción y montaje del AdvancedMarker.
-      for (const mk of created) {
-        setMarkerMap(mk, enabled ? map : null);
-      }
-
-      if (TRACE_INF_MARKERS) {
-        console.info("[ModuloInformes] marker tracing", {
-          seq,
-          created: created.length,
-          pointCount,
-          markerImportOk: !markerImportError,
-          markerImportError: markerImportError ? String(markerImportError?.message || markerImportError) : null,
-          paths: markerPathStats,
-        });
-      }
-
       const b = computeBoundsFromPoints(google, features);
       if (b && autoFitEnabledRef.current) map.fitBounds(b);
 
-      Promise.resolve()
-        .then(() => reportChartsAvailability(features))
-        .catch((e) => {
-          console.warn("reportChartsAvailability error:", e);
-        });
-
       didLoadRef.current = true;
     } catch (e) {
-      if (String(e?.name) === "AbortError") return;
       console.error("loadInformesPoints error:", e);
       alerts.toast.error(e?.message || "No se pudieron cargar los puntos.");
       if (typeof onHasData === "function") onHasData(true);
     } finally {
-      if (mountedRef.current && seq === loadSeqRef.current) {
-        setLoading(false);
-      }
+      if (mountedRef.current) setLoading(false);
     }
+
+    return () => ac.abort();
   }, [
     google,
     map,
@@ -2239,10 +1855,15 @@ export default function ModuloInformes({
     reportChartsAvailability,
     filtroPlantillaId,
     filtroInformeId,
-    tramoFilter,
-    filterFeaturesByTramoSelection,
-    ensureInformesMeta,
+    loadFiltroData,
   ]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!google || !map || !pid) return;
+    if (didLoadRef.current) return;
+    loadInformesPoints();
+  }, [enabled, google, map, pid, loadInformesPoints]);
 
   useEffect(() => {
     autoFitEnabledRef.current = true;
@@ -2270,7 +1891,6 @@ export default function ModuloInformes({
 
     allInformeIdsRef.current = { pid: null, ids: [], ts: 0 };
     informesMetaRef.current = { pid: null, map: {}, ts: 0 };
-    detalleTramoCacheRef.current = new Map();
 
     setMenuOpen(false);
     setBusqQ("");
@@ -2279,6 +1899,11 @@ export default function ModuloInformes({
     setBusqPreguntaId("all");
     setPreguntasOptions([]);
 
+    setTramoFilterLabel("all");
+    setTramoFilterKey(null);
+    setTramoLoading(false);
+    informeTramoKeyRef.current = new Map();
+
     setFiltroInformeId("all");
     setFiltroPlantillaId("all");
     setFiltrosOpen(false);
@@ -2286,28 +1911,9 @@ export default function ModuloInformes({
     setFiltroData({ map: {}, plantillas: [], informes: [] });
   }, [pid, clearMarkers]);
 
-  const tramoReloadKey = `${tramoFilter?.enabled ? 1 : 0}|${getActiveTramoKeyFromFilter(tramoFilter)}`;
-  const lastTramoReloadKeyRef = useRef("");
-
-  useEffect(() => {
-    if (!enabled || !google || !map || !pid) return;
-
-    if (lastTramoReloadKeyRef.current === tramoReloadKey) return;
-    lastTramoReloadKeyRef.current = tramoReloadKey;
-
-    didLoadRef.current = false;
-    autoFitEnabledRef.current = true;
-    setSelectedPoint(null);
-    setRightOpen(false);
-    setVerInformeOpen(false);
-    setDetalleData(null);
-    setDetalleError(null);
-    setDetalleIdInforme(null);
-    setBusqResults([]);
-
-    loadInformesPoints();
-  }, [enabled, google, map, pid, tramoReloadKey, loadInformesPoints]);
-
+  /* =========================
+     Detalle informe
+     ========================= */
   const loadDetalleInforme = useCallback(
     async (idInforme) => {
       if (!idInforme) return;
@@ -2452,16 +2058,23 @@ export default function ModuloInformes({
     setChartsOpen(true);
   };
 
-  const plantillasOptions = useMemo(() => filtroData.plantillas || [], [filtroData]);
+  // ✅ combos filtros (derivados del meta cache)
+  const plantillasOptions = useMemo(
+    () => filtroData.plantillas || [],
+    [filtroData]
+  );
 
   const informesOptions = useMemo(() => {
     let arr = filtroData.informes || [];
     const selPlant =
       filtroPlantillaId === "all" ? null : Number(filtroPlantillaId) || null;
     if (selPlant) arr = arr.filter((x) => Number(x.plantillaId) === selPlant);
-    return arr.slice().sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
+    return arr
+      .slice()
+      .sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
   }, [filtroData, filtroPlantillaId]);
 
+  // ✅ cuando abrís el panel, precarga meta + preguntas
   useEffect(() => {
     if (!enabled) return;
     if (!panelOpen) return;
@@ -2509,12 +2122,6 @@ export default function ModuloInformes({
               </div>
               <div style={{ fontSize: 12, opacity: 0.75 }}>
                 Proyecto #{pid}
-                {tramoFilter?.enabled && getActiveTramoKeyFromFilter(tramoFilter) ? (
-                  <>
-                    {" · "}
-                    <b>{tramoFilter?.activeTramoLabel || `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}</b>
-                  </>
-                ) : null}
               </div>
             </div>
 
@@ -2593,15 +2200,15 @@ export default function ModuloInformes({
                     setBusqResults([]);
                     setBusqError(null);
                     setBusqPreguntaId("all");
+                    setTramoFilterLabel("all");
+                    setTramoFilterKey(null);
+                    informeTramoKeyRef.current = new Map();
                     setMenuOpen(false);
                     autoFitEnabledRef.current = false;
-                    (markersRef.current || []).forEach((mk) =>
-                      setMarkerMap(mk, enabled ? map : null)
-                    );
                   }}
                   style={menuItemStyle}
                 >
-                  🧹 Limpiar búsqueda
+                  🧹 Limpiar filtros
                 </button>
 
                 <button
@@ -2636,7 +2243,10 @@ export default function ModuloInformes({
               <button
                 type="button"
                 onClick={() => {
-                  const b = computeBoundsFromPoints(google, lastFeaturesRef.current);
+                  const b = computeBoundsFromPoints(
+                    google,
+                    lastFeaturesRef.current
+                  );
                   if (b) map.fitBounds(b);
                   autoFitEnabledRef.current = false;
                 }}
@@ -2656,24 +2266,7 @@ export default function ModuloInformes({
               ) : null}
             </div>
 
-            {tramoFilter?.enabled && getActiveTramoKeyFromFilter(tramoFilter) ? (
-              <div
-                style={{
-                  marginBottom: 10,
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  border: "1px solid #dbeafe",
-                  background: "#eff6ff",
-                  color: "#1e3a8a",
-                  fontSize: 12,
-                  fontWeight: 800,
-                }}
-              >
-                Filtro por tramo activo:{" "}
-                {tramoFilter?.activeTramoLabel || `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}
-              </div>
-            ) : null}
-
+            {/* ✅ FILTRO POR PLANTILLA / INFORME */}
             <div style={{ marginBottom: 10 }}>
               <button
                 type="button"
@@ -2701,7 +2294,13 @@ export default function ModuloInformes({
                     background: "#fff",
                   }}
                 >
-                  <Form.Label style={{ fontSize: 12, fontWeight: 900, marginBottom: 4 }}>
+                  <Form.Label
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 900,
+                      marginBottom: 4,
+                    }}
+                  >
                     Plantilla (color por plantilla)
                   </Form.Label>
 
@@ -2723,7 +2322,13 @@ export default function ModuloInformes({
                     ))}
                   </Form.Select>
 
-                  <Form.Label style={{ fontSize: 12, fontWeight: 900, marginBottom: 4 }}>
+                  <Form.Label
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 900,
+                      marginBottom: 4,
+                    }}
+                  >
                     Informe
                   </Form.Label>
 
@@ -2778,10 +2383,22 @@ export default function ModuloInformes({
 
                   {plantillasOptions.length ? (
                     <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>
+                      <div
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 900,
+                          marginBottom: 6,
+                        }}
+                      >
                         Leyenda
                       </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 6,
+                        }}
+                      >
                         {plantillasOptions.slice(0, 10).map((p) => (
                           <span
                             key={p.id}
@@ -2825,8 +2442,15 @@ export default function ModuloInformes({
                           </span>
                         ) : null}
                       </div>
-                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>
-                        *Si un punto trae color de <b>Semáforo</b>, ese color tiene prioridad.
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#6b7280",
+                          marginTop: 6,
+                        }}
+                      >
+                        *Si un punto trae color de <b>Semáforo</b>, ese color
+                        tiene prioridad.
                       </div>
                     </div>
                   ) : (
@@ -2840,6 +2464,85 @@ export default function ModuloInformes({
 
             {listOpen ? (
               <>
+                {/* ✅ FILTRO POR TRAMO */}
+                <div style={{ marginBottom: 10 }}>
+                  <div className="d-flex align-items-center justify-content-between mb-2">
+                    <div style={{ fontSize: 12, fontWeight: 900 }}>Tramo</div>
+                    {tramoLoading ? (
+                      <span style={{ fontSize: 12, color: "#6b7280" }}>
+                        <Spinner size="sm" className="me-2" />
+                        Filtrando…
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="d-flex gap-2">
+                    <Form.Control
+                      size="sm"
+                      placeholder='Ej: "Tramo 10" o "10.1"'
+                      value={
+                        tramoFilterLabel === "all"
+                          ? ""
+                          : String(tramoFilterLabel || "")
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setTramoFilterLabel(v);
+                        setTramoFilterKey(tramoKeyFromLabel(v));
+                        autoFitEnabledRef.current = false;
+                      }}
+                      style={{ borderRadius: 10 }}
+                    />
+
+                    <Button
+                      size="sm"
+                      variant="dark"
+                      onClick={async () => {
+                        autoFitEnabledRef.current = false;
+                        await aplicarFiltroPorTramo(tramoFilterLabel);
+                      }}
+                      style={{ borderRadius: 10, fontWeight: 900, minWidth: 96 }}
+                      disabled={tramoLoading || busqLoading}
+                      title='Busca por la pregunta "Tramo/Tramos" y filtra puntos'
+                    >
+                      Aplicar
+                    </Button>
+
+                    <Button
+                      size="sm"
+                      variant="outline-secondary"
+                      onClick={() => {
+                        setTramoFilterLabel("all");
+                        setTramoFilterKey(null);
+                        informeTramoKeyRef.current = new Map();
+                        autoFitEnabledRef.current = false;
+
+                        // opcional: limpiar búsqueda
+                        setBusqQ("");
+                        setBusqResults([]);
+                        setBusqError(null);
+                        setBusqPreguntaId("all");
+                      }}
+                      style={{ borderRadius: 10, fontWeight: 900 }}
+                      title="Quitar filtro tramo"
+                    >
+                      Reset
+                    </Button>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#6b7280",
+                      marginTop: 6,
+                    }}
+                  >
+                    Usa la pregunta <b>Tramo/Tramos</b>. Acepta <b>10</b>,{" "}
+                    <b>10.1</b> o <b>10,1</b>.
+                  </div>
+                </div>
+
+                {/* ✅ BUSCAR RESPUESTAS (inline) */}
                 <div className="d-flex align-items-center justify-content-between mb-2">
                   <div style={{ fontSize: 12, fontWeight: 900 }}>Buscar</div>
                   <Form.Check
@@ -2896,21 +2599,17 @@ export default function ModuloInformes({
                     const v = e.target.value;
                     setBusqQ(v);
                     setBusqError(null);
-
-                    if (!String(v || "").trim()) {
-                      setBusqResults([]);
-                      (markersRef.current || []).forEach((mk) =>
-                        setMarkerMap(mk, enabled ? map : null)
-                      );
-                    }
-
+                    if (!String(v || "").trim()) setBusqResults([]);
                     autoFitEnabledRef.current = false;
                   }}
                   style={{ borderRadius: 10, marginBottom: 10 }}
                 />
 
                 {busqError ? (
-                  <div className="alert alert-danger" style={{ padding: 10, marginBottom: 10 }}>
+                  <div
+                    className="alert alert-danger"
+                    style={{ padding: 10, marginBottom: 10 }}
+                  >
                     {busqError}
                   </div>
                 ) : null}
@@ -2939,7 +2638,12 @@ export default function ModuloInformes({
                           key={`${r.id_informe}-${r.id_pregunta}-${idx}`}
                           type="button"
                           onClick={() => {
-                            focusSearchResult(r);
+                            if (r.lat != null && r.lng != null) {
+                              map.panTo({ lat: r.lat, lng: r.lng });
+                              map.setZoom(Math.max(map.getZoom() || 7, 16));
+                            }
+                            openPointPanel(r.props);
+                            autoFitEnabledRef.current = false;
                           }}
                           style={{
                             width: "100%",
@@ -2949,9 +2653,19 @@ export default function ModuloInformes({
                             background: "transparent",
                             borderBottom: "1px solid #eef2f7",
                           }}
-                          title={r.lat != null ? "Ir al punto" : "El informe no tiene coordenadas"}
+                          title={
+                            r.lat != null
+                              ? "Ir al punto"
+                              : "El informe no tiene coordenadas"
+                          }
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 10,
+                            }}
+                          >
                             <div
                               style={{
                                 fontWeight: 900,
@@ -3073,6 +2787,7 @@ export default function ModuloInformes({
         </div>
       ) : null}
 
+      {/* Panel derecho */}
       {rightOpen ? (
         <div
           style={{
@@ -3155,9 +2870,7 @@ export default function ModuloInformes({
 
           <div style={{ padding: 12, fontSize: 14 }}>
             {!selectedPoint ? (
-              <div style={{ color: "#6b7280" }}>
-                Seleccioná un punto en el mapa.
-              </div>
+              <div style={{ color: "#6b7280" }}>Seleccioná un punto en el mapa.</div>
             ) : (
               <>
                 <div>
@@ -3194,6 +2907,7 @@ export default function ModuloInformes({
                   >
                     📊 Gráficos
                   </Button>
+
                   <Button
                     size="sm"
                     variant="warning"
@@ -3263,6 +2977,7 @@ export default function ModuloInformes({
         </div>
       ) : null}
 
+      {/* Modal fotos */}
       <Modal
         show={fotosModalOpen}
         onHide={() => {
@@ -3362,6 +3077,7 @@ export default function ModuloInformes({
         </Modal.Footer>
       </Modal>
 
+      {/* Fallback modal charts */}
       <Modal
         show={chartsOpen}
         onHide={() => {
@@ -3374,7 +3090,9 @@ export default function ModuloInformes({
           <Modal.Title>Gráficos del informe</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          {chartsError ? <div className="alert alert-danger mb-2">{chartsError}</div> : null}
+          {chartsError ? (
+            <div className="alert alert-danger mb-2">{chartsError}</div>
+          ) : null}
 
           {!chartsStats ? (
             <div className="text-muted">No hay datos para graficar.</div>
@@ -3419,6 +3137,7 @@ export default function ModuloInformes({
         </Modal.Footer>
       </Modal>
 
+      {/* ✅ Gestor de notificaciones del proyecto */}
       <GestorNotificacionesProyecto
         proyectoId={pid}
         proyectoNombre={`Proyecto #${pid}`}
@@ -3426,6 +3145,7 @@ export default function ModuloInformes({
         onHide={() => setGestorNotificacionesOpen(false)}
       />
 
+      {/* ✅ MODAL VER INFORME */}
       <InformeModal
         show={showViewInformeModal}
         onHide={() => setShowViewInformeModal(false)}
@@ -3433,14 +3153,14 @@ export default function ModuloInformes({
         mode="view"
       />
 
+      {/* ✅ MODAL EDITAR INFORME */}
       <InformeModal
         show={showEditInformeModal}
         onHide={() => setShowEditInformeModal(false)}
         idInforme={idInformeSelModal}
         mode="edit"
         onSaved={() => {
-          didLoadRef.current = false;
-          loadInformesPoints();
+          // opcional: si querés refrescar después de guardar
         }}
       />
     </>
