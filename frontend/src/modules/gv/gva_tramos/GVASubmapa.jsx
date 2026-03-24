@@ -538,12 +538,12 @@ export default function GVASubmapa({
     : !hasAnyGeometry
     ? {
         tone: "#6b7280",
-        text: "No hay geometria utilizable para renderizar en esta vista.",
+        text: "No hay elementos georreferenciados disponibles para esta vista.",
       }
     : !hasVisibleGeometry
     ? {
         tone: "#6b7280",
-        text: "Las capas visibles no tienen elementos para mostrar.",
+        text: "Las capas activas no tienen elementos para mostrar.",
       }
     : null;
 
@@ -665,6 +665,14 @@ export default function GVASubmapa({
         boxShadow: "0 10px 24px rgba(15, 23, 42, 0.08)",
       }}
     >
+      <span style={chipStyle}>
+        Disponibles: {availableInformesCount} informes / {availableTramosCount} tramos /{" "}
+        {availableProgresivasCount} progresivas
+      </span>
+      <span style={chipStyle}>
+        Visibles: {renderedInformesCount} informes / {renderedTramosCount} tramos /{" "}
+        {renderedProgresivasCount} progresivas
+      </span>
       {hasLinkedLayers ? (
         <span style={chipStyle}>
           Linkage: {selectionSummary.tramo_ids.length} tramos /{" "}

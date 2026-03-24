@@ -219,6 +219,7 @@ export default function Mantenimiento() {
   const fileInputRef = useRef(null);
 
   const [archivos, setArchivos] = useState([]);
+  const [uploadNotice, setUploadNotice] = useState(null);
   const [statusCapas, setStatusCapas] = useState({});
   const [exportando, setExportando] = useState(false);
 
@@ -259,6 +260,7 @@ export default function Mantenimiento() {
       /\.(shp|dbf|shx|zip|kml|kmz|rar|geojson|json|gpkg|gpx|gml|dxf)$/i.test(f.name)
     );
     setArchivos(valids);
+    setUploadNotice(null);
   }
 
   const sets = useMemo(() => {
@@ -381,12 +383,20 @@ export default function Mantenimiento() {
   }
 
   async function handleUpload() {
-    if (!hasAnyFile) return alerts.toast.warn("No seleccionaste archivos.");
+    if (!hasAnyFile) {
+      setUploadNotice({
+        tone: "warning",
+        message: "No seleccionaste archivos.",
+      });
+      return;
+    }
 
     if (invalidTriads) {
-      return alerts.toast.warn(
-        "Hay sets incompletos (.shp/.dbf/.shx). Completá o subí un ZIP/KMZ."
-      );
+      setUploadNotice({
+        tone: "warning",
+        message: "Hay sets incompletos (.shp/.dbf/.shx). Completá o subí un ZIP/KMZ.",
+      });
+      return;
     }
 
     const fd = new FormData();
@@ -421,6 +431,7 @@ export default function Mantenimiento() {
     }
 
     try {
+      setUploadNotice(null);
       alerts.loading("Subiendo archivos...");
       const res = await fetch(`${API_URL}/mantenimiento/upload/${id}`, {
         method: "POST",
@@ -438,28 +449,36 @@ export default function Mantenimiento() {
 
       alerts.close();
       if (!res.ok) {
-        let extra = "";
-        if (json?.debug && Array.isArray(json.debug)) {
-          const lista = json.debug
-            .map(
-              (s) =>
-                `${s.base} [shp:${s.partes?.shp ? "✓" : "-"} dbf:${
-                  s.partes?.dbf ? "✓" : "-"
-                } shx:${s.partes?.shx ? "✓" : "-"}]`
-            )
-            .join(" | ");
-          extra = ` Detalle: ${lista}`;
-        }
-        throw new Error((json.message || json.error || "Error al subir.") + extra);
+        const err = new Error(json.message || json.error || "Error al subir.");
+        err.payload = json;
+        throw err;
       }
 
-      alerts.toast.success(json.message || "Subido correctamente.");
+      setUploadNotice({
+        tone: "success",
+        message: json.message || "Subido correctamente.",
+        ok: Boolean(json.ok ?? json.success ?? true),
+        inserted: Number(json.inserted || json.total_inserted || json.count || 0) || 0,
+        byTable: json.byTable || {},
+        details: Array.isArray(json.tablesTouched) ? json.tablesTouched : [],
+      });
       setArchivos([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       await fetchStatusCapas();
     } catch (err) {
       alerts.close();
-      alerts.toast.error(err.message || "Error inesperado al subir archivos");
+      setUploadNotice({
+        tone: "warning",
+        ok: Boolean(err?.payload?.ok ?? err?.payload?.success ?? false),
+        message: err.message || "Error inesperado al subir archivos",
+        inserted: Number(err?.payload?.inserted || err?.payload?.total_inserted || err?.payload?.count || 0) || 0,
+        byTable: err?.payload?.byTable || {},
+        details: Array.isArray(err?.payload?.debug)
+          ? err.payload.debug
+              .map((item) => item?.baseUnique || item?.base || item?.logicalBase || "")
+              .filter(Boolean)
+          : [],
+      });
     }
   }
 
@@ -620,6 +639,71 @@ export default function Mantenimiento() {
           Capas a incluir… {selectedCount > 0 ? `(${selectedCount} seleccionadas)` : "(todas)"}
         </button>
       </div>
+
+      {uploadNotice && (
+        <div
+          className="mb-3"
+          style={{
+            background: uploadNotice.tone === "success" ? "#eef8e8" : "#fff8db",
+            border: `1px solid ${uploadNotice.tone === "success" ? "#b7d7a8" : "#f3d36a"}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+          }}
+        >
+          <div className="d-flex align-items-start justify-content-between gap-2 flex-wrap">
+            <div className="d-flex align-items-center gap-2">
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: "50%",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: uploadNotice.tone === "success" ? "#d9ead3" : "#fce5a3",
+                  color: "#6b5200",
+                  fontWeight: 700,
+                  fontSize: 12,
+                }}
+              >
+                !
+              </span>
+              <div className="fw-semibold" style={{ color: "#6b5200" }}>
+                {uploadNotice.tone === "success" ? "Carga procesada" : "Atención de carga"}
+              </div>
+            </div>
+            <div className="d-flex gap-2 flex-wrap">
+              <span className={`badge ${uploadNotice.ok ? "bg-success" : "bg-warning text-dark"}`}>
+                {uploadNotice.ok ? "OK" : "Aviso"}
+              </span>
+              {Number.isFinite(Number(uploadNotice.inserted)) && Number(uploadNotice.inserted) > 0 && (
+                <span className="badge bg-warning text-dark">Insertadas: {Number(uploadNotice.inserted)}</span>
+              )}
+              {Object.keys(uploadNotice.byTable || {}).map((table) => (
+                <span key={table} className="badge rounded-pill bg-light text-dark">
+                  {table.split(".").pop()}: {uploadNotice.byTable[table]}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="mt-1" style={{ color: "#5c4a00" }}>
+            {uploadNotice.message}
+          </div>
+          {Array.isArray(uploadNotice.details) && uploadNotice.details.length > 0 && (
+            <details className="mt-2">
+              <summary style={{ cursor: "pointer", color: "#6b5200" }}>Ver detalle técnico</summary>
+              <div className="d-flex gap-2 flex-wrap mt-2">
+                {uploadNotice.details.slice(0, 8).map((detail) => (
+                  <span key={detail} className="badge rounded-pill bg-warning text-dark">
+                    {detail}
+                  </span>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
 
       {archivos.length > 0 && (
         <div className="mb-3">

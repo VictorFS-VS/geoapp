@@ -1,5 +1,11 @@
 // gv/gv_controller.js
 const pool = require("../db");
+const {
+    resolveProyectoToVialOverlayScope,
+    fetchOverlayTramosByResolution,
+    fetchOverlayProgresivasByResolution,
+    finalizeResolutionCoverage,
+} = require("./gv_vial_overlay_resolver");
 
 /**
  * Helpers para filtros por querystring
@@ -587,4 +593,212 @@ function ping(req, res) {
     });
 }
 
-module.exports = { ping, catastroDashboard, catastroMap };
+async function catastroVialOverlay(req, res) {
+    const proyectoId = parseInt(req.query.proyectoId || req.query.idProyecto, 10);
+    const tramoId = parseIntOrUndef(req.query.tramoId);
+    const subtramoId = parseIntOrUndef(req.query.subtramoId);
+
+    if (!Number.isFinite(proyectoId) || proyectoId <= 0) {
+        return res.status(400).json({ ok: false, error: "INVALID_PROYECTO_ID" });
+    }
+
+    try {
+        const initialResolution = await resolveProyectoToVialOverlayScope({
+            idProyecto: proyectoId,
+            idProyectoTramo: tramoId,
+            idProyectoSubtramo: subtramoId,
+            db: pool,
+        });
+
+        let [tramosResult, progresivasResult] = await Promise.all([
+            fetchOverlayTramosByResolution({ idProyecto: proyectoId, resolution: initialResolution, db: pool }),
+            fetchOverlayProgresivasByResolution({ idProyecto: proyectoId, resolution: initialResolution, db: pool }),
+        ]);
+        const initialTramosFeatureCount = Array.isArray(tramosResult?.feature_collection?.features)
+            ? tramosResult.feature_collection.features.length
+            : 0;
+        let resolution = finalizeResolutionCoverage({
+            resolution: initialResolution,
+            overlayFeatureCount: initialTramosFeatureCount,
+        });
+        let currentTramosFeatureCount = initialTramosFeatureCount;
+
+        const hasDirectVialTramo =
+            Array.isArray(initialResolution?.resolved_vial_tramo_ids) &&
+            initialResolution.resolved_vial_tramo_ids.length > 0;
+        const detectedSubtramoVialIds = Array.isArray(initialResolution?.resolved_vial_subtramo_ids)
+            ? initialResolution.resolved_vial_subtramo_ids
+            : [];
+
+        if (!hasDirectVialTramo && currentTramosFeatureCount === 0 && detectedSubtramoVialIds.length > 0) {
+            const proxyResult = await fetchOverlayTramosByResolution({
+                idProyecto: proyectoId,
+                resolution: {
+                    resolution_mode: "proxy_subtramos",
+                    resolved_vial_tramo_ids: detectedSubtramoVialIds,
+                },
+                db: pool,
+            });
+            const proxyFeatureCount = Array.isArray(proxyResult?.feature_collection?.features)
+                ? proxyResult.feature_collection.features.length
+                : 0;
+            if (proxyFeatureCount > 0) {
+                tramosResult = proxyResult;
+                currentTramosFeatureCount = proxyFeatureCount;
+                const matchedProxyIds = Array.from(
+                    new Set(
+                        (proxyResult?.feature_collection?.features || [])
+                            .map((f) => Number(f?.properties?.id_tramo))
+                            .filter((n) => Number.isFinite(n))
+                    )
+                ).sort((a, b) => a - b);
+                resolution = {
+                    ...resolution,
+                    resolution_source: "subtramos_proxy_a_tramo",
+                    coverage_status: "ok",
+                    coverage_reason: "subtramo_ids_used_as_tramo_ids",
+                    resolved_proxy_tramo_ids_from_subtramos: matchedProxyIds,
+                    overlay_feature_count: proxyFeatureCount,
+                    is_project_scope_fallback: false,
+                };
+            } else {
+                resolution = {
+                    ...resolution,
+                    resolved_proxy_tramo_ids_from_subtramos: [],
+                };
+            }
+        }
+
+        const globalCandidateTramoIds = Array.isArray(resolution?.resolved_proxy_tramo_ids_from_subtramos) &&
+            resolution.resolved_proxy_tramo_ids_from_subtramos.length > 0
+            ? resolution.resolved_proxy_tramo_ids_from_subtramos
+            : hasDirectVialTramo
+                ? (initialResolution?.resolved_vial_tramo_ids || [])
+                : detectedSubtramoVialIds;
+        let globalTramosFeatureCount = 0;
+
+        if (initialResolution?.resolution_mode !== "project" && currentTramosFeatureCount === 0 && globalCandidateTramoIds.length > 0) {
+            const globalFallbackResult = await fetchOverlayTramosByResolution({
+                idProyecto: proyectoId,
+                resolution: {
+                    resolution_mode: "global_tramo_fallback",
+                    resolved_vial_tramo_ids: globalCandidateTramoIds,
+                    skip_project_filter: true,
+                },
+                db: pool,
+            });
+            globalTramosFeatureCount = Array.isArray(globalFallbackResult?.feature_collection?.features)
+                ? globalFallbackResult.feature_collection.features.length
+                : 0;
+            if (globalTramosFeatureCount > 0) {
+                tramosResult = globalFallbackResult;
+                currentTramosFeatureCount = globalTramosFeatureCount;
+                const matchedGlobalProjectIds = Array.from(
+                    new Set(
+                        (globalFallbackResult?.feature_collection?.features || [])
+                            .map((f) => Number(f?.properties?.id_proyecto))
+                            .filter((n) => Number.isFinite(n))
+                    )
+                ).sort((a, b) => a - b);
+                resolution = {
+                    ...resolution,
+                    resolution_source: "global_tramo_fallback",
+                    coverage_status: "ok",
+                    coverage_reason: "global_match_without_project_filter",
+                    is_global_tramo_fallback: true,
+                    is_project_scope_fallback: false,
+                    overlay_feature_count: globalTramosFeatureCount,
+                    matched_project_ids: matchedGlobalProjectIds,
+                };
+            }
+        }
+
+        if (initialResolution?.resolution_mode !== "project" && currentTramosFeatureCount === 0) {
+            const projectFallbackResult = await fetchOverlayTramosByResolution({
+                idProyecto: proyectoId,
+                resolution: { resolution_mode: "project" },
+                db: pool,
+            });
+            const projectFeatureCount = Array.isArray(projectFallbackResult?.feature_collection?.features)
+                ? projectFallbackResult.feature_collection.features.length
+                : 0;
+            if (projectFeatureCount > 0) {
+                tramosResult = projectFallbackResult;
+                currentTramosFeatureCount = projectFeatureCount;
+                resolution = {
+                    ...resolution,
+                    resolution_source: "project_scope_fallback",
+                    coverage_status: "partial",
+                    is_project_scope_fallback: true,
+                    is_global_tramo_fallback: false,
+                    overlay_feature_count: projectFeatureCount,
+                    coverage_reason: resolution?.coverage_reason || "project_scope_fallback",
+                };
+            }
+        }
+
+        const responseWarnings = [
+            ...(Array.isArray(resolution?.warnings) ? resolution.warnings : []),
+        ];
+        if (progresivasResult?.warning) {
+            responseWarnings.push(progresivasResult.warning);
+        }
+
+      
+
+        return res.status(200).json({
+            ok: true,
+            proyectoId,
+            filters: {
+                tramoId: tramoId || null,
+                subtramoId: subtramoId || null,
+            },
+            resolution,
+            tramos: tramosResult?.feature_collection || { type: "FeatureCollection", features: [] },
+            progresivas:
+                progresivasResult?.feature_collection || { type: "FeatureCollection", features: [] },
+            metadata: {
+                tramos_scope_mode: tramosResult?.scope_mode || "unknown",
+                progresivas_scope_mode: progresivasResult?.scope_mode || "unknown",
+                progresivas_structural_filter_supported:
+                    !!progresivasResult?.structural_filter_supported,
+                overlay_feature_count: resolution?.overlay_feature_count || 0,
+                resolution_source: resolution?.resolution_source || null,
+                coverage_status: resolution?.coverage_status || null,
+                coverage_reason: resolution?.coverage_reason || null,
+                is_project_scope_fallback: !!resolution?.is_project_scope_fallback,
+                is_global_tramo_fallback: !!resolution?.is_global_tramo_fallback,
+                matched_project_ids: resolution?.matched_project_ids || [],
+                project_specific_feature_count: initialTramosFeatureCount,
+                global_feature_count: globalTramosFeatureCount,
+            },
+            warnings: responseWarnings,
+        });
+    } catch (error) {
+        const status = Number.isFinite(Number(error?.statusCode)) ? Number(error.statusCode) : 500;
+        const traceId = `gv-vial-overlay-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        try {
+            console.error(`[GV][catastroVialOverlay][${traceId}]`, {
+                proyectoId: req.query.proyectoId || req.query.idProyecto,
+                query: req.query,
+                message: error?.message,
+                code: error?.code,
+                stack: error?.stack,
+            });
+        } catch (_) {
+            // nada
+        }
+
+        const payload = {
+            ok: false,
+            error: status === 500 ? "INTERNAL_SERVER_ERROR" : (error?.message || "BAD_REQUEST"),
+            traceId,
+        };
+        if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === undefined) {
+            payload.details = { message: String(error?.message || ""), code: error?.code || null };
+        }
+        return res.status(status).json(payload);
+    }
+}
+
+module.exports = { ping, catastroDashboard, catastroMap, catastroVialOverlay };

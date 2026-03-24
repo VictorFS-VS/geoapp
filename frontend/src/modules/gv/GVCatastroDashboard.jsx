@@ -1,14 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { gvGetDashboard, gvGetExpedienteDocs, gvGetExpedienteEtapas, gvGetExpediente, gvGetTramosCensales, gvGetSubtramosCensales, gvGetAvanceTemporal, gvGetDetalleTemporal, gvGetEconomico } from "./gv_service";
+import { gvGetDashboard, gvGetTramosCensales, gvGetSubtramosCensales, gvGetAvanceTemporal, gvGetDetalleTemporal, gvGetEconomico } from "./gv_service";
 import GVCharts from "./GVCharts";
 import GVMapaCatastroGoogle from "./GVMapaCatastroGoogle";
 import GVTemporalCharts from "./GVTemporalCharts";
 import GVEconomicPanel from "./GVEconomicPanel";
-import GvPhaseChip from "./GvPhaseChip";
-import { Link } from "react-router-dom";
 import GvExpedienteModal from "./GvExpedienteModal";
-import { resolveStageOrder, computePhaseMeta, isOk } from "./gv_phase";
+import GvPhaseChip from "./GvPhaseChip";
 import "./gv.css";
 
 function normalizePhaseCounts(dashboard, tipo, maxFases = 7) {
@@ -107,14 +105,6 @@ export default function GVCatastroDashboard() {
   const [selectedHierarchyLevel, setSelectedHierarchyLevel] = useState("proyecto");
   const [selectedTramo, setSelectedTramo] = useState("");
   const [selectedSubtramo, setSelectedSubtramo] = useState("");
-
-  // States para Preview Panel
-  const [selectedExpId, setSelectedExpId] = useState(null);
-  const [selectedExp, setSelectedExp] = useState(null); // Objeto completo del expediente
-  const [selectedProps, setSelectedProps] = useState(null);
-  const [previewExtra, setPreviewExtra] = useState(null); // { etapas: {}, docs: [] }
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState(null);
 
   // States para el nuevo Modal Aislado
   const [modalShow, setModalShow] = useState(false);
@@ -467,60 +457,7 @@ export default function GVCatastroDashboard() {
       }
     };
   }, [qInput]);
-
-  // Lógica de fetch para el Preview Panel
-  useEffect(() => {
-    if (!selectedExpId) {
-      setSelectedExp(null);
-      setPreviewExtra(null);
-      setPreviewError(null);
-      return;
-    }
-
-    let isSubscribed = true;
-
-    async function fetchPreviewDetails() {
-      try {
-        setPreviewLoading(true);
-        setPreviewError(null);
-
-        // Fetch inicial del expediente para tener el tipoBase
-        const expFull = await gvGetExpediente(selectedExpId);
-        if (!isSubscribed) return;
-        setSelectedExp(expFull);
-
-        // Determinar tipo (mejora/terreno)
-        const tipoBase = String(expFull.tipo_proyecto || "").toLowerCase().includes("terreno") ? "terreno" : "mejora";
-
-        const promises = [
-          gvGetExpedienteEtapas(selectedExpId, tipoBase).catch(() => ({})),
-          gvGetExpedienteDocs(selectedExpId).catch(() => [])
-        ];
-
-        const [etapas, docs] = await Promise.all(promises);
-
-        if (isSubscribed) {
-          setPreviewExtra({ etapas, docs });
-        }
-      } catch (err) {
-        if (isSubscribed) {
-          setPreviewError(err.message || "No se pudo cargar el detalle completo.");
-        }
-      } finally {
-        if (isSubscribed) setPreviewLoading(false);
-      }
-    }
-
-    fetchPreviewDetails();
-
-    return () => { isSubscribed = false; };
-  }, [selectedExpId]);
-
   const handleSelectExpediente = (expId, props) => {
-    setSelectedExpId(expId);
-    setSelectedProps(props);
-
-    // Auto-abrir modal al seleccionar feature (opcional según requerimiento)
     setModalExpId(expId);
     setModalSeedProps(props);
     setModalShow(true);
@@ -1134,7 +1071,7 @@ export default function GVCatastroDashboard() {
 
       <div className="row mt-4">
         {/* Mapa (7 u 8 columnas según si hay selección) */}
-        <div className={selectedExpId ? "col-lg-8" : "col-12"}>
+        <div className="col-12">
           {(mapFilters.tipo === "mejora" || mapFilters.tipo === "terreno") && (() => {
             const isPhaseStrict = mapFilters.faseMin !== "" && mapFilters.faseMin === mapFilters.faseMax;
             const labelTipo = mapFilters.tipo === "mejora" ? "Mejora" : "Terreno";
@@ -1156,157 +1093,13 @@ export default function GVCatastroDashboard() {
           <GVMapaCatastroGoogle
             proyectoId={id}
             filters={mapFilters}
+            tramoId={selectedTramoId}
+            subtramoId={selectedSubtramoId}
             onStatsChange={setMapStats}
             onSelectExpediente={handleSelectExpediente}
           />
         </div>
 
-        {/* Panel de Previsualización (4 columnas) */}
-        {selectedExpId && (
-          <div className="col-lg-4">
-            <div className="card shadow-sm gv-preview-card mt-4">
-              <div className="card-body p-3">
-                <div className="d-flex justify-content-between align-items-start gv-preview-header">
-                  <div>
-                    <h5 className="mb-0">Expediente #{selectedExpId}</h5>
-                    <div className="text-primary fw-bold small">{selectedProps?.codigo_exp || "Sin código"}</div>
-                  </div>
-                  <button className="btn-close btn-sm" onClick={() => setSelectedExpId(null)}></button>
-                </div>
-
-                {previewLoading ? (
-                  <div className="py-5 text-center">
-                    <div className="spinner-border spinner-border-sm text-primary" role="status"></div>
-                    <div className="small text-muted mt-2">Cargando detalles...</div>
-                  </div>
-                ) : (
-                  <div className="gv-preview-body">
-                    {previewError && <div className="alert alert-warning py-1 small">{previewError}</div>}
-
-                    {(() => {
-                      const tipoRaw = selectedProps?.tipo || (selectedExp ? (String(selectedExp.tipo_proyecto || "").toLowerCase().includes("terreno") ? "terreno" : "mejora") : "mejora");
-                      const stages = resolveStageOrder(tipoRaw);
-                      const phaseMeta = computePhaseMeta(previewExtra?.etapas || {}, stages);
-
-                      return (
-                        <>
-                          <div className="mb-3">
-                            <div className="gv-muted fw-bold">PROPIETARIO</div>
-                            <div>{selectedExp?.propietario_nombre || selectedProps?.propietario_nombre || "—"}</div>
-                            {selectedExp?.propietario_ci && (
-                              <div className="small text-muted">CI: {selectedExp.propietario_ci}</div>
-                            )}
-                          </div>
-
-                          <div className="row g-2 mb-3">
-                            <div className="col-6">
-                              <div className="gv-muted fw-bold">TRAMO</div>
-                              <div className="small">{selectedExp?.tramo || selectedProps?.tramo || "—"}</div>
-                            </div>
-                            <div className="col-6">
-                              <div className="gv-muted fw-bold">SUBTRAMO</div>
-                              <div className="small">{selectedExp?.subtramo || selectedProps?.subtramo || "—"}</div>
-                            </div>
-                          </div>
-
-                          <div className="row g-2 mb-3">
-                            <div className="col-6">
-                              <div className="gv-muted fw-bold">TÉCNICO</div>
-                              <div className="small">{selectedExp?.tecnico || "—"}</div>
-                            </div>
-                            <div className="col-6">
-                              <div className="gv-muted fw-bold">FECHA RELEV.</div>
-                              <div className="small">
-                                {selectedExp?.fecha_relevamiento
-                                  ? String(selectedExp.fecha_relevamiento).slice(0, 10)
-                                  : "—"}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mb-3">
-                            <div className="gv-muted fw-bold mb-1">FASE ACTUAL</div>
-                            <div className="d-flex align-items-center gap-2">
-                              <GvPhaseChip
-                                phaseIndex={phaseMeta.faseIndex}
-                                phaseTotal={phaseMeta.totalCount}
-                                label={phaseMeta.faseLabel}
-                              />
-                              {phaseMeta.nextLabel && (
-                                <span className="small text-muted">
-                                  Siguiente: {phaseMeta.nextLabel}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="mb-3">
-                            <div className="gv-muted fw-bold mb-2">ETAPAS</div>
-                            <div className="table-responsive border rounded bg-white">
-                              <table className="table table-sm table-borderless mb-0 align-middle small">
-                                <tbody>
-                                  {stages.map(key => {
-                                    const st = previewExtra?.etapas?.[key] || { ok: false };
-                                    const ok = isOk(st.ok);
-                                    return (
-                                      <tr key={key} className="border-bottom-0">
-                                        <td style={{ width: 30 }} className="text-center">
-                                          {ok ? <span className="text-success">✓</span> : <span className="text-muted opacity-50">○</span>}
-                                        </td>
-                                        <td className={ok ? "text-dark" : "text-muted"}>
-                                          {key.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-
-                          <div className="mb-4">
-                            <div className="gv-muted fw-bold mb-2">DOCUMENTACIÓN</div>
-                            <div className="d-flex flex-wrap gap-2">
-                              <span className={`badge ${selectedProps?.has_docs ? "bg-success" : "bg-light text-dark border"}`}>
-                                Docs: {previewExtra?.docs?.length || (selectedProps?.has_docs ? "✓" : "0")}
-                              </span>
-                              <span className={`badge ${selectedProps?.has_ci ? "bg-success" : "bg-light text-dark border"}`}>
-                                C.I. {selectedProps?.has_ci ? "✓" : "✖"}
-                              </span>
-                              <span className={`badge ${selectedProps?.has_dbi ? "bg-success" : "bg-light text-dark border"}`}>
-                                DBI {selectedProps?.has_dbi ? "✓" : "✖"}
-                              </span>
-                            </div>
-                          </div>
-                        </>
-                      );
-                    })()}
-
-                    {/* Botón de acción principal: abre el modal aislado */}
-                    <div className="d-grid mt-auto gap-2">
-                      <button
-                        className="btn btn-primary btn-sm py-2"
-                        onClick={() => {
-                          setModalExpId(selectedExpId);
-                          setModalSeedProps(selectedProps);
-                          setModalShow(true);
-                        }}
-                      >
-                        Ver detalles completos
-                      </button>
-                      <Link
-                        to={`/proyectos/${id}/expedientes?expId=${selectedExpId}`}
-                        className="btn btn-outline-primary btn-sm py-2"
-                      >
-                        Ir al módulo de expedientes
-                      </Link>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Modal Aislado */}
@@ -1320,3 +1113,4 @@ export default function GVCatastroDashboard() {
     </div>
   );
 }
+

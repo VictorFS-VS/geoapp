@@ -7,25 +7,10 @@
 // - syncTramosConBloques ahora normaliza correctamente
 // - resuelve id_tramo por nombre coincidente de forma consistente
 
-// ===========================
-// FIX DEFINITIVO GDAL / PROJ
-// ===========================
-const OSGEO_ROOT = "C:\\OSGeo4W";
-const OSGEO_BIN = OSGEO_ROOT + "\\bin";
-const PROJ_DATA = OSGEO_ROOT + "\\share\\proj";
-const GDAL_DATA = OSGEO_ROOT + "\\share\\gdal";
-
-process.env.PROJ_DATA = process.env.PROJ_DATA || PROJ_DATA;
-process.env.PROJ_LIB = process.env.PROJ_LIB || PROJ_DATA; // legacy
-process.env.GDAL_DATA = process.env.GDAL_DATA || GDAL_DATA;
-process.env.PROJ_NETWORK = process.env.PROJ_NETWORK || "OFF";
-process.env.PROJ_DATABASE_PATH = process.env.PROJ_DATABASE_PATH || PROJ_DATA + "\\proj.db";
-
 const path = require("path");
 const fs = require("fs");
 const archiver = require("archiver");
 const AdmZip = require("adm-zip");
-const { spawn } = require("child_process");
 
 let Unrar = null;
 try {
@@ -48,6 +33,21 @@ const tj = require("@tmcw/togeojson");
 const pool = require("../db");
 const { cargarShapefileEnProyecto } = require("../services/mantenimiento.service");
 const { crearNotificacion } = require("./notificaciones.controller");
+const {
+  applyGdalProcessEnv,
+  attachGdalSpawnError,
+  getConfiguredGdalData,
+  getConfiguredProjData,
+  isGdalSpawnError,
+  spawnGdal,
+} = require("../utils/gdal");
+
+// ===========================
+// FIX DEFINITIVO GDAL / PROJ
+// ===========================
+applyGdalProcessEnv(process.env);
+const PROJ_DATA = getConfiguredProjData();
+const GDAL_DATA = getConfiguredGdalData();
 
 /* ===========================
    ✅ CRS: regla del sistema
@@ -79,23 +79,6 @@ function gdalConfigArgs() {
     "PROJ_NETWORK",
     "OFF",
   ];
-}
-
-/* ===========================
-   ✅ Helper: spawn GDAL con env correcto
-   =========================== */
-function spawnGdal(cmd, args) {
-  const env = { ...process.env };
-  const curPath = env.PATH || env.Path || "";
-  if (!curPath.toLowerCase().includes(OSGEO_BIN.toLowerCase())) {
-    env.PATH = `${OSGEO_BIN};${curPath}`;
-  }
-  env.PROJ_DATA = PROJ_DATA;
-  env.PROJ_LIB = PROJ_DATA;
-  env.GDAL_DATA = GDAL_DATA;
-  env.PROJ_NETWORK = "OFF";
-  env.PROJ_DATABASE_PATH = PROJ_DATA + "\\proj.db";
-  return spawn(cmd, args, { windowsHide: true, env });
 }
 
 /* ===========================
@@ -205,9 +188,10 @@ function splitUniqueBase(baseUpper) {
    ✅ Detectar extent con ogrinfo (si no hay PRJ)
    ============================================================ */
 function ogrInfoExtent(shpPath) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const args = [...gdalConfigArgs(), "-so", "-al", shpPath];
     const p = spawnGdal("ogrinfo", args);
+    attachGdalSpawnError(p, reject);
 
     let out = "";
     p.stdout.on("data", (d) => (out += d.toString("utf8")));
@@ -328,6 +312,7 @@ function ogrConvertToShp(inputPath, outDir, outBaseName) {
     ];
 
     const p = spawnGdal("ogr2ogr", args);
+    attachGdalSpawnError(p, reject);
     let err = "";
     p.stderr.on("data", (d) => (err += d.toString("utf8")));
     p.on("close", (code) => {
@@ -374,6 +359,7 @@ function ogrReprojectShpToDbSrid(shpPath, outDir, outBaseName, inputSrid = DEFAU
       if (nlt) args.push("-nlt", "PROMOTE_TO_MULTI", "-nlt", nlt);
 
       const p = spawnGdal("ogr2ogr", args);
+      attachGdalSpawnError(p, reject);
       let err = "";
       p.stderr.on("data", (d) => (err += d.toString("utf8")));
       p.on("close", (code) => {
@@ -529,9 +515,10 @@ function nltForTable(tablaDestino) {
 }
 
 function ogrInfoFeatureCount(shpPath) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const args = [...gdalConfigArgs(), "-ro", "-so", "-al", shpPath];
     const p = spawnGdal("ogrinfo", args);
+    attachGdalSpawnError(p, reject);
     let out = "";
     let err = "";
     p.stdout.on("data", (d) => (out += d.toString("utf8")));
@@ -562,6 +549,7 @@ function runOgr2OgrToStdoutSrid(shpPath, srid) {
     ];
 
     const p = spawnGdal("ogr2ogr", args);
+    attachGdalSpawnError(p, reject);
     let out = "";
     let err = "";
     p.stdout.on("data", (d) => (out += d.toString("utf8")));
@@ -1009,6 +997,7 @@ async function procesarArchivosMantenimiento(req, res) {
         try {
           await ogrConvertToShp(file, shpDir, outBase);
         } catch (e) {
+          if (isGdalSpawnError(e)) throw e;
           console.warn("Error convirtiendo a SHP:", file, e.message);
         }
         continue;
@@ -1043,6 +1032,7 @@ async function procesarArchivosMantenimiento(req, res) {
         try {
           await ogrConvertToShp(file, shpDir, outBase);
         } catch (e) {
+          if (isGdalSpawnError(e)) throw e;
           console.warn("Error convirtiendo a SHP:", file, e.message);
         }
         continue;
@@ -1242,6 +1232,7 @@ async function procesarArchivosMantenimiento(req, res) {
           }
         }
       } catch (e) {
+        if (isGdalSpawnError(e)) throw e;
         console.warn("❌ No se pudo reproyectar/cargar SHP:", baseUnique, e.message);
         didInsert = false;
       }
@@ -1395,11 +1386,15 @@ async function procesarArchivosMantenimiento(req, res) {
     });
   } catch (err) {
     console.error("❌ Error en mantenimiento:", err);
-    return res.status(500).json({
+    const status = Number(err?.statusCode) || 500;
+    return res.status(status).json({
       success: false,
       ok: false,
       inserted: 0,
-      message: "Error al ejecutar mantenimiento.",
+      message:
+        status === 500 && isGdalSpawnError(err)
+          ? "GDAL/OGR no está instalado o no es accesible en el servidor."
+          : "Error al ejecutar mantenimiento.",
       detalle: err.message,
     });
   }
