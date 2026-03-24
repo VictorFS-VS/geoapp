@@ -5288,31 +5288,122 @@ async function buscarRespuestasProyecto(req, res) {
   }
 }
 
-function remapCondIds(cond, idMap) {
-  if (!cond || typeof cond !== "object") return cond;
+function tryParseJson(value) {
+  if (value == null) return null;
+  if (typeof value === "object") return value;
 
-  if (Array.isArray(cond)) {
-    return cond.map((x) => remapCondIds(x, idMap));
+  const s = String(value).trim();
+  if (!s) return null;
+
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
+}
 
-  const out = { ...cond };
+function parsePgArrayString(str) {
+  if (str == null) return null;
 
-  if (out.id_pregunta !== undefined && out.id_pregunta !== null) {
-    const oldId = Number(out.id_pregunta);
-    if (Number.isFinite(oldId) && idMap.has(oldId)) {
-      out.id_pregunta = idMap.get(oldId);
+  const s = String(str).trim();
+  if (!s) return null;
+
+  // ejemplo: {"A","B","C"}
+  if (!(s.startsWith("{") && s.endsWith("}"))) return null;
+
+  const inner = s.slice(1, -1).trim();
+  if (!inner) return [];
+
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+  let escaping = false;
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
     }
+
+    if (ch === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (ch === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += ch;
   }
 
-  if (Array.isArray(out.all)) {
-    out.all = out.all.map((x) => remapCondIds(x, idMap));
+  if (current.length || inner.endsWith(",")) {
+    result.push(current.trim());
   }
 
-  if (Array.isArray(out.any)) {
-    out.any = out.any.map((x) => remapCondIds(x, idMap));
+  return result
+    .map((x) => x.replace(/\\"/g, '"').trim())
+    .filter((x) => x !== "");
+}
+
+function normalizeJsonb(value) {
+  if (value == null) return null;
+
+  if (typeof value === "object") return value;
+
+  const s = String(value).trim();
+  if (!s) return null;
+
+  // 1) JSON normal
+  const parsedJson = tryParseJson(s);
+  if (parsedJson !== null) return parsedJson;
+
+  // 2) array estilo PostgreSQL: {"A","B"}
+  const pgArray = parsePgArrayString(s);
+  if (pgArray !== null) return pgArray;
+
+  // 3) string plano
+  return s;
+}
+
+function toJsonbParam(value) {
+  const normalized = normalizeJsonb(value);
+  return normalized == null ? null : JSON.stringify(normalized);
+}
+
+function remapCondIds(value, preguntaIdMap) {
+  if (value == null) return null;
+
+  const normalized = normalizeJsonb(value);
+
+  if (Array.isArray(normalized)) {
+    return normalized.map((item) => remapCondIds(item, preguntaIdMap));
   }
 
-  return out;
+  if (normalized && typeof normalized === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(normalized)) {
+      if (k === "id_pregunta" && v != null) {
+        const mapped = preguntaIdMap.get(Number(v));
+        out[k] = mapped || v;
+      } else {
+        out[k] = remapCondIds(v, preguntaIdMap);
+      }
+    }
+    return out;
+  }
+
+  return normalized;
 }
 
 // POST /api/informes/plantillas/:id/duplicar
@@ -5321,10 +5412,11 @@ async function duplicarPlantilla(req, res) {
   const idPlantilla = Number(id);
 
   if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
-    return res.status(400).json({ ok: false, error: "ID de plantilla invÃ¡lido" });
+    return res.status(400).json({ ok: false, error: "ID de plantilla inválido" });
   }
 
   const client = await pool.connect();
+
   try {
     await client.query("BEGIN");
 
@@ -5344,24 +5436,31 @@ async function duplicarPlantilla(req, res) {
     }
 
     const plantillaOriginal = plantillaRes.rows[0];
+    const nuevoNombre =
+      String(req.body?.nombre || "").trim() || `${plantillaOriginal.nombre} (Copia)`;
 
     // 2) crear nueva plantilla
-    const nuevoNombre = `${plantillaOriginal.nombre} (Copia)`;
-
     const nuevaPlantillaRes = await client.query(
       `
       INSERT INTO ema.informe_plantilla
-        (nombre, descripcion, activo, id_creador, proyectos_permitidos, usuarios_compartidos)
-      VALUES ($1, $2, $3, $4, $5, $6)
+        (
+          nombre,
+          descripcion,
+          activo,
+          id_creador,
+          proyectos_permitidos,
+          usuarios_compartidos
+        )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
       RETURNING *
       `,
       [
         nuevoNombre,
         plantillaOriginal.descripcion || null,
         plantillaOriginal.activo !== false,
-        plantillaOriginal.id_creador || null,
-        plantillaOriginal.proyectos_permitidos || null,
-        plantillaOriginal.usuarios_compartidos || null,
+        req.user?.id || plantillaOriginal.id_creador || null,
+        null, // NO copiar proyectos
+        toJsonbParam(plantillaOriginal.usuarios_compartidos), // SÍ copiar compartidos
       ]
     );
 
@@ -5388,14 +5487,14 @@ async function duplicarPlantilla(req, res) {
         `
         INSERT INTO ema.informe_seccion
           (id_plantilla, titulo, orden, visible_if)
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4::jsonb)
         RETURNING *
         `,
         [
           nuevaPlantilla.id_plantilla,
           sec.titulo,
           sec.orden,
-          sec.visible_if || null,
+          toJsonbParam(sec.visible_if),
         ]
       );
 
@@ -5406,7 +5505,7 @@ async function duplicarPlantilla(req, res) {
     // 5) leer preguntas originales
     const preguntasRes = await client.query(
       `
-      SELECT q.*, s.id_seccion AS old_id_seccion
+      SELECT q.*
       FROM ema.informe_pregunta q
       JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
       WHERE s.id_plantilla = $1
@@ -5417,13 +5516,27 @@ async function duplicarPlantilla(req, res) {
 
     const preguntasOriginales = preguntasRes.rows || [];
 
-    // 6) copiar preguntas primero sin remapear condiciones
+    // 6) copiar preguntas
     const preguntaIdMap = new Map();
     const preguntasNuevasPendientes = [];
 
     for (const preg of preguntasOriginales) {
       const newSeccionId = seccionIdMap.get(Number(preg.id_seccion));
       if (!newSeccionId) continue;
+
+      const opcionesJson = normalizeJsonb(preg.opciones_json);
+      const visibleIf = normalizeJsonb(preg.visible_if);
+      const requiredIf = normalizeJsonb(preg.required_if);
+      const hideIf = normalizeJsonb(preg.hide_if);
+
+      // debug temporal
+      console.log("Duplicando pregunta:", {
+        id_pregunta: preg.id_pregunta,
+        etiqueta: preg.etiqueta,
+        tipo: preg.tipo,
+        opciones_json_original: preg.opciones_json,
+        opciones_json_normalizado: opcionesJson,
+      });
 
       const insPreg = await client.query(
         `
@@ -5438,22 +5551,24 @@ async function duplicarPlantilla(req, res) {
             permite_foto,
             visible_if,
             required_if,
+            activo,
             hide_if
           )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb)
         RETURNING *
         `,
         [
           newSeccionId,
           preg.etiqueta,
           preg.tipo,
-          preg.opciones_json || null,
+          opcionesJson == null ? null : JSON.stringify(opcionesJson),
           !!preg.obligatorio,
           preg.orden,
           !!preg.permite_foto,
-          preg.visible_if || null,
-          preg.required_if || null,
-          preg.hide_if || null,
+          visibleIf == null ? null : JSON.stringify(visibleIf),
+          requiredIf == null ? null : JSON.stringify(requiredIf),
+          preg.activo !== false,
+          hideIf == null ? null : JSON.stringify(hideIf),
         ]
       );
 
@@ -5480,21 +5595,21 @@ async function duplicarPlantilla(req, res) {
         `
         UPDATE ema.informe_pregunta
         SET
-          visible_if = $1,
-          required_if = $2,
-          hide_if = $3
+          visible_if = $1::jsonb,
+          required_if = $2::jsonb,
+          hide_if = $3::jsonb
         WHERE id_pregunta = $4
         `,
         [
-          visibleIfRemap ? JSON.stringify(visibleIfRemap) : null,
-          requiredIfRemap ? JSON.stringify(requiredIfRemap) : null,
-          hideIfRemap ? JSON.stringify(hideIfRemap) : null,
+          visibleIfRemap == null ? null : JSON.stringify(visibleIfRemap),
+          requiredIfRemap == null ? null : JSON.stringify(requiredIfRemap),
+          hideIfRemap == null ? null : JSON.stringify(hideIfRemap),
           newPreg.id_pregunta,
         ]
       );
     }
 
-    // 8) remapear visible_if de secciones tambiÃ©n
+    // 8) remapear visible_if de secciones
     const nuevasSeccionesRes = await client.query(
       `
       SELECT *
@@ -5509,7 +5624,9 @@ async function duplicarPlantilla(req, res) {
 
     for (const oldSec of seccionesOriginales) {
       const newSecId = seccionIdMap.get(Number(oldSec.id_seccion));
-      const newSec = nuevasSecciones.find((s) => Number(s.id_seccion) === Number(newSecId));
+      const newSec = nuevasSecciones.find(
+        (s) => Number(s.id_seccion) === Number(newSecId)
+      );
       if (!newSec) continue;
 
       const visibleIfRemap = remapCondIds(oldSec.visible_if, preguntaIdMap);
@@ -5517,11 +5634,11 @@ async function duplicarPlantilla(req, res) {
       await client.query(
         `
         UPDATE ema.informe_seccion
-        SET visible_if = $1
+        SET visible_if = $1::jsonb
         WHERE id_seccion = $2
         `,
         [
-          visibleIfRemap ? JSON.stringify(visibleIfRemap) : null,
+          visibleIfRemap == null ? null : JSON.stringify(visibleIfRemap),
           newSec.id_seccion,
         ]
       );

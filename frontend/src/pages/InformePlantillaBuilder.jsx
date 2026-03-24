@@ -18,6 +18,7 @@ import { alerts } from "@/utils/alerts";
 import QRCode from "qrcode";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
 import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
+import DuplicarPlantillaModal from "@/components/informes/DuplicarPlantillaModal";
 
 /* =========================
    API base (robusto)
@@ -741,6 +742,7 @@ export default function InformeBuilder() {
   const [showPlantillaModal, setShowPlantillaModal] = useState(false);
   const [plantillaForm, setPlantillaForm] = useState(emptyPlantilla);
   const [plantillaEditId, setPlantillaEditId] = useState(null);
+  const [showDuplicarModal, setShowDuplicarModal] = useState(false);
 
   // ✅ SECCIÓN
   const [showSeccionModal, setShowSeccionModal] = useState(false);
@@ -1385,6 +1387,19 @@ export default function InformeBuilder() {
     }
   }
 
+  async function handleDuplicarPlantillaSuccess(data) {
+    toastOk("Plantilla copiada correctamente");
+
+    const listado = await apiGet(`${API_URL}/informes/plantillas`);
+    const rows = listado?.rows || listado?.data || listado || [];
+    setPlantillas(rows);
+
+    const nuevaId = data?.id_plantilla || data?.plantilla?.id_plantilla;
+    if (nuevaId) {
+      setPlantillaSelId(nuevaId);
+    }
+  }
+
   async function eliminarDefinitivoPlantilla(idPlantilla) {
     const p = plantillas.find((x) => Number(x.id_plantilla) === Number(idPlantilla));
     if (!canEditPlantilla(p)) return toastWarn("Solo lectura: no tenés permiso para editar.");
@@ -1931,74 +1946,96 @@ export default function InformeBuilder() {
                 <div className="p-3 text-muted">Cargando...</div>
               ) : (
                 <div className="list-group">
-                  {(plantillas || []).map((p) => (
-                    <React.Fragment key={p.id_plantilla}>
-                      <button
-                        className={`list-group-item list-group-item-action d-flex justify-content-between align-items-center ${
-                          Number(p.id_plantilla) === Number(plantillaSelId) ? "active" : ""
+                  {(plantillas || []).map((p) => {
+                    const selected = Number(p.id_plantilla) === Number(plantillaSelId);
+
+                    return (
+                      <div
+                        key={p.id_plantilla}
+                        className={`list-group-item p-0 border rounded mb-2 overflow-hidden ${
+                          selected ? "border-primary shadow-sm" : ""
                         }`}
-                        onClick={() => setPlantillaSelId(p.id_plantilla)}
-                        type="button"
                       >
-                        <div className="me-2">
-                          <div className="fw-semibold">{p.nombre}</div>
-                          <div className="small opacity-75">{p.descripcion || "—"}</div>
-                        </div>
+                        <button
+                          className={`btn w-100 text-start border-0 rounded-0 d-flex justify-content-between align-items-center ${
+                            selected ? "btn-primary" : "btn-light"
+                          }`}
+                          onClick={() => setPlantillaSelId(p.id_plantilla)}
+                          type="button"
+                        >
+                          <div className="me-2">
+                            <div className="fw-semibold">{p.nombre}</div>
+                            <div className={`small ${selected ? "text-white-50" : "text-muted"}`}>
+                              {p.descripcion || "—"}
+                            </div>
+                          </div>
 
-                        <div className="d-flex gap-2 align-items-center">
-                          <Badge bg={p.activo ? "success" : "secondary"}>
-                            {p.activo ? "Activa" : "Inactiva"}
-                          </Badge>
-                        </div>
-                      </button>
+                          <div className="d-flex gap-2 align-items-center">
+                            <Badge bg={p.activo ? "success" : "secondary"}>
+                              {p.activo ? "Activa" : "Inactiva"}
+                            </Badge>
+                          </div>
+                        </button>
 
-                      {/* ✅ Acciones SOLO cuando esta plantilla está seleccionada */}
-                      {Number(p.id_plantilla) === Number(plantillaSelId) && (
-                        <div className="d-flex gap-2 mt-2">
-                          <button
-                            className="btn btn-outline-primary flex-fill"
-                            type="button"
-                            onClick={openCompartirModal}
-                            title="Compartir esta plantilla con otros usuarios"
-                          >
-                            Compartir
-                          </button>
+                        {selected && (
+                          <div className="p-2 bg-white border-top">
+                            <div className="d-flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline-secondary"
+                                onClick={() => openEditarPlantilla(p)}
+                              >
+                                Editar
+                              </Button>
 
-                          {isAdminUser(getCurrentUser()) && (
-                            <button
-                              className="btn btn-outline-danger flex-fill"
-                              onClick={() => eliminarDefinitivoPlantilla(p.id_plantilla)}
-                              title="Borra plantilla + secciones + preguntas + links + informes + respuestas + fotos"
-                              type="button"
-                            >
-                              Eliminar definitivo
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </React.Fragment>
-                  ))}
+                              <Button
+                                size="sm"
+                                variant="outline-primary"
+                                onClick={() => setShowDuplicarModal(true)}
+                              >
+                                Copiar plantilla
+                              </Button>
 
-                  {!plantillas?.length ? <div className="p-3 text-muted">Sin plantillas.</div> : null}
+                              <Button
+                                size="sm"
+                                variant={p.activo ? "warning" : "success"}
+                                onClick={() => toggleActivaPlantilla(p)}
+                              >
+                                {p.activo ? "Desactivar" : "Activar"}
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                variant="outline-primary"
+                                onClick={openCompartirModal}
+                                title="Compartir esta plantilla con otros usuarios"
+                              >
+                                Compartir
+                              </Button>
+
+                              {isAdminUser(getCurrentUser()) && (
+                                <Button
+                                  size="sm"
+                                  variant="outline-danger"
+                                  onClick={() => eliminarDefinitivoPlantilla(p.id_plantilla)}
+                                  title="Borra plantilla + secciones + preguntas + links + informes + respuestas + fotos"
+                                >
+                                  Eliminar definitivo
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {!plantillas?.length ? (
+                    <div className="p-3 text-muted">Sin plantillas.</div>
+                  ) : null}
                 </div>
               )}
             </div>
-
-            {plantillaSeleccionada ? (
-              <div className="card-footer d-flex gap-2">
-                <Button size="sm" variant="outline-secondary" onClick={() => openEditarPlantilla(plantillaSeleccionada)}>
-                  Editar
-                </Button>
-
-                <Button
-                  variant={plantillaSeleccionada?.activo ? "warning" : "success"}
-                  onClick={() => toggleActivaPlantilla(plantillaSeleccionada)}
-                  disabled={!plantillaSeleccionada}
-                >
-                  {plantillaSeleccionada?.activo ? "Desactivar" : "Activar"}
-                </Button>
-              </div>
-            ) : null}
           </div>
         </div>
 
@@ -3327,6 +3364,15 @@ export default function InformeBuilder() {
                 idPlantilla={Number(plantillaSelId) || null}
                 nombrePlantilla={plantillaSeleccionada?.nombre || ""}
                 linksDestino={shareLinks || []}
+              />
+
+              <DuplicarPlantillaModal
+                show={showDuplicarModal}
+                onHide={() => setShowDuplicarModal(false)}
+                plantilla={plantillaSeleccionada}
+                apiUrl={API_URL}
+                authHeaders={authHeaders}
+                onSuccess={handleDuplicarPlantillaSuccess}
               />
     </>
   );
