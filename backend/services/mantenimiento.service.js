@@ -10,20 +10,14 @@
 
 "use strict";
 
-const { spawn } = require("child_process");
 const path = require("path");
 const pool = require("../db");
+const { attachGdalSpawnError, spawnGdal } = require("../utils/gdal");
 
 // =======
 // Config
 // =======
 const DB_SRID = 32721;
-
-// Si ya seteás GDAL/PROJ en tu controller, acá normalmente no hace falta.
-// Igual, dejamos el spawn sin tocar env para que herede process.env (que ya configurás).
-function spawnCmd(cmd, args) {
-  return spawn(cmd, args, { windowsHide: true, env: { ...process.env } });
-}
 
 // =====================
 // Helpers (pick/geom)
@@ -153,7 +147,8 @@ function vectorToGeoJSONFeatures(inputPath, srid = DB_SRID) {
       "-explodecollections",
     ];
 
-    const p = spawnCmd("ogr2ogr", args);
+    const p = spawnGdal("ogr2ogr", args);
+    attachGdalSpawnError(p, reject);
 
     let out = "";
     let err = "";

@@ -99,6 +99,7 @@ export default function ProyectoModal({ proyecto, children }) {
   const esUsuario9 = tipoUsuario === 9;   // CLIENTE
   const esUsuario11 = tipoUsuario === 11; // ADMIN_CLIENTE
   const soloLectura = esUsuario9 || esUsuario10 || esUsuario11;
+  const puedeVerInformes = can("informes.read");
   const puedeExpedientes =
     can("expedientes.read") ||
     can("expedientes.create") ||
@@ -256,6 +257,17 @@ export default function ProyectoModal({ proyecto, children }) {
                   📈 Evaluaciones
                 </Button>
               </>
+            )}
+
+            {puedeVerInformes && (
+              <Button
+                variant="outline-secondary"
+                className="w-100"
+                disabled={busy}
+                onClick={() => goTo(`/dashboardinformes?id_proyecto=${proyecto?.gid}`)}
+              >
+                Informes - Dashboard
+              </Button>
             )}
 
             <Button

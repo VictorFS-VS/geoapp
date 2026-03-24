@@ -1,5 +1,17 @@
 import { apiFetch } from "../../services/api";
 
+function normalizeCatastroVialOverlayResponse(response) {
+    const payload = response && typeof response === "object" ? response : {};
+    return {
+        ...payload,
+        resolution: payload?.resolution || null,
+        metadata: payload?.metadata || {},
+        warnings: Array.isArray(payload?.warnings) ? payload.warnings : [],
+        tramos: payload?.tramos || { type: "FeatureCollection", features: [] },
+        progresivas: payload?.progresivas || { type: "FeatureCollection", features: [] },
+    };
+}
+
 export async function gvGetDashboard(proyectoId, params = {}) {
     const qs = new URLSearchParams();
     if (proyectoId) qs.set("proyectoId", proyectoId);
@@ -46,6 +58,15 @@ export async function gvGetEconomico(params = {}) {
 
 export async function gvGetMap(proyectoId) {
     return await apiFetch(`/gv/catastro/map?proyectoId=${proyectoId}`);
+}
+
+export async function gvGetCatastroVialOverlay(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.proyectoId) qs.set("proyectoId", params.proyectoId);
+    if (params.tramoId) qs.set("tramoId", params.tramoId);
+    if (params.subtramoId) qs.set("subtramoId", params.subtramoId);
+    const response = await apiFetch(`/gv/catastro/vial-overlay?${qs.toString()}`);
+    return normalizeCatastroVialOverlayResponse(response);
 }
 
 export async function gvGetExpedienteEtapas(id, tipo) {

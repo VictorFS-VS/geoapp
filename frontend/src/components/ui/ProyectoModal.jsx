@@ -509,6 +509,17 @@ export default function ProyectoModal({ proyecto, children }) {
 
             {puedeVerInformes && (
               <Button
+                variant="outline-secondary"
+                className="w-100"
+                onClick={() => goTo(`/dashboardinformes?id_proyecto=${gid}`)}
+                disabled={deleting || checkingTramos}
+              >
+                Informes - Dashboard
+              </Button>
+            )}
+
+            {puedeVerInformes && (
+              <Button
                 variant="secondary"
                 className="w-100"
                 onClick={() => goTo(`/proyectos/${gid}/informes`)}

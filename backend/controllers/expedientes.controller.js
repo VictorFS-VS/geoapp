@@ -7,6 +7,7 @@ const pool = require("../db");
 
 // MISMA BASE que tu documentos.controller
 const BASE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "documentosproyecto");
+const BASE_UPLOADS_ROOT = path.join(__dirname, "..", "uploads");
 
 // =====================
 // helpers
@@ -176,6 +177,133 @@ function resolveRecoveredRemotePath(url) {
   } catch {
     return null;
   }
+}
+
+function buildExpedientesListFilter({ idProyecto, q, tramoId, subtramoId }) {
+  const params = [idProyecto];
+  let idx = 2;
+  let whereSql = `WHERE id_proyecto = $1`;
+
+  if (q) {
+    params.push(`%${q}%`);
+    whereSql +=
+      ` AND (` +
+      `propietario_nombre ILIKE $${idx} OR ` +
+      `propietario_ci ILIKE $${idx} OR ` +
+      `pareja_nombre ILIKE $${idx} OR ` +
+      `pareja_ci ILIKE $${idx} OR ` +
+      `codigo_exp ILIKE $${idx} OR ` +
+      `codigo_censo ILIKE $${idx} OR ` +
+      `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${idx}` +
+      `)`;
+    idx += 1;
+  }
+
+  if (Number.isFinite(tramoId) && tramoId > 0) {
+    params.push(tramoId);
+    whereSql += ` AND id_tramo = $${idx}`;
+    idx += 1;
+  }
+
+  if (Number.isFinite(subtramoId) && subtramoId > 0) {
+    params.push(subtramoId);
+    whereSql += ` AND id_sub_tramo = $${idx}`;
+    idx += 1;
+  }
+
+  return { whereSql, params };
+}
+
+async function cleanupExpedienteFiles(fileRows = []) {
+  const total = Array.isArray(fileRows) ? fileRows.length : 0;
+  let deleted = 0;
+  let failed = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const row of fileRows || []) {
+    const ruta = row?.url ?? row?.ruta ?? row?.ruta_archivo ?? null;
+    if (!ruta) continue;
+
+    try {
+      const abs = resolveAbsolutePath(ruta) || resolveRecoveredRemotePath(ruta);
+      if (!abs) {
+        failed += 1;
+        errors.push({ ruta, error: "ruta inválida" });
+        continue;
+      }
+
+      const absNorm = path.resolve(abs);
+      const baseDocs = path.resolve(BASE_UPLOAD_DIR);
+      const baseUploads = path.resolve(BASE_UPLOADS_ROOT);
+      const absLower = absNorm.toLowerCase();
+      const baseDocsLower = (baseDocs + path.sep).toLowerCase();
+      const baseUploadsLower = (baseUploads + path.sep).toLowerCase();
+
+      if (!absLower.startsWith(baseDocsLower) && !absLower.startsWith(baseUploadsLower)) {
+        failed += 1;
+        errors.push({ ruta, error: "fuera de directorios permitidos" });
+        continue;
+      }
+
+      if (await fs.pathExists(absNorm)) {
+        await fs.remove(absNorm);
+        deleted += 1;
+      } else {
+        skipped += 1;
+      }
+    } catch (e) {
+      if (String(e?.code) === "ENOENT") {
+        skipped += 1;
+      } else {
+        failed += 1;
+        errors.push({ ruta, error: e?.message || String(e) });
+      }
+    }
+  }
+
+  console.info("[cleanupExpedienteFiles] summary", {
+    total,
+    deleted,
+    failed,
+    skipped,
+    sample_errors: failed > 0 ? errors.slice(0, 5) : [],
+  });
+
+  return { total, deleted, skipped, failed, errors };
+}
+
+async function deleteExpedientesTx(client, ids) {
+  const { rows: docs } = await client.query(
+    `SELECT url
+       FROM ema.tumba
+      WHERE tipo_documento = 'expedientes'
+        AND id_documento = ANY($1::int[])`,
+    [ids]
+  );
+
+  await client.query(
+    `DELETE FROM ema.bloque_mejoras WHERE id_expediente = ANY($1::int[])`,
+    [ids]
+  );
+  await client.query(
+    `DELETE FROM ema.bloque_terreno WHERE id_expediente = ANY($1::int[])`,
+    [ids]
+  );
+
+  await client.query(
+    `DELETE FROM ema.tumba
+      WHERE tipo_documento = 'expedientes'
+        AND id_documento = ANY($1::int[])`,
+    [ids]
+  );
+
+  const del = await client.query(
+    `DELETE FROM ema.expedientes WHERE id_expediente = ANY($1::int[])`,
+    [ids]
+  );
+
+  return { fileRows: docs || [], deletedCount: del.rowCount };
 }
 
 function sendInline(res, absPath, filename) {
@@ -468,38 +596,13 @@ exports.listByProyecto = async (req, res) => {
   const tramoId = Number(req.query.tramoId);
   const subtramoId = Number(req.query.subtramoId);
 
-  const params = [idProyecto];
-  let idx = 2;
-  let sql = `SELECT * FROM ema.expedientes WHERE id_proyecto = $1`;
-
-  if (q) {
-    params.push(`%${q}%`);
-    sql +=
-      ` AND (` +
-      `propietario_nombre ILIKE $${idx} OR ` +
-      `propietario_ci ILIKE $${idx} OR ` +
-      `pareja_nombre ILIKE $${idx} OR ` +
-      `pareja_ci ILIKE $${idx} OR ` +
-      `codigo_exp ILIKE $${idx} OR ` +
-      `codigo_censo ILIKE $${idx} OR ` +
-      `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${idx}` +
-      `)`;
-    idx += 1;
-  }
-
-  if (Number.isFinite(tramoId) && tramoId > 0) {
-    params.push(tramoId);
-    sql += ` AND id_tramo = $${idx}`;
-    idx += 1;
-  }
-
-  if (Number.isFinite(subtramoId) && subtramoId > 0) {
-    params.push(subtramoId);
-    sql += ` AND id_sub_tramo = $${idx}`;
-    idx += 1;
-  }
-
-  sql += ` ORDER BY created_at DESC`;
+  const { whereSql, params } = buildExpedientesListFilter({
+    idProyecto,
+    q,
+    tramoId,
+    subtramoId,
+  });
+  const sql = `SELECT * FROM ema.expedientes ${whereSql} ORDER BY created_at DESC`;
 
   const { rows } = await pool.query(sql, params);
   res.json(rows);
@@ -548,7 +651,7 @@ exports.create = async (req, res) => {
        )
        VALUES
        (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
        )
        RETURNING *`,
       [
@@ -676,8 +779,184 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
-  await pool.query(`DELETE FROM ema.expedientes WHERE id_expediente=$1`, [idExp]);
-  res.json({ ok: true });
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente inválido" });
+  }
+
+  const client = await pool.connect();
+  let fileRows = [];
+
+  try {
+    await client.query("BEGIN");
+
+    const { rows: expRows } = await client.query(
+      `SELECT id_expediente, id_proyecto
+         FROM ema.expedientes
+        WHERE id_expediente = $1
+        FOR UPDATE`,
+      [idExp]
+    );
+
+    if (!expRows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Expediente no encontrado" });
+    }
+
+    const out = await deleteExpedientesTx(client, [idExp]);
+    fileRows = out.fileRows || [];
+
+    await client.query("COMMIT");
+
+    const cleanup = await cleanupExpedienteFiles(fileRows);
+    return res.json({
+      ok: true,
+      deleted_id: idExp,
+      deleted: out.deletedCount,
+      cleanup: {
+        total: cleanup.total,
+        deleted: cleanup.deleted,
+        skipped: cleanup.skipped,
+        failed: cleanup.failed,
+      },
+    });
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (String(e?.code) === "23503") {
+      return res.status(409).json({ message: "Conflicto de integridad al eliminar expediente." });
+    }
+    return res.status(500).json({ message: e?.message || String(e) });
+  } finally {
+    client.release();
+  }
+};
+
+exports.bulkDeleteExpedientesByProyecto = async (req, res) => {
+  const idProyecto = Number(req.params.idProyecto);
+  if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+    return res.status(400).json({ message: "idProyecto inválido" });
+  }
+
+  const isAdmin = Number(req.user?.tipo_usuario ?? req.user?.group_id) === 1;
+  if (!isAdmin) return res.status(403).json({ message: "Solo admin puede borrar en masa" });
+
+  const mode = req.body?.all === true ? "all" : "ids";
+  let ids = [];
+
+  if (mode === "ids") {
+    const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    ids = Array.from(
+      new Set(rawIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0))
+    );
+
+    if (!ids.length) return res.status(400).json({ message: "ids inválidos o vacíos" });
+    if (ids.length > 5000) {
+      return res.status(400).json({ message: "Límite de ids excedido (max 5000)" });
+    }
+  }
+
+  const client = await pool.connect();
+  let fileRows = [];
+
+  try {
+    await client.query("BEGIN");
+
+    if (mode === "all") {
+      const q = String(req.body?.filters?.q || "").trim();
+      const tramoId = Number(req.body?.filters?.tramoId);
+      const subtramoId = Number(req.body?.filters?.subtramoId);
+
+      const { whereSql, params } = buildExpedientesListFilter({
+        idProyecto,
+        q,
+        tramoId,
+        subtramoId,
+      });
+      const sql = `SELECT id_expediente FROM ema.expedientes ${whereSql} FOR UPDATE`;
+      const { rows } = await client.query(sql, params);
+      ids = rows.map((r) => Number(r.id_expediente)).filter((n) => Number.isFinite(n) && n > 0);
+
+      if (!ids.length) {
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          mode,
+          deleted_count: 0,
+          cleanup: { total: 0, deleted: 0, skipped: 0, failed: 0 },
+        });
+      }
+
+      if (ids.length > 10000) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          message: "El resultado excede el límite de seguridad (max 10000).",
+          count: ids.length,
+        });
+      }
+    }
+
+    const { rows: found } = await client.query(
+      `SELECT id_expediente
+         FROM ema.expedientes
+        WHERE id_expediente = ANY($1::int[])
+          AND id_proyecto = $2
+        FOR UPDATE`,
+      [ids, idProyecto]
+    );
+
+    if (!found.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "No se encontraron expedientes" });
+    }
+
+    if (found.length !== ids.length) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: "ids fuera de proyecto o conjunto inconsistente",
+        requested_count: ids.length,
+        found_count: found.length,
+      });
+    }
+
+    const out = await deleteExpedientesTx(client, ids);
+    fileRows = out.fileRows || [];
+
+    await client.query("COMMIT");
+
+    const cleanup = await cleanupExpedienteFiles(fileRows);
+    const payload = {
+      ok: true,
+      mode,
+      deleted_count: out.deletedCount,
+      cleanup: {
+        total: cleanup.total,
+        deleted: cleanup.deleted,
+        skipped: cleanup.skipped,
+        failed: cleanup.failed,
+      },
+    };
+    if (mode === "ids") payload.deleted_ids = ids;
+
+    console.info("[expedientes.bulkDelete] summary", {
+      idProyecto,
+      mode,
+      requested_count: mode === "ids" ? ids.length : undefined,
+      deleted_count: out.deletedCount,
+      cleanup_total: cleanup.total,
+      cleanup_deleted: cleanup.deleted,
+      cleanup_skipped: cleanup.skipped,
+      cleanup_failed: cleanup.failed,
+    });
+
+    return res.json(payload);
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (String(e?.code) === "23503") {
+      return res.status(409).json({ message: "Conflicto de integridad al eliminar expedientes." });
+    }
+    return res.status(500).json({ message: e?.message || String(e) });
+  } finally {
+    client.release();
+  }
 };
 
 // =====================

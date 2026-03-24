@@ -383,7 +383,7 @@ async function fetchInformeHeaderWithProyecto(idInforme) {
       p.id_proponente, p.id_consultor,
       p.id_cliente -- si existe en tu tabla; si no existe, Postgres va a tirar error
     FROM ema.informe i
-    JOIN ema.proyectos p ON p.id_proyecto = i.id_proyecto
+    JOIN ema.proyectos p ON p.gid = i.id_proyecto
     WHERE i.id_informe = $1
     LIMIT 1
   `;
@@ -397,7 +397,7 @@ async function fetchInformeHeaderWithProyecto(idInforme) {
         i.id_informe, i.id_proyecto, i.id_plantilla, i.titulo, i.fecha_creado, i.creado_por,
         p.id_proponente, p.id_consultor
       FROM ema.informe i
-      JOIN ema.proyectos p ON p.id_proyecto = i.id_proyecto
+      JOIN ema.proyectos p ON p.gid = i.id_proyecto
       WHERE i.id_informe = $1
       LIMIT 1
     `;

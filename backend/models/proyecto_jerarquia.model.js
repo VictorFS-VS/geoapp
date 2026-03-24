@@ -323,10 +323,81 @@ const getSubtramosCensales = async (idProyecto, idTramo) => {
   return rows;
 };
 
+const getProyectoTramoById = async (idProyecto, idProyectoTramo, db = pool) => {
+  const { rows } = await db.query(
+    `SELECT
+       id_proyecto_tramo,
+       id_proyecto,
+       descripcion,
+       cantidad_universo,
+       id_vial_tramo,
+       orden,
+       fecha_limite,
+       fecha_max
+     FROM ema.proyecto_tramos
+     WHERE id_proyecto = $1
+       AND id_proyecto_tramo = $2
+     LIMIT 1`,
+    [idProyecto, idProyectoTramo]
+  );
+  return rows[0] || null;
+};
+
+const getProyectoSubtramoById = async (idProyecto, idProyectoSubtramo, db = pool) => {
+  const { rows } = await db.query(
+    `SELECT
+       st.id_proyecto_subtramo,
+       st.id_proyecto_tramo,
+       st.descripcion,
+       st.cantidad_universo,
+       st.orden,
+       st.fecha_limite,
+       st.fecha_max,
+       st.id_vial_subtramo,
+       t.id_proyecto,
+       t.id_vial_tramo
+     FROM ema.proyecto_subtramos st
+     JOIN ema.proyecto_tramos t
+       ON t.id_proyecto_tramo = st.id_proyecto_tramo
+     WHERE t.id_proyecto = $1
+       AND st.id_proyecto_subtramo = $2
+     LIMIT 1`,
+    [idProyecto, idProyectoSubtramo]
+  );
+  return rows[0] || null;
+};
+
+const getProyectoSubtramosByTramoId = async (idProyecto, idProyectoTramo, db = pool) => {
+  const { rows } = await db.query(
+    `SELECT
+       st.id_proyecto_subtramo,
+       st.id_proyecto_tramo,
+       st.descripcion,
+       st.cantidad_universo,
+       st.orden,
+       st.fecha_limite,
+       st.fecha_max,
+       st.id_vial_subtramo,
+       t.id_proyecto,
+       t.id_vial_tramo
+     FROM ema.proyecto_subtramos st
+     JOIN ema.proyecto_tramos t
+       ON t.id_proyecto_tramo = st.id_proyecto_tramo
+     WHERE t.id_proyecto = $1
+       AND t.id_proyecto_tramo = $2
+     ORDER BY st.orden ASC, st.descripcion ASC, st.id_proyecto_subtramo ASC`,
+    [idProyecto, idProyectoTramo]
+  );
+  return rows;
+};
+
 module.exports = {
   getJerarquia,
   saveJerarquia,
   getVialCatalogo,
   getTramosCensales,
   getSubtramosCensales,
+  getProyectoTramoById,
+  getProyectoSubtramoById,
+  getProyectoSubtramosByTramoId,
 };

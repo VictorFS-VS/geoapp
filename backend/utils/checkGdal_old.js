@@ -18,7 +18,7 @@ function checkGdal() {
       return true;
     }
 
-    console.warn("[WARN] GDAL respondio con error:", err || out || `(status=${result.status})`);
+    console.warn("[WARN] GDAL respondió con error:", err || out || `(status=${result.status})`);
     return false;
   } catch (e) {
     console.warn("[WARN] GDAL no disponible:", e.message);
