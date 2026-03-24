@@ -111,6 +111,52 @@ function ymdToIsoStart(ymd) {
   return d.toISOString();
 }
 
+function hasMeaningfulStageValue(value) {
+  if (value == null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return false;
+}
+
+function hasRealStageData(stage) {
+  if (!stage || typeof stage !== "object" || Array.isArray(stage)) {
+    return Boolean(stage);
+  }
+
+  if (stage.ok) return true;
+  if (typeof stage.obs === "string" && stage.obs.trim()) return true;
+  if (stage.date) return true;
+
+  return Object.entries(stage).some(([key, value]) => {
+    if (key === "ok" || key === "obs" || key === "date") return false;
+    return hasMeaningfulStageValue(value);
+  });
+}
+
+function hasRealFolderActivity(carpeta) {
+  if (!carpeta || typeof carpeta !== "object" || Array.isArray(carpeta)) return false;
+  return Object.values(carpeta).some((stage) => hasRealStageData(stage));
+}
+
+function resolveTipoCarpetaFromExpediente(row) {
+  const mejoraHasActivity = hasRealFolderActivity(row?.carpeta_mejora);
+  const terrenoHasActivity = hasRealFolderActivity(row?.carpeta_terreno);
+
+  if (terrenoHasActivity && !mejoraHasActivity) {
+    return { tipo: "terreno", locked: true, legacyBothActive: false };
+  }
+  if (mejoraHasActivity && !terrenoHasActivity) {
+    return { tipo: "mejora", locked: true, legacyBothActive: false };
+  }
+  if (mejoraHasActivity && terrenoHasActivity) {
+    return { tipo: "terreno", locked: true, legacyBothActive: true };
+  }
+  return { tipo: "mejora", locked: false, legacyBothActive: false };
+}
+
 /* =========================
    ✅ Helpers polígono (Mantenimiento-like)
    ========================= */
@@ -478,16 +524,14 @@ export default function Expedientes() {
     return datetimeLocalToIso(localNow);
   }
 
-  const hasActiveStages = (carpeta) => {
-    if (!carpeta || typeof carpeta !== "object") return false;
-    return Object.values(carpeta).some((stage) => stage?.ok);
-  };
+  const hasActiveStages = (carpeta) => hasRealFolderActivity(carpeta);
 
   const mejoraHasActivity = hasActiveStages(current?.carpeta_mejora);
   const terrenoHasActivity = hasActiveStages(current?.carpeta_terreno);
   const onlyMejoraActive = mejoraHasActivity && !terrenoHasActivity;
   const onlyTerrenoActive = terrenoHasActivity && !mejoraHasActivity;
   const legacyBothActive = mejoraHasActivity && terrenoHasActivity;
+  const isTipoCarpetaLocked = Boolean(current?.id_expediente) && (mejoraHasActivity || terrenoHasActivity);
   const currentGroupBlocked = tipoCarpeta === "mejora" ? onlyTerrenoActive : onlyMejoraActive;
 
   function firstPendingKey() {
@@ -1509,14 +1553,12 @@ export default function Expedientes() {
 
   const openVer = async (row) => {
     const freshRow = await apiGet(`${API}/expedientes/${row.id_expediente}`);
+    const resolvedTipo = resolveTipoCarpetaFromExpediente(freshRow).tipo;
     setMode("ver");
     setCurrent(freshRow);
     setSubcarpeta("");
     setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
-
-    const hasMejora = Object.values(freshRow?.carpeta_mejora || {}).some((s) => s?.ok);
-    const hasTerreno = Object.values(freshRow?.carpeta_terreno || {}).some((s) => s?.ok);
-    setTipoCarpeta(hasTerreno && !hasMejora ? "terreno" : "mejora");
+    setTipoCarpeta(resolvedTipo);
     setEtapas({});
     setEtapasErr("");
 
@@ -1539,20 +1581,18 @@ export default function Expedientes() {
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
-    await loadEtapas(freshRow.id_expediente, "mejora");
+    await loadEtapas(freshRow.id_expediente, resolvedTipo);
     setShow(true);
   };
 
   const openEditar = async (row) => {
     const freshRow = await apiGet(`${API}/expedientes/${row.id_expediente}`);
+    const resolvedTipo = resolveTipoCarpetaFromExpediente(freshRow).tipo;
     setMode("editar");
     setCurrent(freshRow);
     setSubcarpeta("");
     setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
-
-    const hasMejora = Object.values(freshRow?.carpeta_mejora || {}).some((s) => s?.ok);
-    const hasTerreno = Object.values(freshRow?.carpeta_terreno || {}).some((s) => s?.ok);
-    setTipoCarpeta(hasTerreno && !hasMejora ? "terreno" : "mejora");
+    setTipoCarpeta(resolvedTipo);
     setEtapas({});
     setEtapasErr("");
 
@@ -1575,7 +1615,7 @@ export default function Expedientes() {
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
-    await loadEtapas(freshRow.id_expediente, "mejora");
+    await loadEtapas(freshRow.id_expediente, resolvedTipo);
     setShow(true);
   };
 
@@ -2434,7 +2474,7 @@ export default function Expedientes() {
                 <div className="btn-group">
                   <Button
                     variant={tipoCarpeta === "mejora" ? "primary" : "outline-primary"}
-                    disabled={!geometryEditable || !current || onlyTerrenoActive}
+                    disabled={!geometryEditable || !current || isTipoCarpetaLocked}
                     onClick={async () => {
                       setTipoCarpeta("mejora");
                       setPolyFiles([]);
@@ -2445,7 +2485,7 @@ export default function Expedientes() {
                   </Button>
                   <Button
                     variant={tipoCarpeta === "terreno" ? "primary" : "outline-primary"}
-                    disabled={!geometryEditable || !current || onlyMejoraActive}
+                    disabled={!geometryEditable || !current || isTipoCarpetaLocked}
                     onClick={async () => {
                       setTipoCarpeta("terreno");
                       setPolyFiles([]);
@@ -2462,6 +2502,12 @@ export default function Expedientes() {
                   Primero guardá el expediente para habilitar la elaboración de carpetas.
                 </Alert>
               )}
+
+              {current && isTipoCarpetaLocked ? (
+                <Alert variant="warning" className="mt-2 mb-0 py-2">
+                  El tipo de expediente está bloqueado porque ya existen datos guardados.
+                </Alert>
+              ) : null}
 
               {etapasErr && (
                 <Alert variant="danger" className="mt-2">
