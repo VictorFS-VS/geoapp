@@ -212,6 +212,8 @@ export default function GVASubmapa({
   progresivasGeo,
   geometryLoading,
   geometryError,
+  selectedMapKpiId = null,
+  selectedMapKpiLabel = "",
   visible = true,
 }) {
   const [activeKey, setActiveKey] = useState("");
@@ -387,6 +389,30 @@ export default function GVASubmapa({
     const id = Number(point?.id_informe);
     if (!id) return;
     setActiveKey((prev) => (prev === `informe:${id}` ? "" : `informe:${id}`));
+  }, []);
+
+  const getInformePointInfo = useCallback((point) => {
+    return {
+      id: Number(point?.id_informe),
+      lat: point?.lat,
+      lng: point?.lng,
+      title: point?.titulo || `Informe #${point?.id_informe}`,
+      color:
+        String(point?.map_kpi_color_hex || "").trim() ||
+        point?.semaforo_color ||
+        "#16a34a",
+      rows: [
+        ["ID", `#${point?.id_informe ?? "-"}`],
+        ["Fecha", point?.fecha_creado ? String(point.fecha_creado).slice(0, 10) : "-"],
+        point?.map_kpi_field_label && point?.map_kpi_value_label
+          ? [point.map_kpi_field_label, point.map_kpi_value_label]
+          : null,
+        point?.summary_text
+          ? [point?.summary_label || "Resumen", point.summary_text]
+          : null,
+      ].filter(Boolean),
+      actionLabel: "Ver informe completo",
+    };
   }, []);
 
   const ensureInformePopupData = useCallback(async (point) => {
@@ -651,6 +677,49 @@ export default function GVASubmapa({
     </div>
   ) : null;
 
+  const activeMapKpiLegend = useMemo(() => {
+    if (!selectedMapKpiId) return [];
+
+    const grouped = new Map();
+    for (const point of informesPoints) {
+      const pointFieldId = Number(point?.map_kpi_field_id);
+      if (!pointFieldId || pointFieldId !== Number(selectedMapKpiId)) continue;
+
+      const colorHex = String(point?.map_kpi_color_hex || "").trim();
+      const colorKey = String(point?.map_kpi_color_key || "").trim().toLowerCase();
+      const valueLabel = String(point?.map_kpi_value_label || "").trim();
+      const legendItem =
+        point?.map_kpi_legend_item && typeof point.map_kpi_legend_item === "object"
+          ? point.map_kpi_legend_item
+          : null;
+
+      const finalLabel =
+        String(
+          legendItem?.label || valueLabel || point?.map_kpi_field_label || "Sin dato"
+        ).trim() || "Sin dato";
+      const finalColorHex =
+        String(legendItem?.color_hex || colorHex || "").trim() || "#9ca3af";
+      const finalColorKey =
+        String(legendItem?.color_key || colorKey || finalLabel).trim().toLowerCase() || "sin-dato";
+
+      const groupKey = finalColorKey || finalLabel.toLowerCase() || finalColorHex.toLowerCase();
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, {
+          key: groupKey,
+          label: finalLabel,
+          colorHex: finalColorHex,
+          count: 0,
+        });
+      }
+      grouped.get(groupKey).count += 1;
+    }
+
+    return Array.from(grouped.values()).sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label, "es");
+    });
+  }, [informesPoints, selectedMapKpiId]);
+
   const overlayBottomContent = (
     <div
       style={{
@@ -686,6 +755,42 @@ export default function GVASubmapa({
         <span style={{ ...chipStyle, background: "#eef2ff", borderColor: "#c7d2fe" }}>
           Activo: {activeLabel}
         </span>
+      ) : null}
+      {selectedMapKpiId && activeMapKpiLegend.length > 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            alignItems: "center",
+            width: "100%",
+          }}
+        >
+          <span style={{ ...chipStyle, background: "#eff6ff", borderColor: "#bfdbfe" }}>
+            KPI mapa: {selectedMapKpiLabel || "KPI seleccionado"}
+          </span>
+          {activeMapKpiLegend.map((item) => (
+            <span
+              key={`kpi-legend-${item.key}`}
+              style={{ ...chipStyle, gap: 8 }}
+              title={`${item.label}: ${item.count}`}
+            >
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: "999px",
+                  background: item.colorHex,
+                  boxShadow: "inset 0 0 0 1px rgba(15,23,42,0.12)",
+                  flex: "0 0 auto",
+                }}
+              />
+              <span>
+                {item.label} · {item.count}
+              </span>
+            </span>
+          ))}
+        </div>
       ) : null}
     </div>
   );
@@ -881,6 +986,7 @@ export default function GVASubmapa({
                       onOpenPoint={handleOpenInforme}
                       getPointPopupState={getInformePopupState}
                       onSelectPopupPhoto={handleSelectInformePopupPhoto}
+                      getPointInfo={getInformePointInfo}
                     />
                   </>
                 ) : null

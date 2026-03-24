@@ -408,7 +408,316 @@ function normalizeSemaforoRaw(raw) {
   return { semaforo_color: text, semaforo_label: null };
 }
 
-async function buildDashboardInformesPoints({ ids, db }) {
+const MAP_KPI_DEFAULT_LABEL = "Sin dato";
+const MAP_KPI_DEFAULT_COLOR_KEY = "gris";
+const MAP_KPI_DEFAULT_COLOR_HEX = "#9ca3af";
+const MAP_KPI_CATEGORY_PALETTE = ["#111827", "#2563eb", "#16a34a", "#f97316", "#a855f7"];
+
+function normalizeMapKpiType(tipo) {
+  return String(tipo || "").trim().toLowerCase();
+}
+
+function isMapKpiFieldSupported(tipo) {
+  const t = normalizeMapKpiType(tipo);
+  return [
+    "select",
+    "combo",
+    "opcion",
+    "opciones",
+    "radio",
+    "boolean",
+    "bool",
+    "si_no",
+    "sino",
+    "yesno",
+    "semaforo",
+    "semáforo",
+  ].includes(t);
+}
+
+function normalizeBooleanLabel(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (raw === true || raw === false) return raw ? "Sí" : "No";
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return null;
+  if (["1", "true", "t", "si", "sí", "s", "y", "yes"].includes(s)) return "Sí";
+  if (["0", "false", "f", "no", "n"].includes(s)) return "No";
+  return null;
+}
+
+function semaforoColorKeyFromValue(label, color) {
+  const text = String(label || color || "")
+    .trim()
+    .toLowerCase();
+  if (!text) return MAP_KPI_DEFAULT_COLOR_KEY;
+  if (text.includes("verde") || text.includes("green")) return "verde";
+  if (text.includes("amarillo") || text.includes("yellow") || text.includes("ambar")) return "amarillo";
+  if (text.includes("naranja") || text.includes("orange")) return "naranja";
+  if (text.includes("rojo") || text.includes("red")) return "rojo";
+  if (text.includes("gris") || text.includes("gray") || text.includes("grey")) return "gris";
+  return MAP_KPI_DEFAULT_COLOR_KEY;
+}
+
+function semaforoColorHexFromKey(colorKey) {
+  const key = String(colorKey || "").trim().toLowerCase();
+  if (key === "verde") return "#16a34a";
+  if (key === "amarillo") return "#eab308";
+  if (key === "naranja") return "#f97316";
+  if (key === "rojo") return "#dc2626";
+  if (key === "gris") return "#9ca3af";
+  return MAP_KPI_DEFAULT_COLOR_HEX;
+}
+
+function normalizeMapKpiRawValue(rawValue, tipo) {
+  const type = normalizeMapKpiType(tipo);
+
+  if (type === "semaforo" || type === "semáforo") {
+    const sem = normalizeSemaforoRaw(rawValue);
+    const label = sem.semaforo_label || normalizeLabel(sem.semaforo_color) || null;
+    const colorKey = semaforoColorKeyFromValue(label, sem.semaforo_color);
+    const colorHex =
+      sem.semaforo_color && /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(sem.semaforo_color)
+        ? sem.semaforo_color
+        : semaforoColorHexFromKey(colorKey);
+    return {
+      raw: rawValue ?? null,
+      label,
+      colorKey,
+      colorHex,
+    };
+  }
+
+  if (["boolean", "bool", "si_no", "sino", "yesno"].includes(type)) {
+    const label = normalizeBooleanLabel(rawValue);
+    const colorKey = label ? String(label).toLowerCase() : MAP_KPI_DEFAULT_COLOR_KEY;
+    return {
+      raw: rawValue ?? null,
+      label,
+      colorKey,
+      colorHex: null,
+    };
+  }
+
+  return {
+    raw: rawValue ?? null,
+    label: normalizeLabel(rawValue),
+    colorKey: normalizeLabel(rawValue)
+      ? String(normalizeLabel(rawValue))
+          .trim()
+          .toLowerCase()
+      : MAP_KPI_DEFAULT_COLOR_KEY,
+    colorHex: null,
+  };
+}
+
+function buildMapKpiPointPayload(context, rawValue) {
+  if (!context?.selectedFieldId) return null;
+
+  if (!context.applicable) {
+    return {
+      map_kpi_field_id: context.selectedFieldId,
+      map_kpi_field_label: context.fieldLabel || null,
+      map_kpi_value_raw: null,
+      map_kpi_value_label: null,
+      map_kpi_color_hex: null,
+      map_kpi_color_key: null,
+      map_kpi_legend_item: null,
+    };
+  }
+
+  const normalized = normalizeMapKpiRawValue(rawValue, context.fieldType);
+  const legendEntry =
+    (normalized.label && context.legendByLabel?.get(String(normalized.label).trim().toLowerCase())) ||
+    null;
+
+  const valueLabel = normalized.label || MAP_KPI_DEFAULT_LABEL;
+  const colorKey = legendEntry?.color_key || normalized.colorKey || MAP_KPI_DEFAULT_COLOR_KEY;
+  const colorHex =
+    legendEntry?.color_hex || normalized.colorHex || semaforoColorHexFromKey(colorKey);
+  const legendItem = {
+    key: legendEntry?.key || colorKey,
+    label: legendEntry?.label || valueLabel,
+    color_key: colorKey,
+    color_hex: colorHex,
+  };
+
+  return {
+    map_kpi_field_id: context.selectedFieldId,
+    map_kpi_field_label: context.fieldLabel || null,
+    map_kpi_value_raw: rawValue ?? null,
+    map_kpi_value_label: valueLabel,
+    map_kpi_color_hex: colorHex,
+    map_kpi_color_key: colorKey,
+    map_kpi_legend_item: legendItem,
+  };
+}
+
+async function buildSelectedMapKpiContext({ selectedFieldId, ids, db }) {
+  const fieldId = toInt(selectedFieldId, null);
+  if (!fieldId) return null;
+
+  const informeIds = Array.isArray(ids)
+    ? ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+    : [];
+
+  const rMeta = await db.query(
+    `
+    SELECT id_pregunta, etiqueta, LOWER(TRIM(tipo)) AS tipo
+    FROM ema.informe_pregunta
+    WHERE id_pregunta = $1
+    LIMIT 1
+    `,
+    [fieldId]
+  );
+
+  const meta = rMeta.rows?.[0] || null;
+  if (!meta) {
+    return {
+      selectedFieldId: fieldId,
+      fieldLabel: null,
+      fieldType: null,
+      applicable: false,
+      valueByInforme: new Map(),
+      legendByLabel: new Map(),
+    };
+  }
+
+  const fieldType = normalizeMapKpiType(meta.tipo);
+  const fieldLabel = meta.etiqueta || `Pregunta ${fieldId}`;
+  const applicable = isMapKpiFieldSupported(fieldType);
+  if (!applicable || !informeIds.length) {
+    return {
+      selectedFieldId: fieldId,
+      fieldLabel,
+      fieldType,
+      applicable,
+      valueByInforme: new Map(),
+      legendByLabel: new Map(),
+    };
+  }
+
+  const [rValues, rCounts] = await Promise.all([
+    db.query(
+      `
+      SELECT
+        r.id_informe,
+        MAX(
+          COALESCE(
+            CASE
+              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
+              ELSE NULL
+            END,
+            r.valor_texto,
+            r.valor_json::text
+          )
+        ) AS raw_value
+      FROM ema.informe_respuesta r
+      WHERE r.id_informe = ANY($1::int[])
+        AND r.id_pregunta = $2
+      GROUP BY r.id_informe
+      `,
+      [informeIds, fieldId]
+    ),
+    db.query(
+      `
+      SELECT
+        MIN(
+          TRIM(
+            COALESCE(
+              CASE
+                WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
+                ELSE NULL
+              END,
+              r.valor_texto,
+              r.valor_json::text,
+              ''
+            )
+          )
+        ) AS label,
+        COUNT(*)::int AS count
+      FROM ema.informe_respuesta r
+      WHERE r.id_informe = ANY($1::int[])
+        AND r.id_pregunta = $2
+        AND TRIM(
+          COALESCE(
+            CASE
+              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
+              ELSE NULL
+            END,
+            r.valor_texto,
+            r.valor_json::text,
+            ''
+          )
+        ) <> ''
+      GROUP BY LOWER(
+        TRIM(
+          COALESCE(
+            CASE
+              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
+              ELSE NULL
+            END,
+            r.valor_texto,
+            r.valor_json::text,
+            ''
+          )
+        )
+      )
+      ORDER BY count DESC, label ASC
+      `,
+      [informeIds, fieldId]
+    ),
+  ]);
+
+  const valueByInforme = new Map();
+  for (const row of rValues.rows || []) {
+    const idInforme = Number(row.id_informe);
+    if (!idInforme) continue;
+    valueByInforme.set(idInforme, row.raw_value ?? null);
+  }
+
+  const legendByLabel = new Map();
+  if (fieldType === "semaforo" || fieldType === "semáforo") {
+    for (const row of rCounts.rows || []) {
+      const normalized = normalizeMapKpiRawValue(row.label, fieldType);
+      const label = normalized.label || MAP_KPI_DEFAULT_LABEL;
+      const colorKey = normalized.colorKey || MAP_KPI_DEFAULT_COLOR_KEY;
+      const colorHex = normalized.colorHex || semaforoColorHexFromKey(colorKey);
+      legendByLabel.set(String(label).trim().toLowerCase(), {
+        key: colorKey,
+        label,
+        color_key: colorKey,
+        color_hex: colorHex,
+      });
+    }
+  } else {
+    let paletteIndex = 0;
+    for (const row of rCounts.rows || []) {
+      const normalized = normalizeMapKpiRawValue(row.label, fieldType);
+      const label = normalized.label;
+      if (!label) continue;
+      const colorHex = MAP_KPI_CATEGORY_PALETTE[paletteIndex % MAP_KPI_CATEGORY_PALETTE.length];
+      paletteIndex += 1;
+      const colorKey = normalized.colorKey || String(label).trim().toLowerCase();
+      legendByLabel.set(String(label).trim().toLowerCase(), {
+        key: colorKey,
+        label,
+        color_key: colorKey,
+        color_hex: colorHex,
+      });
+    }
+  }
+
+  return {
+    selectedFieldId: fieldId,
+    fieldLabel,
+    fieldType,
+    applicable: true,
+    valueByInforme,
+    legendByLabel,
+  };
+}
+
+async function buildDashboardInformesPoints({ ids, db, mapKpiContext = null }) {
   const informeIds = Array.isArray(ids)
     ? ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
     : [];
@@ -484,7 +793,7 @@ async function buildDashboardInformesPoints({ ids, db }) {
 
     const { semaforo_color, semaforo_label } = normalizeSemaforoRaw(row.semaforo_raw);
     const summary = summaryByInforme.get(Number(row.id_informe)) || null;
-    points.push({
+    const point = {
       id_informe: Number(row.id_informe),
       id_proyecto: Number(row.id_proyecto) || null,
       lat: Number(coords.lat),
@@ -498,7 +807,19 @@ async function buildDashboardInformesPoints({ ids, db }) {
       summary_text: summary?.summary_text || null,
       semaforo_color,
       semaforo_label,
-    });
+    };
+
+    if (mapKpiContext?.selectedFieldId) {
+      Object.assign(
+        point,
+        buildMapKpiPointPayload(
+          mapKpiContext,
+          mapKpiContext.valueByInforme?.get(Number(row.id_informe)) ?? null
+        )
+      );
+    }
+
+    points.push(point);
   }
 
   return points;
@@ -511,10 +832,11 @@ async function getDashboardGeoLinks(req, res) {
       return res.status(400).json({ ok: false, error: "id_proyecto es requerido" });
     }
 
-  const id_plantilla = toInt(req.body?.id_plantilla, null);
-  const date_from = toDateISO(req.body?.date_from);
-  const date_to = toDateISO(req.body?.date_to);
-  const limit = clampLimit(req.body?.limit, 50, 200);
+    const id_plantilla = toInt(req.body?.id_plantilla, null);
+    const date_from = toDateISO(req.body?.date_from);
+    const date_to = toDateISO(req.body?.date_to);
+    const limit = clampLimit(req.body?.limit, 50, 200);
+    const selected_map_field_id = toInt(req.body?.selected_map_field_id, null);
 
     const linkFields = req.body?.link_fields || {};
     const tramoFieldId = toInt(linkFields?.tramo_field_id, null);
@@ -601,6 +923,14 @@ async function getDashboardGeoLinks(req, res) {
       subtramo: await buildSubtramoCatalog({ idProyecto: id_proyecto, db: pool }),
     };
 
+    const mapKpiContext = selected_map_field_id
+      ? await buildSelectedMapKpiContext({
+          selectedFieldId: selected_map_field_id,
+          ids,
+          db: pool,
+        })
+      : null;
+
     let firstMeta = null;
     const items = [];
     for (const id_informe of ids) {
@@ -628,17 +958,30 @@ async function getDashboardGeoLinks(req, res) {
             : null,
       };
 
-      items.push({
+      const item = {
         id_informe,
         linkage: linkageRes.linkage,
         meta_local: { source_values_found },
-      });
+      };
+
+      if (mapKpiContext?.selectedFieldId) {
+        Object.assign(
+          item,
+          buildMapKpiPointPayload(
+            mapKpiContext,
+            mapKpiContext.valueByInforme?.get(Number(id_informe)) ?? null
+          )
+        );
+      }
+
+      items.push(item);
     }
 
     const resolverVersion = firstMeta?.resolver_version || "gva_tramos_v1";
     const informes_points = await buildDashboardInformesPoints({
       ids,
       db: pool,
+      mapKpiContext,
     });
 
     const submapa = await buildInformesSubmapPayload({

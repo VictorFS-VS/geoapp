@@ -113,6 +113,8 @@ export default function GVADashboardInformes() {
   const [showConfig, setShowConfig] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
   const [showSubmapa, setShowSubmapa] = useState(false);
+  const [selectedMapKpiId, setSelectedMapKpiId] = useState(null);
+  const [selectedMapKpiLabel, setSelectedMapKpiLabel] = useState("");
 
   const idProyecto = params?.id_proyecto;
   const kpis = data?.kpis || {};
@@ -168,6 +170,7 @@ export default function GVADashboardInformes() {
       date_from: appliedDateFrom || undefined,
       date_to: appliedDateTo || undefined,
       link_fields: linkFields || undefined,
+      selected_map_field_id: selectedMapKpiId || undefined,
       limit: 50,
     };
   }, [
@@ -184,6 +187,7 @@ export default function GVADashboardInformes() {
     appliedDateFrom,
     appliedDateTo,
     linkFields,
+    selectedMapKpiId,
   ]);
 
   const geoLinksCacheKey = useMemo(() => {
@@ -207,6 +211,7 @@ export default function GVADashboardInformes() {
       date_from: geoLinksPayload.date_from || "",
       date_to: geoLinksPayload.date_to || "",
       link_fields: geoLinksPayload.link_fields || {},
+      selected_map_field_id: geoLinksPayload.selected_map_field_id || null,
     };
     try {
       return JSON.stringify(key);
@@ -975,6 +980,8 @@ export default function GVADashboardInformes() {
           progresivasGeo={progresivasGeo}
           geometryLoading={geometryLoading}
           geometryError={geometryError}
+          selectedMapKpiId={selectedMapKpiId}
+          selectedMapKpiLabel={selectedMapKpiLabel}
           visible={showSubmapa}
         />
       ) : null}
@@ -1556,6 +1563,7 @@ export default function GVADashboardInformes() {
               const hasActiveInteractiveSelection = items.some((it) =>
                 isInteractiveValueActive(fs.id_pregunta, it.label || "(sin valor)")
               );
+              const isMapKpiActive = Number(selectedMapKpiId) === Number(fs.id_pregunta);
               const activeInteractiveValues = getInteractiveValuesForField(fs.id_pregunta);
               const hasInteractiveValues = activeInteractiveValues.length > 0;
               const pctLabel = (count) =>
@@ -1564,10 +1572,10 @@ export default function GVADashboardInformes() {
                 <div
                   key={fs.id_pregunta}
                   style={{
-                    border: "1px solid #e5e7eb",
+                    border: isMapKpiActive ? "1px solid #1d4ed8" : "1px solid #e5e7eb",
                     borderRadius: 12,
                     padding: 12,
-                    background: "#fff",
+                    background: isMapKpiActive ? "#eff6ff" : "#fff",
                     minHeight: 260,
                     display: "flex",
                     flexDirection: "column",
@@ -1582,6 +1590,30 @@ export default function GVADashboardInformes() {
                     }}
                   >
                     <div style={{ fontWeight: 800, fontSize: 14 }}>{fs.etiqueta}</div>
+                    {isEligible ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedMapKpiId(Number(fs.id_pregunta));
+                          setSelectedMapKpiLabel(fs.etiqueta || `Pregunta ${fs.id_pregunta}`);
+                          if (!showSubmapa && canShowSubmapa) setShowSubmapa(true);
+                        }}
+                        style={{
+                          border: isMapKpiActive ? "1px solid #1d4ed8" : "1px solid #d1d5db",
+                          background: isMapKpiActive ? "#1d4ed8" : "#ffffff",
+                          color: isMapKpiActive ? "#ffffff" : "#374151",
+                          borderRadius: 999,
+                          padding: "2px 8px",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                        title="Usar este KPI para colorear el mapa"
+                      >
+                        {isMapKpiActive ? "KPI mapa activo" : "Usar en mapa"}
+                      </button>
+                    ) : null}
                     {hasInteractiveValues ? (
                       <button
                         type="button"

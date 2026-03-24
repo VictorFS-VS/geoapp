@@ -36,9 +36,9 @@ const { crearNotificacion } = require("./notificaciones.controller");
 const {
   applyGdalProcessEnv,
   attachGdalSpawnError,
-  getConfiguredGdalData,
-  getConfiguredProjData,
+  buildGdalSpawnEnv,
   isGdalSpawnError,
+  resolveGdalBinary,
   spawnGdal,
 } = require("../utils/gdal");
 
@@ -46,8 +46,6 @@ const {
 // FIX DEFINITIVO GDAL / PROJ
 // ===========================
 applyGdalProcessEnv(process.env);
-const PROJ_DATA = getConfiguredProjData();
-const GDAL_DATA = getConfiguredGdalData();
 
 /* ===========================
    ✅ CRS: regla del sistema
@@ -64,21 +62,18 @@ const DEBUG_GEOM_POINTS = String(process.env.DEBUG_GEOM_POINTS || "").trim() ===
 /* ===========================
    ✅ Helper: args --config GDAL/PROJ
    =========================== */
-function gdalConfigArgs() {
-  return [
-    "--config",
-    "PROJ_DATA",
-    PROJ_DATA,
-    "--config",
-    "PROJ_LIB",
-    PROJ_DATA,
-    "--config",
-    "GDAL_DATA",
-    GDAL_DATA,
-    "--config",
-    "PROJ_NETWORK",
-    "OFF",
-  ];
+function gdalConfigArgs(tool = "ogr2ogr") {
+  const resolved = resolveGdalBinary(tool);
+  const env = buildGdalSpawnEnv(process.env, resolved.command);
+  const args = [];
+
+  if (env.PROJ_DATA) args.push("--config", "PROJ_DATA", env.PROJ_DATA);
+  if (env.PROJ_LIB) args.push("--config", "PROJ_LIB", env.PROJ_LIB);
+  if (env.GDAL_DATA) args.push("--config", "GDAL_DATA", env.GDAL_DATA);
+  if (env.PROJ_DATABASE_PATH) args.push("--config", "PROJ_DATABASE_PATH", env.PROJ_DATABASE_PATH);
+  args.push("--config", "PROJ_NETWORK", String(env.PROJ_NETWORK || "OFF"));
+
+  return args;
 }
 
 /* ===========================
@@ -189,7 +184,7 @@ function splitUniqueBase(baseUpper) {
    ============================================================ */
 function ogrInfoExtent(shpPath) {
   return new Promise((resolve, reject) => {
-    const args = [...gdalConfigArgs(), "-so", "-al", shpPath];
+    const args = [...gdalConfigArgs("ogrinfo"), "-so", "-al", shpPath];
     const p = spawnGdal("ogrinfo", args);
     attachGdalSpawnError(p, reject);
 
@@ -300,7 +295,7 @@ function ogrConvertToShp(inputPath, outDir, outBaseName) {
     const outPath = path.join(outDir, `${outBaseName}.shp`);
 
     const args = [
-      ...gdalConfigArgs(),
+      ...gdalConfigArgs("ogr2ogr"),
       "-f",
       "ESRI Shapefile",
       outPath,
@@ -337,11 +332,11 @@ function ogrReprojectShpToDbSrid(shpPath, outDir, outBaseName, inputSrid = DEFAU
       let sridToUse = Number(inputSrid) || DEFAULT_INPUT_SRID;
       if (!hasPrj) {
         sridToUse = await guessInputSridIfNoPrj(shpPath, sridToUse);
-        console.log(`🧭 Sin .prj => asumimos EPSG:${sridToUse} para ${path.basename(shpPath)}`);
+        //console.log(`🧭 Sin .prj => asumimos EPSG:${sridToUse} para ${path.basename(shpPath)}`);
       }
 
       const args = [
-        ...gdalConfigArgs(),
+        ...gdalConfigArgs("ogr2ogr"),
         "-f",
         "ESRI Shapefile",
         outPath,
@@ -516,7 +511,7 @@ function nltForTable(tablaDestino) {
 
 function ogrInfoFeatureCount(shpPath) {
   return new Promise((resolve, reject) => {
-    const args = [...gdalConfigArgs(), "-ro", "-so", "-al", shpPath];
+    const args = [...gdalConfigArgs("ogrinfo"), "-ro", "-so", "-al", shpPath];
     const p = spawnGdal("ogrinfo", args);
     attachGdalSpawnError(p, reject);
     let out = "";
@@ -537,7 +532,7 @@ function ogrInfoFeatureCount(shpPath) {
 function runOgr2OgrToStdoutSrid(shpPath, srid) {
   return new Promise((resolve, reject) => {
     const args = [
-      ...gdalConfigArgs(),
+      ...gdalConfigArgs("ogr2ogr"),
       "-f",
       "GeoJSON",
       "/vsistdout/",
