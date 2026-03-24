@@ -235,6 +235,46 @@ function normalizeExcelValueForPregunta(value, pregunta) {
 }
 
 /* =========================
+   Helpers: imágenes / links
+========================= */
+function isPreguntaImagen(pregunta) {
+  const tipo = String(pregunta?.tipo || "").trim().toLowerCase();
+  const etiqueta = normKey(pregunta?.etiqueta || pregunta?.titulo || "");
+
+  return (
+    tipo === "imagen" ||
+    tipo === "image" ||
+    tipo === "foto" ||
+    tipo === "photoupload" ||
+    tipo === "vphoto" ||
+    tipo === "archivo_imagen" ||
+    etiqueta.includes("foto") ||
+    etiqueta.includes("imagen") ||
+    etiqueta.includes("capturada en movil") ||
+    etiqueta.includes("capturada en móvil")
+  );
+}
+
+function splitImageLinks(value) {
+  if (value === null || value === undefined) return [];
+
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((x) => splitImageLinks(x))
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+  }
+
+  const s = String(value).trim();
+  if (!s) return [];
+
+  return s
+    .split(/\r?\n|,/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+/* =========================
    Similaridad (fuzzy)
 ========================= */
 function tokensOf(s) {
@@ -758,7 +798,14 @@ export default function ImportarRespuestasExcelModal({
 
         if (v === "" || v === null || v === undefined) continue;
 
-        respuestas[String(idPreg)] = v;
+        if (isPreguntaImagen(pregunta)) {
+          const links = splitImageLinks(v);
+          if (links.length) {
+            respuestas[String(idPreg)] = links;
+          }
+        } else {
+          respuestas[String(idPreg)] = v;
+        }
       }
 
       if (gpsPreguntaId && latCol && lngCol) {
@@ -995,6 +1042,8 @@ export default function ImportarRespuestasExcelModal({
 
     for (const row of rowsToCreate) {
       try {
+        console.log("ROW A ENVIAR:", row.respuestas);
+
         await apiSend(API_URL, authHeaders, `/informes`, "POST", {
           id_proyecto: row.id_proyecto,
           id_plantilla: row.id_plantilla,

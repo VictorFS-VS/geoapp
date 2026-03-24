@@ -1931,7 +1931,7 @@ async function deletePregunta(req, res) {
 
   // POST /api/informes (crear)
   async function crearInforme(req, res) {
-    const { id_plantilla, id_proyecto, id_link, titulo, respuestas } = req.body;
+    const { id_plantilla, id_proyecto, titulo, respuestas } = req.body;
 
     const idPlantilla = Number(id_plantilla);
     if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
@@ -1941,11 +1941,6 @@ async function deletePregunta(req, res) {
     const idProyecto = id_proyecto ? Number(id_proyecto) : null;
     if (id_proyecto && (!Number.isFinite(idProyecto) || idProyecto <= 0)) {
       return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
-    }
-
-    const idLink = id_link ? Number(id_link) : null;
-    if (id_link && (!Number.isFinite(idLink) || idLink <= 0)) {
-      return res.status(400).json({ ok: false, error: "id_link inválido" });
     }
 
     let respuestasObj = {};
@@ -1966,7 +1961,6 @@ async function deletePregunta(req, res) {
     try {
       await client.query("BEGIN");
 
-      // ✅ IMPORTANTE: incluir opciones_json (semaforo)
       const qRes = await client.query(
         `
         SELECT
@@ -1998,6 +1992,32 @@ async function deletePregunta(req, res) {
       }
 
       const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
+
+      function normText(s) {
+        return String(s || "")
+          .trim()
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "");
+      }
+
+      function isPreguntaImagenLike(q) {
+        const tipo = normText(q?.tipo);
+        const etiqueta = normText(q?.etiqueta || q?.titulo || "");
+
+        return (
+          tipo === "imagen" ||
+          tipo === "image" ||
+          tipo === "foto" ||
+          tipo === "photoupload" ||
+          tipo === "vphoto" ||
+          tipo === "archivo_imagen" ||
+          etiqueta.includes("foto") ||
+          etiqueta.includes("imagen") ||
+          etiqueta.includes("capturada en movil") ||
+          etiqueta.includes("capturada en móvil")
+        );
+      }
 
       const answersForRules = {};
       for (const [k, v] of Object.entries(respuestasObj || {})) {
@@ -2065,24 +2085,30 @@ async function deletePregunta(req, res) {
         if (typeof val === "object") {
           const candidates = [val.url, val.ruta, val.path];
           return candidates
-            .map((x) => String(x || "").trim())
+            .flatMap((x) =>
+              String(x || "")
+                .split(/\r?\n|,/)
+                .map((s) => s.trim())
+            )
             .filter(Boolean);
         }
 
         if (typeof val === "string") {
-          const s = val.trim();
-          return s ? [s] : [];
+          return val
+            .split(/\r?\n|,/)
+            .map((s) => s.trim())
+            .filter(Boolean);
         }
 
         return [];
       }
 
-      // ✅ required no-imagen
+      // required no-imagen
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
 
-        if (String(q.tipo).toLowerCase() === "imagen") continue;
+        if (isPreguntaImagenLike(q)) continue;
 
         const raw = getRespuestaRawPorPregunta(qid);
         const val = _coerceValue(raw);
@@ -2092,11 +2118,11 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // ✅ required imagen (ahora: archivo O link/ruta)
+      // required imagen
       for (const qid of requiredSet) {
         const q = preguntasById.get(qid);
         if (!q) continue;
-        if (String(q.tipo).toLowerCase() !== "imagen") continue;
+        if (!isPreguntaImagenLike(q)) continue;
 
         const field = `fotos_${qid}`;
         const tieneArchivos = !!files?.[field];
@@ -2118,7 +2144,6 @@ async function deletePregunta(req, res) {
         });
       }
 
-      // ✅ validar ID único antes de crear
       await validarPreguntasUnicas({
         client,
         idPlantilla,
@@ -2128,22 +2153,19 @@ async function deletePregunta(req, res) {
         excludeInformeId: null,
       });
 
-      // ✅ crear informe
       const infRes = await client.query(
         `
-        INSERT INTO ema.informe (id_plantilla, id_proyecto, id_link, titulo)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
+        VALUES ($1, $2, $3)
         RETURNING *
         `,
-        [idPlantilla, idProyecto, idLink, titulo || null]
+        [idPlantilla, idProyecto, titulo || null]
       );
 
       const informe = infRes.rows[0];
       const idInforme = informe.id_informe;
 
-      // ✅ guardar respuestas (solo visibles)
-      // ✅ IMPORTANTE: las preguntas tipo imagen NO se guardan en informe_respuesta,
-      //    porque ahora se guardan siempre en ema.informe_foto, ya sea archivo o link
+      // guardar respuestas normales
       for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
         const idPregunta = Number(idPreguntaStr);
         if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
@@ -2152,7 +2174,7 @@ async function deletePregunta(req, res) {
         if (!q) continue;
         if (!visibleSet.has(idPregunta)) continue;
 
-        if (String(q.tipo || "").trim().toLowerCase() === "imagen") {
+        if (isPreguntaImagenLike(q)) {
           continue;
         }
 
@@ -2190,7 +2212,7 @@ async function deletePregunta(req, res) {
         );
       }
 
-      // ✅ preparar carpeta para archivos físicos
+      // carpeta archivos físicos
       const uploadsRoot = path.join(__dirname, "..", "uploads");
       const baseDir = path.join(
         uploadsRoot,
@@ -2201,7 +2223,7 @@ async function deletePregunta(req, res) {
       );
       await fs.promises.mkdir(baseDir, { recursive: true });
 
-      // ✅ 1) guardar links/rutas de preguntas imagen en ema.informe_foto
+      // guardar links/rutas en informe_foto
       for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
         const idPregunta = Number(idPreguntaStr);
         if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
@@ -2210,7 +2232,7 @@ async function deletePregunta(req, res) {
         if (!q) continue;
         if (!visibleSet.has(idPregunta)) continue;
 
-        const esImagen = String(q.tipo || "").trim().toLowerCase() === "imagen";
+        const esImagen = isPreguntaImagenLike(q);
         const permite = !!q.permite_foto || esImagen;
         if (!permite) continue;
 
@@ -2233,7 +2255,7 @@ async function deletePregunta(req, res) {
         }
       }
 
-      // ✅ 2) subir fotos físicas seguras
+      // subir fotos físicas
       for (const [fieldName, fileOrFiles] of Object.entries(files)) {
         if (!fieldName.startsWith("fotos_")) continue;
 
@@ -2244,10 +2266,9 @@ async function deletePregunta(req, res) {
         if (!q) continue;
         if (!visibleSet.has(idPregunta)) continue;
 
-        const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
+        const permite = !!q.permite_foto || isPreguntaImagenLike(q);
         if (!permite) continue;
 
-        // continuar orden después de los links ya insertados
         const countPrev = await client.query(
           `
           SELECT COUNT(*)::int AS total
@@ -2883,6 +2904,32 @@ async function deletePregunta(req, res) {
 
       const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
 
+      function normText(s) {
+        return String(s || "")
+          .trim()
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "");
+      }
+
+      function isPreguntaImagenLike(q) {
+        const tipo = normText(q?.tipo);
+        const etiqueta = normText(q?.etiqueta || q?.titulo || "");
+
+        return (
+          tipo === "imagen" ||
+          tipo === "image" ||
+          tipo === "foto" ||
+          tipo === "photoupload" ||
+          tipo === "vphoto" ||
+          tipo === "archivo_imagen" ||
+          etiqueta.includes("foto") ||
+          etiqueta.includes("imagen") ||
+          etiqueta.includes("capturada en movil") ||
+          etiqueta.includes("capturada en móvil")
+        );
+      }
+
       const answersForRules = {};
       if (respuestasObj !== undefined) {
         for (const [k, v] of Object.entries(respuestasObj || {})) {
@@ -2955,13 +3002,19 @@ async function deletePregunta(req, res) {
         if (typeof val === "object") {
           const candidates = [val.url, val.ruta, val.path];
           return candidates
-            .map((x) => String(x || "").trim())
+            .flatMap((x) =>
+              String(x || "")
+                .split(/\r?\n|,/)
+                .map((s) => s.trim())
+            )
             .filter(Boolean);
         }
 
         if (typeof val === "string") {
-          const s = val.trim();
-          return s ? [s] : [];
+          return val
+            .split(/\r?\n|,/)
+            .map((s) => s.trim())
+            .filter(Boolean);
         }
 
         return [];
@@ -2981,7 +3034,7 @@ async function deletePregunta(req, res) {
         for (const qid of requiredSet) {
           const q = preguntasById.get(qid);
           if (!q) continue;
-          if (String(q.tipo).toLowerCase() === "imagen") continue;
+          if (isPreguntaImagenLike(q)) continue;
 
           const raw = getRespuestaRawPorPregunta(qid);
           const val = _coerceValue(raw);
@@ -2995,7 +3048,7 @@ async function deletePregunta(req, res) {
         for (const qid of requiredSet) {
           const q = preguntasById.get(qid);
           if (!q) continue;
-          if (String(q.tipo).toLowerCase() !== "imagen") continue;
+          if (!isPreguntaImagenLike(q)) continue;
 
           const curFotos = await client.query(
             `
@@ -3070,7 +3123,6 @@ async function deletePregunta(req, res) {
           try {
             const ruta = String(f.ruta_archivo || "").trim();
 
-            // ✅ si era URL externa, no se intenta borrar del disco
             if (isExternalUrl(ruta)) continue;
 
             const abs = path.resolve(path.join(uploadsRoot, ruta.replace(/\//g, path.sep)));
@@ -3100,8 +3152,7 @@ async function deletePregunta(req, res) {
           if (!q) continue;
           if (!visibleSet.has(idPregunta)) continue;
 
-          // ✅ Las preguntas tipo imagen no van a informe_respuesta
-          if (String(q.tipo || "").trim().toLowerCase() === "imagen") {
+          if (isPreguntaImagenLike(q)) {
             continue;
           }
 
@@ -3168,7 +3219,7 @@ async function deletePregunta(req, res) {
           if (!q) continue;
           if (!visibleSet.has(idPregunta)) continue;
 
-          const esImagen = String(q.tipo || "").trim().toLowerCase() === "imagen";
+          const esImagen = isPreguntaImagenLike(q);
           const permite = !!q.permite_foto || esImagen;
           if (!permite) continue;
 
@@ -3214,7 +3265,7 @@ async function deletePregunta(req, res) {
         if (!q) continue;
         if (!visibleSet.has(idPregunta)) continue;
 
-        const permite = !!q.permite_foto || String(q.tipo).toLowerCase() === "imagen";
+        const permite = !!q.permite_foto || isPreguntaImagenLike(q);
         if (!permite) continue;
 
         const last = await client.query(
