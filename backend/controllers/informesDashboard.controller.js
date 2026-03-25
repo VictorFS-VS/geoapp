@@ -835,7 +835,8 @@ async function getDashboardGeoLinks(req, res) {
     const id_plantilla = toInt(req.body?.id_plantilla, null);
     const date_from = toDateISO(req.body?.date_from);
     const date_to = toDateISO(req.body?.date_to);
-    const limit = clampLimit(req.body?.limit, 50, 5000);
+    const include_all_points = req.body?.include_all_points === true;
+    const limit = include_all_points ? 999999 : clampLimit(req.body?.limit, 50, 5000);
     const selected_map_field_id = toInt(req.body?.selected_map_field_id, null);
 
     const linkFields = req.body?.link_fields || {};
@@ -859,7 +860,7 @@ async function getDashboardGeoLinks(req, res) {
       date_field_id: req.body?.date_field_id,
       user: req.user,
       limit,
-      maxLimit: 200,
+      maxLimit: include_all_points ? 999999 : 200,
     });
 
     if (universe.error) {

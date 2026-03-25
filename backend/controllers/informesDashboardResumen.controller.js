@@ -563,33 +563,27 @@ async function buildDashboardUniverseContext(options = {}) {
     if (date_from) params.push(date_from);
     if (date_to) params.push(date_to);
 
+    const dateExprSql = `(
+      CASE
+        WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
+        WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
+        WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
+             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
+             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
+             THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
+        ELSE NULL
+      END
+    )`;
+
     whereSql += `
       AND EXISTS (
         SELECT 1
         FROM ema.informe_respuesta r_d
         WHERE r_d.id_informe = i.id_informe
           AND r_d.id_pregunta = $${dateIdParam}
-          AND (
-            CASE
-              WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-              WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-              ELSE NULL
-            END
-          ) IS NOT NULL
-          ${date_from ? `AND (
-            CASE
-              WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-              WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-              ELSE NULL
-            END
-          ) >= $${dateFromParam}::date` : ""}
-          ${date_to ? `AND (
-            CASE
-              WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-              WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-              ELSE NULL
-            END
-          ) <= $${dateToParam}::date` : ""}
+          AND ${dateExprSql} IS NOT NULL
+          ${date_from ? `AND ${dateExprSql} >= $${dateFromParam}::date` : ""}
+          ${date_to ? `AND ${dateExprSql} <= $${dateToParam}::date` : ""}
       )
     `;
   }
@@ -1030,13 +1024,17 @@ async function getInformesResumenBase(req, res) {
             ON r_d.id_informe = i.id_informe
            AND r_d.id_pregunta = $${temporalFieldParam}
         `;
-        temporalDateExpr = `
+        temporalDateExpr = `(
           CASE
             WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
             WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
+            WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
+                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
+                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
+                 THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
             ELSE NULL
           END
-        `;
+        )`;
       }
 
       const temporalBase = `
