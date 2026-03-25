@@ -227,6 +227,8 @@ export default function GVASubmapa({
   const [showInformes, setShowInformes] = useState(true);
   const [showTramos, setShowTramos] = useState(false);
   const [showProgresivas, setShowProgresivas] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
   const mapRef = useRef(null);
   const googleRef = useRef(null);
   const lastFitKeyRef = useRef("");
@@ -478,20 +480,21 @@ export default function GVASubmapa({
       .finally(() => {
         informePopupInflightRef.current.delete(idInforme);
       });
-
-    informePopupInflightRef.current.set(idInforme, promise);
     return promise;
   }, [informePopupCache]);
 
-  const handleOpenInforme = useCallback(
-    (point) => {
-      const idInforme = Number(point?.id_informe);
-      if (!idInforme) return;
-      setSelectedInformeId(idInforme);
-      setShowInformeModal(true);
-    },
-    []
-  );
+  const handleOpenInforme = useCallback((point) => {
+    const idInforme = Number(point?.id_informe);
+    if (!idInforme) return;
+    setSelectedInformeId(idInforme);
+    setShowInformeModal(true);
+  }, []);
+
+  const handlePreviewPhoto = useCallback((url, title) => {
+    if (!url) return;
+    setPreviewPhoto({ url, title });
+    setShowPreviewModal(true);
+  }, []);
 
   const handleMapReady = useCallback(({ map, google, ready, error: shellError }) => {
     mapRef.current = map || null;
@@ -1036,6 +1039,7 @@ export default function GVASubmapa({
                       onOpenPoint={handleOpenInforme}
                       getPointPopupState={getInformePopupState}
                       onSelectPopupPhoto={handleSelectInformePopupPhoto}
+                      onPreviewPhoto={handlePreviewPhoto}
                       getPointInfo={getInformePointInfo}
                     />
                   </>
@@ -1052,6 +1056,65 @@ export default function GVASubmapa({
             idInforme={selectedInformeId}
             mode="view"
           />
+
+          <Modal
+            show={showPreviewModal}
+            onHide={() => setShowPreviewModal(false)}
+            centered
+            size="lg"
+            contentClassName="bg-transparent border-0"
+          >
+            <div style={{ position: "relative", textAlign: "center" }}>
+              <button
+                type="button"
+                onClick={() => setShowPreviewModal(false)}
+                style={{
+                  position: "absolute",
+                  top: -10,
+                  right: -10,
+                  background: "#111827",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 32,
+                  height: 32,
+                  fontSize: 20,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  display: "grid",
+                  placeItems: "center",
+                  zIndex: 10,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                }}
+              >
+                ×
+              </button>
+              <img
+                src={previewPhoto?.url || ""}
+                alt={previewPhoto?.title || "Vista previa"}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "85vh",
+                  borderRadius: 12,
+                  boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
+                  background: "#000",
+                }}
+              />
+              {previewPhoto?.title && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    color: "#fff",
+                    textShadow: "0 2px 4px rgba(0,0,0,0.8)",
+                    fontWeight: 700,
+                    fontSize: 16,
+                  }}
+                >
+                  {previewPhoto.title}
+                </div>
+              )}
+            </div>
+          </Modal>
         </div>
       )}
     </div>

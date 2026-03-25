@@ -196,6 +196,7 @@ export default function GVADashboardInformes() {
     appliedDateTo,
     linkFields,
     selectedMapKpiId,
+    includeAllPoints,
   ]);
 
   const geoLinksCacheKey = useMemo(() => {
