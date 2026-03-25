@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getResumen, getPlantillas, getPlantillaMetadata } from "../services/informesDashboardService";
 
+const MAX_DEFAULT_SELECTED_FIELDS = 10;
+
 function toPositiveInt(v) {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -254,7 +256,8 @@ export function useInformesDashboard() {
   const buildDefaultDraftConfig = (fields) => {
     const resultableIds = fields
       .filter((f) => f?.resultable)
-      .map((f) => f.id_pregunta);
+      .map((f) => f.id_pregunta)
+      .slice(0, MAX_DEFAULT_SELECTED_FIELDS);
     const defaults = getDefaultDateRange();
 
     return {
@@ -357,7 +360,7 @@ export function useInformesDashboard() {
           .map((id) => Number(id))
           .filter((id) => resultableIds.has(id))
       ),
-    ];
+    ].slice(0, MAX_DEFAULT_SELECTED_FIELDS);
     const selectedFilterFieldIds = [
       ...new Set(
         (Array.isArray(raw.selectedFilterFieldIds) ? raw.selectedFilterFieldIds : [])
@@ -787,6 +790,7 @@ export function useInformesDashboard() {
     (async () => {
       setMetadataLoading(true);
       setMetadataError("");
+      setMetadata(null); // Reset metadata immediately to prevent stale processing
       try {
         const resp = await getPlantillaMetadata(params.id_proyecto, selectedPlantillaId);
         if (!cancelled) setMetadata(resp);
@@ -835,7 +839,9 @@ export function useInformesDashboard() {
   }, [selectedPlantillaId, selectedFieldIds, selectedFilterFieldIds, searchFieldIds, dateFieldId, draftDateFrom, draftDateTo, draftTimeGrouping, draftSearchText, dynamicFilters, fieldChartTypes, showPercentages, appliedDateFrom, appliedDateTo, appliedTimeGrouping, appliedSearchText]);
 
   useEffect(() => {
-    if (!selectedPlantillaId || !availableFields.length) return;
+    const isMetadataReady = !metadataLoading && metadata && Number(metadata.plantilla?.id_plantilla) === Number(selectedPlantillaId);
+    if (!selectedPlantillaId || !isMetadataReady || !availableFields.length) return;
+
 
     const resultableIds = new Set(
       availableFields.filter((f) => f.resultable).map((f) => f.id_pregunta)
@@ -992,7 +998,8 @@ export function useInformesDashboard() {
       !!appliedSearchText ||
       (appliedTimeGrouping || "week") !== "week";
 
-    if (!hasAppliedConfig) return;
+    const isMetadataMatched = !metadataLoading && metadata && Number(metadata.plantilla?.id_plantilla) === Number(plantillaId);
+    if (!hasAppliedConfig || !isMetadataMatched) return;
 
     writeStoredConfig(projectId, plantillaId, {
       selectedFieldIds: appliedFields,
