@@ -115,6 +115,12 @@ export default function GVADashboardInformes() {
   const [showSubmapa, setShowSubmapa] = useState(false);
   const [selectedMapKpiId, setSelectedMapKpiId] = useState(null);
   const [selectedMapKpiLabel, setSelectedMapKpiLabel] = useState("");
+  const [resultsQuery, setResultsQuery] = useState("");
+  const [filtersQuery, setFiltersQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [resultsOpen, setResultsOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const idProyecto = params?.id_proyecto;
   const kpis = data?.kpis || {};
@@ -171,7 +177,7 @@ export default function GVADashboardInformes() {
       date_to: appliedDateTo || undefined,
       link_fields: linkFields || undefined,
       selected_map_field_id: selectedMapKpiId || undefined,
-      limit: 50,
+      limit: 5000,
     };
   }, [
     canShowSubmapa,
@@ -349,6 +355,20 @@ export default function GVADashboardInformes() {
   const openConfig = () => {
     resetDraftFromApplied();
     setShowConfig(true);
+  };
+
+  const clearGroupResults = () => {
+    [...selectedFieldIds].forEach((id) => toggleFieldSelected(id, false));
+  };
+
+  const clearGroupFilters = () => {
+    [...selectedFilterFieldIds].forEach((id) => toggleFilterSelected(id, false));
+  };
+
+  const clearGroupSearch = () => {
+    availableSearchFields
+      .filter((f) => searchFieldIds.has(f.id_pregunta))
+      .forEach((f) => toggleSearchFieldSelected(f.id_pregunta, false));
   };
 
   const cancelConfig = () => {
@@ -2207,51 +2227,177 @@ export default function GVADashboardInformes() {
 
           {selectedPlantillaId && groupedAvailableFields.results.length > 0 ? (
             <div style={{ marginBottom: 18, ...panelStyle }}>
-              <div style={{ fontWeight: 800, marginBottom: 6 }}>
-                Resultados del dashboard
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontWeight: 800 }}>Resultados del dashboard</div>
+                  {selectedFieldIds.size > 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+                      {selectedFieldIds.size}
+                    </span>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {selectedFieldIds.size > 0 ? (
+                    <button type="button" onClick={clearGroupResults} style={buttonStyle}>
+                      Limpiar selección
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setResultsOpen((v) => !v)}
+                    style={{ ...buttonStyle, minWidth: 28, padding: "4px 8px" }}
+                    title={resultsOpen ? "Colapsar" : "Expandir"}
+                  >
+                    {resultsOpen ? "▲" : "▼"}
+                  </button>
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
-                Seleccionados: {selectedFieldIds.size}
-              </div>
-              <ul style={{ marginTop: 6 }}>
-                {groupedAvailableFields.results.map((f) => renderFieldRow(f, "results"))}
-              </ul>
+              {resultsOpen ? (
+                <>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                    Seleccionados: {selectedFieldIds.size}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Buscar campo..."
+                    value={resultsQuery}
+                    onChange={(e) => setResultsQuery(e.target.value)}
+                    style={{ ...filterInputStyle, marginBottom: 8 }}
+                  />
+                  <ul style={{ marginTop: 6 }}>
+                    {groupedAvailableFields.results
+                      .filter((f) => {
+                        const q = resultsQuery.trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          f.etiqueta.toLowerCase().includes(q) ||
+                          (f.seccion || "").toLowerCase().includes(q)
+                        );
+                      })
+                      .map((f) => renderFieldRow(f, "results"))}
+                  </ul>
+                </>
+              ) : null}
             </div>
           ) : null}
 
           {selectedPlantillaId && groupedAvailableFields.filterOnly.length > 0 ? (
             <div style={{ marginBottom: 18, ...panelStyle }}>
-              <div style={{ fontWeight: 800, marginBottom: 6 }}>
-                Filtros del dashboard
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontWeight: 800 }}>Filtros del dashboard</div>
+                  {selectedFilterFieldIds.size > 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+                      {selectedFilterFieldIds.size}
+                    </span>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {selectedFilterFieldIds.size > 0 ? (
+                    <button type="button" onClick={clearGroupFilters} style={buttonStyle}>
+                      Limpiar selección
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setFiltersOpen((v) => !v)}
+                    style={{ ...buttonStyle, minWidth: 28, padding: "4px 8px" }}
+                    title={filtersOpen ? "Colapsar" : "Expandir"}
+                  >
+                    {filtersOpen ? "▲" : "▼"}
+                  </button>
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
-                Seleccionados:{" "}
-                {
-                  groupedAvailableFields.filterOnly.filter((f) =>
-                    selectedFilterFieldIds.has(f.id_pregunta)
-                  ).length
-                }
-              </div>
-              <ul style={{ marginTop: 6 }}>
-                {groupedAvailableFields.filterOnly.map((f) => renderFieldRow(f, "filter"))}
-              </ul>
+              {filtersOpen ? (
+                <>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                    Seleccionados:{" "}
+                    {
+                      groupedAvailableFields.filterOnly.filter((f) =>
+                        selectedFilterFieldIds.has(f.id_pregunta)
+                      ).length
+                    }
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Buscar campo..."
+                    value={filtersQuery}
+                    onChange={(e) => setFiltersQuery(e.target.value)}
+                    style={{ ...filterInputStyle, marginBottom: 8 }}
+                  />
+                  <ul style={{ marginTop: 6 }}>
+                    {groupedAvailableFields.filterOnly
+                      .filter((f) => {
+                        const q = filtersQuery.trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          f.etiqueta.toLowerCase().includes(q) ||
+                          (f.seccion || "").toLowerCase().includes(q)
+                        );
+                      })
+                      .map((f) => renderFieldRow(f, "filter"))}
+                  </ul>
+                </>
+              ) : null}
             </div>
           ) : null}
 
           {selectedPlantillaId && availableSearchFields.length > 0 ? (
             <div style={{ marginBottom: 18, ...panelStyle }}>
-              <div style={{ fontWeight: 800, marginBottom: 6 }}>
-                Busqueda textual
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontWeight: 800 }}>Busqueda textual</div>
+                  {searchFieldIds.size > 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+                      {searchFieldIds.size}
+                    </span>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {searchFieldIds.size > 0 ? (
+                    <button type="button" onClick={clearGroupSearch} style={buttonStyle}>
+                      Limpiar selección
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setSearchOpen((v) => !v)}
+                    style={{ ...buttonStyle, minWidth: 28, padding: "4px 8px" }}
+                    title={searchOpen ? "Colapsar" : "Expandir"}
+                  >
+                    {searchOpen ? "▲" : "▼"}
+                  </button>
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
-                Estos campos se usan para la busqueda del subheader.
-              </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
-                Seleccionados: {searchFieldIds.size}
-              </div>
-              <ul style={{ marginTop: 6 }}>
-                {availableSearchFields.map((f) => renderFieldRow(f, "search"))}
-              </ul>
+              {searchOpen ? (
+                <>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                    Estos campos se usan para la busqueda del subheader.
+                  </div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+                    Seleccionados: {searchFieldIds.size}
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Buscar campo..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={{ ...filterInputStyle, marginBottom: 8 }}
+                  />
+                  <ul style={{ marginTop: 6 }}>
+                    {availableSearchFields
+                      .filter((f) => {
+                        const q = searchQuery.trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          f.etiqueta.toLowerCase().includes(q) ||
+                          (f.seccion || "").toLowerCase().includes(q)
+                        );
+                      })
+                      .map((f) => renderFieldRow(f, "search"))}
+                  </ul>
+                </>
+              ) : null}
             </div>
           ) : null}
 

@@ -835,7 +835,7 @@ async function getDashboardGeoLinks(req, res) {
     const id_plantilla = toInt(req.body?.id_plantilla, null);
     const date_from = toDateISO(req.body?.date_from);
     const date_to = toDateISO(req.body?.date_to);
-    const limit = clampLimit(req.body?.limit, 50, 200);
+    const limit = clampLimit(req.body?.limit, 50, 5000);
     const selected_map_field_id = toInt(req.body?.selected_map_field_id, null);
 
     const linkFields = req.body?.link_fields || {};

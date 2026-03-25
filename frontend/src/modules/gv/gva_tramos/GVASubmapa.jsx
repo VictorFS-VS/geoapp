@@ -233,6 +233,7 @@ export default function GVASubmapa({
   const [mapReady, setMapReady] = useState(false);
   const [mapShellError, setMapShellError] = useState("");
   const [tramosBounds, setTramosBounds] = useState(null);
+  const [mapTypeId, setMapTypeId] = useState("roadmap");
 
   const submapa = data?.submapa || {};
   const informesPoints = safeArray(data?.informes_points);
@@ -640,6 +641,27 @@ export default function GVASubmapa({
           Limpiar seleccion
         </button>
       ) : null}
+      <button
+        type="button"
+        onClick={() => setMapTypeId((prev) => (prev === "roadmap" ? "hybrid" : "roadmap"))}
+        style={{
+          border: "1px solid #e5e7eb",
+          background: "#ffffff",
+          borderRadius: 999,
+          padding: "5px 12px",
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          color: mapTypeId === "hybrid" ? "#1d4ed8" : "#334155",
+          borderColor: mapTypeId === "hybrid" ? "#bfdbfe" : "#e5e7eb",
+        }}
+        title="Cambiar tipo de mapa"
+      >
+        {mapTypeId === "hybrid" ? "Satélite activo" : "Ver satélite"}
+      </button>
       {onRetry ? (
         <button
           type="button"
@@ -913,7 +935,7 @@ export default function GVASubmapa({
               height="100%"
               initialCenter={{ lat: -25.3, lng: -57.6 }}
               initialZoom={8}
-              mapTypeId="roadmap"
+              mapTypeId={mapTypeId}
               fullscreenEnabled
               toolbar={toolbarContent}
               overlayTop={overlayTopContent}
