@@ -1000,7 +1000,10 @@ async function getInformesResumenBase(req, res) {
       date_field_id: dateFieldId,
       date_field_label: dateFieldLabel,
       time_grouping,
+      absolute_min: null,
+      absolute_max: null,
       series: [],
+      series_absolute: [],
     };
 
     try {
@@ -1072,6 +1075,74 @@ async function getInformesResumenBase(req, res) {
       `;
 
       const rTemporal = await pool.query(qTemporal, temporalParams);
+
+      const absoluteUniverse = await buildDashboardUniverseContext({
+        id_proyecto,
+        id_plantilla,
+        date_from: null,
+        date_to: null,
+        solo_cerrados,
+        filters: req.query.filters,
+        interactive_filters: req.query.interactive_filters,
+        search_text: req.query.search_text,
+        search_field_ids: req.query.search_field_ids,
+        date_field_id: req.query.date_field_id,
+        user: req.user,
+      });
+
+      let absDateExpr = "i.fecha_creado::date";
+      let absJoin = "";
+      let absParams = absoluteUniverse.params.slice();
+
+      if (absoluteUniverse.dateFieldKind === "field") {
+        const absFieldParam = absParams.length + 1;
+        absParams.push(toInt(absoluteUniverse.dateFieldId, null));
+        absJoin = `
+          JOIN ema.informe_respuesta r_d_abs
+            ON r_d_abs.id_informe = i.id_informe
+           AND r_d_abs.id_pregunta = $${absFieldParam}
+        `;
+        absDateExpr = `(
+          CASE
+            WHEN COALESCE(r_d_abs.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d_abs.valor_texto, 1, 10)::date
+            WHEN COALESCE(r_d_abs.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d_abs.valor_json::text, 1, 10)::date
+            WHEN TRIM(COALESCE(r_d_abs.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
+                 AND CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
+                 AND CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
+                 THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
+            ELSE NULL
+          END
+        )`;
+      }
+
+      const qAbsolute = `
+        SELECT 
+          MIN(${absDateExpr}) AS absolute_min,
+          MAX(${absDateExpr}) AS absolute_max
+        ${absoluteUniverse.joinSql}
+        ${absJoin}
+        ${absoluteUniverse.whereSql}
+      `;
+
+      const rAbsolute = await pool.query(qAbsolute, absParams);
+      temporal.absolute_min = rAbsolute.rows[0]?.absolute_min ? new Date(rAbsolute.rows[0].absolute_min).toISOString().slice(0, 10) : null;
+      temporal.absolute_max = rAbsolute.rows[0]?.absolute_max ? new Date(rAbsolute.rows[0].absolute_max).toISOString().slice(0, 10) : null;
+
+      const qAbsoluteSeries = `
+        SELECT
+          ${bucketStartExpr.replace(/date_value/g, absDateExpr)} AS bucket_start,
+          ${labelExpr.replace(/date_value/g, absDateExpr)} AS label,
+          COUNT(*)::int AS count
+        ${absoluteUniverse.joinSql}
+        ${absJoin}
+        ${absoluteUniverse.whereSql}
+        AND ${absDateExpr} IS NOT NULL
+        GROUP BY bucket_start, label
+        ORDER BY bucket_start ASC
+      `;
+      const rAbsoluteSeries = await pool.query(qAbsoluteSeries, absParams);
+      temporal.series_absolute = rAbsoluteSeries.rows || [];
+
       const temporalRows = rTemporal.rows || [];
       const rangeTotal = temporalRows.reduce(
         (acc, row) => acc + (Number(row.count) || 0),
@@ -1098,8 +1169,11 @@ async function getInformesResumenBase(req, res) {
         date_field_id: dateFieldId,
         date_field_label: dateFieldLabel,
         time_grouping,
+        absolute_min: null,
+        absolute_max: null,
         range_total: 0,
         series: [],
+        series_absolute: [],
       };
     }
 

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Modal, Badge } from "react-bootstrap";
 import GVAMapBase from "../components/GVAMapBase";
 import GVAMapDataLayer from "../components/GVAMapDataLayer";
 import GVAMapLayerSelector from "../components/GVAMapLayerSelector";
