@@ -101,7 +101,7 @@ const PERMS = {
     "push_campaigns.delete",
   ],
 
-  NOTIF_ADMIN: ["notificaciones.read.admin"],
+  NOTIF_ADMIN: ["notificaciones.read.admin", "notificaciones.read"],
   NOTIF: ["notificaciones.read", "notificaciones.read.admin"],
 
   PROYECTOS: ["proyectos.read"],

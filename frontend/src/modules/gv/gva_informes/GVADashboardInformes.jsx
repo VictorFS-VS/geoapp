@@ -109,6 +109,106 @@ export default function GVADashboardInformes() {
     applyConfig,
     resetDraftFromApplied,
   } = useInformesDashboard();
+  
+  const parseDateYMD = (value) => {
+    if (!value || typeof value !== "string") return null;
+    const parts = value.split("-");
+    if (parts.length !== 3) return null;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+      return null;
+    }
+    return new Date(Date.UTC(year, month - 1, day));
+  };
+
+  const formatDateShort = (date) => {
+    if (!date) return "";
+    const dd = String(date.getUTCDate()).padStart(2, "0");
+    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = date.getUTCFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  };
+
+  const monthLabelEs = (date) => {
+    if (!date) return "";
+    const months = [
+      "enero",
+      "febrero",
+      "marzo",
+      "abril",
+      "mayo",
+      "junio",
+      "julio",
+      "agosto",
+      "septiembre",
+      "octubre",
+      "noviembre",
+      "diciembre",
+    ];
+    return `${months[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+  };
+
+  const formatDateLabelLong = (iso) => {
+    const d = parseDateYMD(iso);
+    if (!d) return iso || "";
+    const dd = d.getUTCDate();
+    const mmFull = monthLabelEs(d);
+    return `${dd} ${mmFull}`;
+  };
+
+  const addDaysUTC = (date, days) => {
+    if (!date) return null;
+    const d = new Date(date.getTime());
+    d.setUTCDate(d.getUTCDate() + days);
+    return d;
+  };
+
+  const formatTemporalLabel = (row) => {
+    const start = parseDateYMD(String(row?.bucket_start || ""));
+    if (!start) return row?.label || "";
+    if (appliedTimeGrouping === "month") {
+      const months = [
+        "Enero",
+        "Febrero",
+        "Marzo",
+        "Abril",
+        "Mayo",
+        "Junio",
+        "Julio",
+        "Agosto",
+        "Septiembre",
+        "Octubre",
+        "Noviembre",
+        "Diciembre",
+      ];
+      return `${months[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
+    }
+    if (appliedTimeGrouping === "week") {
+      const end = addDaysUTC(start, 6);
+      return `${formatDateShort(start)} al ${formatDateShort(end)}`;
+    }
+    return formatDateShort(start);
+  };
+
+  const getBucketRange = (bucket_start, grouping) => {
+    const start = parseDateYMD(String(bucket_start || ""));
+    if (!start) return { start: 0, end: 0 };
+    const startTs = start.getTime();
+    let endTs = startTs;
+    const g = grouping || appliedTimeGrouping || "week";
+    if (g === "month") {
+      const endMonth = new Date(start.getTime());
+      endMonth.setUTCMonth(endMonth.getUTCMonth() + 1);
+      endTs = endMonth.getTime();
+    } else if (g === "week") {
+      endTs = startTs + 7 * 86400000;
+    } else {
+      endTs = startTs + 86400000;
+    }
+    return { start: startTs, end: endTs };
+  };
 
   const [showConfig, setShowConfig] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
@@ -127,10 +227,40 @@ export default function GVADashboardInformes() {
   const kpis = data?.kpis || {};
   const geo = data?.geo || {};
   const plantillasResumen = Array.isArray(data?.plantillas) ? data.plantillas : [];
-  const temporalSeries = Array.isArray(temporal?.series) ? temporal.series : [];
+  const temporalSeries = Array.isArray(temporal?.series_absolute) && temporal.series_absolute.length > 0 
+    ? temporal.series_absolute 
+    : Array.isArray(temporal?.series) ? temporal.series : [];
   const temporalEnabled = temporal?.enabled !== false;
   const temporalRangeTotal = Number(temporal?.range_total || 0);
   const temporalLabel = temporal?.date_field_label || "Fecha de carga";
+  const absoluteMin = temporal?.absolute_min;
+  const absoluteMax = temporal?.absolute_max;
+
+  const diffInDays = useMemo(() => {
+    if (!absoluteMin || !absoluteMax) return 0;
+    const d1 = parseDateYMD(absoluteMin);
+    const d2 = parseDateYMD(absoluteMax);
+    if (!d1 || !d2) return 0;
+    return Math.abs(Math.floor((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
+  }, [absoluteMin, absoluteMax]);
+
+  const showTimeline = !!(absoluteMin && absoluteMax && diffInDays > 7);
+
+  const { minTs, maxTs, dFromTs, dToTs } = useMemo(() => {
+    if (!absoluteMin || !absoluteMax) return { minTs: 0, maxTs: 0, dFromTs: 0, dToTs: 0 };
+    const min = parseDateYMD(absoluteMin).getTime();
+    const max = parseDateYMD(absoluteMax).getTime();
+    let f = parseDateYMD(draftDateFrom || absoluteMin)?.getTime() || min;
+    let t = parseDateYMD(draftDateTo || absoluteMax)?.getTime() || max;
+    f = Math.max(min, Math.min(max, f));
+    t = Math.max(min, Math.min(max, t));
+    if (f > t) {
+      const tmp = f;
+      f = t;
+      t = tmp;
+    }
+    return { minTs: min, maxTs: max, dFromTs: f, dToTs: t };
+  }, [absoluteMin, absoluteMax, draftDateFrom, draftDateTo]);
 
   const linkFields = useMemo(() => {
     const raw =
@@ -196,6 +326,7 @@ export default function GVADashboardInformes() {
     appliedDateTo,
     linkFields,
     selectedMapKpiId,
+    includeAllPoints,
   ]);
 
   const geoLinksCacheKey = useMemo(() => {
@@ -297,65 +428,6 @@ export default function GVADashboardInformes() {
       ? "Mes"
       : "Semana";
 
-  const parseDateYMD = (value) => {
-    if (!value || typeof value !== "string") return null;
-    const parts = value.split("-");
-    if (parts.length !== 3) return null;
-    const year = Number(parts[0]);
-    const month = Number(parts[1]);
-    const day = Number(parts[2]);
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-      return null;
-    }
-    return new Date(Date.UTC(year, month - 1, day));
-  };
-
-  const formatDateShort = (date) => {
-    if (!date) return "";
-    const dd = String(date.getUTCDate()).padStart(2, "0");
-    const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const yyyy = date.getUTCFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  };
-
-  const addDaysUTC = (date, days) => {
-    if (!date) return null;
-    const d = new Date(date.getTime());
-    d.setUTCDate(d.getUTCDate() + days);
-    return d;
-  };
-
-  const monthLabelEs = (date) => {
-    if (!date) return "";
-    const months = [
-      "Enero",
-      "Febrero",
-      "Marzo",
-      "Abril",
-      "Mayo",
-      "Junio",
-      "Julio",
-      "Agosto",
-      "Septiembre",
-      "Octubre",
-      "Noviembre",
-      "Diciembre",
-    ];
-    return `${months[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
-  };
-
-  const formatTemporalLabel = (row) => {
-    const start = parseDateYMD(String(row?.bucket_start || ""));
-    if (!start) return row?.label || "";
-    if (appliedTimeGrouping === "month") {
-      return monthLabelEs(start);
-    }
-    if (appliedTimeGrouping === "week") {
-      const end = addDaysUTC(start, 6);
-      return `${formatDateShort(start)} al ${formatDateShort(end)}`;
-    }
-    return formatDateShort(start);
-  };
 
   if (!idProyecto) {
     return (
@@ -1005,6 +1077,262 @@ export default function GVADashboardInformes() {
           </div>
         ) : null}
       </div>
+
+      {showTimeline ? (
+        <div
+          style={{
+            marginTop: 12,
+            border: "1px solid #e5e7eb",
+            borderRadius: 12,
+            background: "#ffffff",
+            padding: "12px 16px",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
+            <div>
+              <span style={{ fontWeight: 800, fontSize: 12, color: "#1e293b" }}>
+                Periodo analizado
+              </span>
+              <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>
+                Fuente: {temporalLabel}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#2563eb",
+                background: "#eff6ff",
+                padding: "2px 8px",
+                borderRadius: 6,
+              }}
+            >
+              {formatDateLabelLong(draftDateFrom || absoluteMin)} -{" "}
+              {formatDateLabelLong(draftDateTo || absoluteMax)}
+            </div>
+          </div>
+
+          <div
+            style={{
+              position: "relative",
+              height: 36,
+              display: "flex",
+              alignItems: "flex-end",
+              paddingBottom: 4,
+              marginBottom: 4,
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 4,
+                display: "flex",
+                alignItems: "flex-end",
+                gap: 1,
+                zIndex: 0,
+              }}
+            >
+              {temporalSeries.map((b, i) => {
+                const maxCount = Math.max(...temporalSeries.map(s => s.count), 1);
+                const h = (b.count / maxCount) * 100;
+                
+                const { start: bStart, end: bEnd } = getBucketRange(b?.bucket_start, temporal?.time_grouping);
+                
+                const isInRange = bStart <= dToTs && bEnd > dFromTs;
+                
+                return (
+                  <div
+                    key={`bar-${i}`}
+                    style={{
+                      flex: 1,
+                      height: `${Math.max(4, h)}%`,
+                      background: "#2563eb",
+                      borderRadius: "1px 1px 0 0",
+                      opacity: isInRange ? 0.4 : 0.08,
+                      transition: "opacity 0.2s ease",
+                    }}
+                  />
+                );
+              })}
+            </div>
+
+            <div
+              style={{
+                position: "relative",
+                width: "100%",
+                height: 4,
+                background: "#f1f5f9",
+                borderRadius: 99,
+                zIndex: 1,
+              }}
+            >
+              {(() => {
+                const leftPct = ((dFromTs - minTs) / (maxTs - minTs)) * 100;
+                const rightPct = ((dToTs - minTs) / (maxTs - minTs)) * 100;
+
+                return (
+                  <>
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: `${leftPct}%`,
+                        width: `${rightPct - leftPct}%`,
+                        height: "100%",
+                        background: "#2563eb",
+                        borderRadius: 99,
+                      }}
+                    />
+                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                      <input
+                        type="range"
+                        min={minTs}
+                        max={maxTs}
+                        step={86400000}
+                        value={dFromTs}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          const currentTo = parseDateYMD(draftDateTo || absoluteMax).getTime();
+                          const next = new Date(Math.min(val, currentTo - 86400000));
+                          setDraftDateFrom(next.toISOString().slice(0, 10));
+                        }}
+                        onMouseUp={() => applyFilters()}
+                        onTouchEnd={() => applyFilters()}
+                        style={{
+                          position: "absolute",
+                          width: "100%",
+                          top: -6,
+                          left: 0,
+                          pointerEvents: "none",
+                          appearance: "none",
+                          background: "transparent",
+                          zIndex: 3,
+                        }}
+                        className="tl-slider-input"
+                      />
+                      <input
+                        type="range"
+                        min={minTs}
+                        max={maxTs}
+                        step={86400000}
+                        value={dToTs}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          const currentFrom = parseDateYMD(draftDateFrom || absoluteMin).getTime();
+                          const next = new Date(Math.max(val, currentFrom + 86400000));
+                          setDraftDateTo(next.toISOString().slice(0, 10));
+                        }}
+                        onMouseUp={() => applyFilters()}
+                        onTouchEnd={() => applyFilters()}
+                        style={{
+                          position: "absolute",
+                          width: "100%",
+                          top: -6,
+                          left: 0,
+                          pointerEvents: "none",
+                          appearance: "none",
+                          background: "transparent",
+                          zIndex: 4,
+                        }}
+                        className="tl-slider-input"
+                      />
+                      <style>{`
+                        .tl-slider-input::-webkit-slider-thumb {
+                          pointer-events: auto;
+                          appearance: none;
+                          width: 14px;
+                          height: 14px;
+                          background: #2563eb;
+                          border: 2px solid #ffffff;
+                          border-radius: 50%;
+                          cursor: grab;
+                          box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+                        }
+                        .tl-slider-input::-moz-range-thumb {
+                          pointer-events: auto;
+                          width: 14px;
+                          height: 14px;
+                          background: #2563eb;
+                          border: 2px solid #ffffff;
+                          border-radius: 50%;
+                          cursor: grab;
+                          box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+                        }
+                      `}</style>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              width: "100%",
+              borderTop: "1px solid #f1f5f9",
+              paddingTop: 4,
+            }}
+          >
+            {temporalSeries.slice(0, 12).map((bucket, i) => {
+              const label = formatTemporalLabel(bucket);
+              const { start: bStart, end: bEnd } = getBucketRange(bucket?.bucket_start, temporal?.time_grouping);
+              
+              const isActive = bStart <= dToTs && bEnd > dFromTs;
+              
+              return (
+                <div
+                  key={`bucket-tl-${i}`}
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    padding: "2px 4px",
+                    borderRight: i < Math.min(temporalSeries.length, 12) - 1 ? "1px solid #f1f5f9" : "none",
+                    minWidth: 0,
+                    background: isActive ? "#eff6ff" : "transparent",
+                    transition: "background 0.2s ease",
+                  }}
+                  onClick={() => applyTemporalBucket(bucket, temporal?.time_grouping)}
+                  title="Click para ver solo este periodo"
+                >
+                  <div
+                    style={{
+                      fontSize: "9px",
+                      color: isActive ? "#1e40af" : "#64748b",
+                      fontWeight: isActive ? 800 : 500,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {label}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "11px",
+                      color: isActive ? "#1e3a8a" : "#1e293b",
+                      fontWeight: 800,
+                      marginTop: 1,
+                    }}
+                  >
+                    {bucket.count}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {canShowSubmapa ? (
         <GVASubmapa

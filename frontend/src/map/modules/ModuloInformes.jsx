@@ -418,6 +418,52 @@ function getMarkerColorCssFromProps(props) {
 
 const getMarkerColorFromProps = getMarkerColorCssFromProps;
 
+function createDropMarkerElement(color, { selected = false } = {}) {
+  const c = hexToCssColor(color) || color || DEFAULT_POINT_COLOR;
+
+  const wrap = document.createElement("div");
+  wrap.style.position = "relative";
+  wrap.style.width = selected ? "30px" : "22px";
+  wrap.style.height = selected ? "38px" : "28px";
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.justifyContent = "center";
+  wrap.style.transform = selected ? "translateY(-4px)" : "translateY(-2px)";
+  wrap.style.pointerEvents = "none"; // ✅ importante
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 32");
+  svg.setAttribute("width", selected ? "30" : "22");
+  svg.setAttribute("height", selected ? "38" : "28");
+  svg.style.display = "block";
+  svg.style.overflow = "visible";
+  svg.style.pointerEvents = "none"; // ✅ importante
+
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute(
+    "d",
+    "M12 1C6.2 1 1.5 5.7 1.5 11.5c0 7.8 8.7 16.8 9.1 17.2a2 2 0 0 0 2.8 0c.4-.4 9.1-9.4 9.1-17.2C22.5 5.7 17.8 1 12 1Z"
+  );
+  path.setAttribute("fill", c);
+  path.setAttribute("stroke", "#ffffff");
+  path.setAttribute("stroke-width", selected ? "2.8" : "2.2");
+  path.style.filter = selected
+    ? "drop-shadow(0 10px 22px rgba(0,0,0,.30))"
+    : "drop-shadow(0 6px 16px rgba(0,0,0,.22))";
+
+  const inner = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  inner.setAttribute("cx", "12");
+  inner.setAttribute("cy", "11.5");
+  inner.setAttribute("r", selected ? "4.2" : "3.6");
+  inner.setAttribute("fill", "rgba(255,255,255,.92)");
+
+  svg.appendChild(path);
+  svg.appendChild(inner);
+  wrap.appendChild(svg);
+
+  return wrap;
+}
+
 /* =========================================================
    ✅ Coordenadas
    ========================================================= */
@@ -1347,18 +1393,11 @@ export default function ModuloInformes({
           selectedMarkerOriginalContentRef.current = originalEl.cloneNode(true);
         }
 
-        const el = document.createElement("div");
-        el.className = "emapoint-selected";
-
         const cRaw = targetMarker.__markerColor || DEFAULT_POINT_COLOR;
         const c = hexToCssColor(cRaw) || cRaw;
 
-        el.style.width = "22px";
-        el.style.height = "22px";
-        el.style.borderRadius = "999px";
-        el.style.background = c;
-        el.style.border = "4px solid #fff";
-        el.style.boxShadow = "0 10px 22px rgba(0,0,0,.28)";
+        const el = createDropMarkerElement(c, { selected: true });
+        el.className = "emapoint-selected";
 
         targetMarker.content = el;
 
@@ -2140,25 +2179,16 @@ export default function ModuloInformes({
         let mk = null;
 
         if (AdvancedMarker) {
-          const el = document.createElement("div");
-          el.style.width = "16px";
-          el.style.height = "16px";
-          el.style.borderRadius = "999px";
-          el.style.background = markerColorCss;
-          el.style.border = "3px solid #fff";
-          el.style.boxShadow = "0 6px 16px rgba(0,0,0,.22)";
+          const el = createDropMarkerElement(markerColorCss, { selected: false });
 
           mk = new AdvancedMarker({
             map: null,
             position: pos,
             content: el,
             title,
+            gmpClickable: true,
           });
-          markerPathStats.advContent += 1;
-
-          mk.addListener("gmp-click", () => openPointPanel(propsEnriched));
         } else {
-          // No hay AdvancedMarker disponible: no usar legacy Marker.
           continue;
         }
 
@@ -2168,6 +2198,19 @@ export default function ModuloInformes({
         mk.__plantillaId = plantillaId;
         mk.__markerColor = markerColorCss;
         mk.__baseMap = map;
+
+        const handleMarkerClick = () => {
+          autoFitEnabledRef.current = false;
+          openPointPanel(propsEnriched);
+        };
+
+        try {
+          if (typeof mk.addListener === "function") {
+            mk.addListener("gmp-click", handleMarkerClick);
+          }
+        } catch (e) {
+          console.warn("[ModuloInformes] no se pudo enlazar gmp-click al marker:", e);
+        }
 
         try {
           if ("zIndex" in mk) mk.zIndex = 999999;

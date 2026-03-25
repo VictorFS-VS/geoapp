@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   FaHome,
@@ -59,7 +59,8 @@ export default function Sidebar({ collapsed, toggleSidebar }) {
       ? "proyectos"
       : location.pathname.startsWith("/configuracion") ||
         location.pathname.startsWith("/informes") ||
-        location.pathname.startsWith("/push-campaigns")
+        location.pathname.startsWith("/push-campaigns") ||
+        location.pathname.startsWith("/notificaciones")
       ? "configuracion"
       : ""
   );
@@ -81,7 +82,8 @@ export default function Sidebar({ collapsed, toggleSidebar }) {
     } else if (
       location.pathname.startsWith("/configuracion") ||
       location.pathname.startsWith("/informes") ||
-      location.pathname.startsWith("/push-campaigns")
+      location.pathname.startsWith("/push-campaigns") ||
+      location.pathname.startsWith("/notificaciones")
     ) {
       setOpenSubmenu("configuracion");
     }
@@ -270,6 +272,21 @@ export default function Sidebar({ collapsed, toggleSidebar }) {
                   >
                     <FaBell />
                     <span>Notificaciones (Push)</span>
+                  </NavLink>
+                )}
+
+                {canNotificaciones && (
+                  <NavLink
+                    to="/notificaciones-admin"
+                    onClick={handleItemClick}
+                    className={({ isActive }) =>
+                      `nav-link text-white d-flex align-items-center gap-2 py-1 ${
+                        isActive ? "bg-dark rounded" : ""
+                      }`
+                    }
+                  >
+                    <FaBell />
+                    <span>Mis Notificaciones</span>
                   </NavLink>
                 )}
 
