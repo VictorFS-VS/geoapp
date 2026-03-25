@@ -3,6 +3,11 @@
 const pool = require("../db");
 const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
 const { computeInformeGeoSummary } = require("../helpers/informesGeoSummary");
+const {
+  semaforoColorHexFromKey,
+  MAP_KPI_CATEGORY_PALETTE,
+  MAP_KPI_DEFAULT_COLOR_HEX,
+} = require("../helpers/informesDashboardStyles");
 
 function toInt(v, fallback = null) {
   if (v === undefined || v === null) return fallback;
@@ -82,27 +87,34 @@ function titleCaseLabel(v) {
 function normalizeSemaforoValue(raw) {
   const norm = normalizeLooseText(raw);
   if (!norm) {
-    return { key: "gris", label: "Gris", color_key: "gris", sort_order: 5 };
+    return { 
+      key: "gris", 
+      label: "Gris", 
+      color_key: "gris", 
+      color_hex: semaforoColorHexFromKey("gris"),
+      sort_order: 5 
+    };
   }
   if (["verde", "green"].includes(norm)) {
-    return { key: "verde", label: "Verde", color_key: "verde", sort_order: 1 };
+    return { key: "verde", label: "Verde", color_key: "verde", color_hex: semaforoColorHexFromKey("verde"), sort_order: 1 };
   }
   if (["amarillo", "yellow", "ambar", "amber"].includes(norm)) {
-    return { key: "amarillo", label: "Amarillo", color_key: "amarillo", sort_order: 2 };
+    return { key: "amarillo", label: "Amarillo", color_key: "amarillo", color_hex: semaforoColorHexFromKey("amarillo"), sort_order: 2 };
   }
   if (["naranja", "orange"].includes(norm)) {
-    return { key: "naranja", label: "Naranja", color_key: "naranja", sort_order: 3 };
+    return { key: "naranja", label: "Naranja", color_key: "naranja", color_hex: semaforoColorHexFromKey("naranja"), sort_order: 3 };
   }
   if (["rojo", "red"].includes(norm)) {
-    return { key: "rojo", label: "Rojo", color_key: "rojo", sort_order: 4 };
+    return { key: "rojo", label: "Rojo", color_key: "rojo", color_hex: semaforoColorHexFromKey("rojo"), sort_order: 4 };
   }
   if (["gris", "gray", "grey"].includes(norm)) {
-    return { key: "gris", label: "Gris", color_key: "gris", sort_order: 5 };
+    return { key: "gris", label: "Gris", color_key: "gris", color_hex: semaforoColorHexFromKey("gris"), sort_order: 5 };
   }
   return {
     key: norm,
     label: titleCaseLabel(String(raw || "").trim() || norm),
     color_key: "gris",
+    color_hex: semaforoColorHexFromKey("gris"),
     sort_order: 99,
   };
 }
@@ -118,6 +130,7 @@ function buildSemaforoSummaryItems(items) {
         label: meta.label,
         count: 0,
         color_key: meta.color_key,
+        color_hex: meta.color_hex,
         sort_order: meta.sort_order,
       });
     }
@@ -548,7 +561,7 @@ async function buildDashboardUniverseContext(options = {}) {
       `;
       const rDate = await pool.query(qDate, [idDateField]);
       const row = rDate.rows[0];
-      if (row && isDateableTipo(row.tipo)) {
+      if (row) {
         dateFieldKind = "field";
         dateFieldId = String(idDateField);
         dateFieldLabel = row.etiqueta || `Pregunta ${idDateField}`;
@@ -985,7 +998,10 @@ async function getInformesResumenBase(req, res) {
           const isSemaforo = tipo === "semaforo";
           const items = isSemaforo
             ? buildSemaforoSummaryItems(rawItems)
-            : rawItems.slice(0, 10);
+            : rawItems.slice(0, 10).map((it, idx) => ({
+                ...it,
+                color_hex: MAP_KPI_CATEGORY_PALETTE[idx % MAP_KPI_CATEGORY_PALETTE.length],
+              }));
           const distinct = isSemaforo ? items.length : distinctMap.get(id) || 0;
           const kpiEligible = distinct > 0 && distinct <= 10;
           return {
@@ -1143,28 +1159,29 @@ async function getInformesResumenBase(req, res) {
         ORDER BY bucket_start ASC
       `;
       const rAbsoluteSeries = await pool.query(qAbsoluteSeries, absParams);
-      temporal.series_absolute = rAbsoluteSeries.rows || [];
-
       const temporalRows = rTemporal.rows || [];
       const rangeTotal = temporalRows.reduce(
         (acc, row) => acc + (Number(row.count) || 0),
         0
       );
       temporal.range_total = rangeTotal;
-      temporal.series = temporalRows.map((row) => {
+
+      const normalizeSeries = (rows) => (rows || []).map((row) => {
         const count = Number(row.count) || 0;
-        const percent =
-          rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
+        const percent = rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
         return {
-        key: row.label,
-        label: row.label,
-        bucket_start: row.bucket_start
-          ? new Date(row.bucket_start).toISOString().slice(0, 10)
-          : null,
+          key: row.label,
+          label: row.label,
+          bucket_start: row.bucket_start
+            ? new Date(row.bucket_start).toISOString().slice(0, 10)
+            : null,
           count,
           percent_of_range: percent,
         };
       });
+
+      temporal.series_absolute = normalizeSeries(rAbsoluteSeries.rows);
+      temporal.series = normalizeSeries(temporalRows);
     } catch (err) {
       temporal = {
         enabled: false,

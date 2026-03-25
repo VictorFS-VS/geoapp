@@ -9,6 +9,11 @@ const {
 } = require("../services/dashboardGeoLinks.service");
 const { getDashboardInformeUniverseIds } = require("./informesDashboardResumen.controller");
 const { parseInformeLatLng } = require("../helpers/informesGeoSummary");
+const { 
+  MAP_KPI_DEFAULT_COLOR_HEX, 
+  MAP_KPI_CATEGORY_PALETTE, 
+  semaforoColorHexFromKey 
+} = require("../helpers/informesDashboardStyles");
 
 /* =========================
    Helpers
@@ -410,8 +415,6 @@ function normalizeSemaforoRaw(raw) {
 
 const MAP_KPI_DEFAULT_LABEL = "Sin dato";
 const MAP_KPI_DEFAULT_COLOR_KEY = "gris";
-const MAP_KPI_DEFAULT_COLOR_HEX = "#9ca3af";
-const MAP_KPI_CATEGORY_PALETTE = ["#111827", "#2563eb", "#16a34a", "#f97316", "#a855f7"];
 
 function normalizeMapKpiType(tipo) {
   return String(tipo || "").trim().toLowerCase();
@@ -458,15 +461,7 @@ function semaforoColorKeyFromValue(label, color) {
   return MAP_KPI_DEFAULT_COLOR_KEY;
 }
 
-function semaforoColorHexFromKey(colorKey) {
-  const key = String(colorKey || "").trim().toLowerCase();
-  if (key === "verde") return "#16a34a";
-  if (key === "amarillo") return "#eab308";
-  if (key === "naranja") return "#f97316";
-  if (key === "rojo") return "#dc2626";
-  if (key === "gris") return "#9ca3af";
-  return MAP_KPI_DEFAULT_COLOR_HEX;
-}
+
 
 function normalizeMapKpiRawValue(rawValue, tipo) {
   const type = normalizeMapKpiType(tipo);

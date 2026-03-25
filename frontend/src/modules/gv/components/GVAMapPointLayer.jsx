@@ -243,12 +243,8 @@ export default function GVAMapPointLayer({
     return block;
   };
 
-  const buildPopupContent = (entry) => {
+  const buildPopupContent = (entry, popupState) => {
     const info = entry?.info || {};
-    const popupState =
-      typeof getPointPopupStateRef.current === "function"
-        ? getPointPopupStateRef.current(entry?.raw, info) || {}
-        : {};
 
     const popup = document.createElement("div");
     popup.style.minWidth = "220px";
@@ -272,7 +268,7 @@ export default function GVAMapPointLayer({
       popup.appendChild(row);
     }
 
-    popup.appendChild(buildPhotoBlock(popupState, entry, info));
+    popup.appendChild(buildPhotoBlock(popupState || {}, entry, info));
 
     const actionRow = document.createElement("div");
     actionRow.style.display = "flex";
@@ -458,7 +454,12 @@ export default function GVAMapPointLayer({
             onPointClickRef.current?.(entry.raw);
             return;
           }
-          const popup = buildPopupContent(entry);
+          const info = entry?.info || {};
+          const popupState =
+            typeof getPointPopupStateRef.current === "function"
+              ? getPointPopupStateRef.current(entry?.raw, info) || {}
+              : {};
+          const popup = buildPopupContent(entry, popupState);
           openPopupEntryRef.current = entry;
           infoWindowRef.current.setContent(popup);
           infoWindowRef.current.open({ map, anchor: marker });
@@ -511,8 +512,12 @@ export default function GVAMapPointLayer({
           ? getPointPopupState(pointEntry.raw, pointEntry.info)
           : null;
       if (!popupState) return;
-      infoWindowRef.current.setContent(buildPopupContent(pointEntry));
-      infoWindowRef.current.open({ map, anchor: pointEntry.marker });
+      infoWindowRef.current.setContent(buildPopupContent(pointEntry, popupState));
+      // Reabrir solo si cambió el ancla o no está visible
+      const isSameAnchor = infoWindowRef.current.getAnchor?.() === pointEntry.marker;
+      if (!isSameAnchor) {
+        infoWindowRef.current.open({ map, anchor: pointEntry.marker });
+      }
       openPopupEntryRef.current = pointEntry;
     } catch {}
   }, [getPointPopupState, onSelectPopupPhoto, onPreviewPhoto, visible, map, enablePopup]);
