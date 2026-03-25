@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Modal, Badge } from "react-bootstrap";
 import { useInformesDashboard } from "./hooks/useInformesDashboard";
 import { useGVATramos } from "../gva_tramos/hooks/useGVATramos";
@@ -115,6 +115,7 @@ export default function GVADashboardInformes() {
   const [showSubmapa, setShowSubmapa] = useState(false);
   const [selectedMapKpiId, setSelectedMapKpiId] = useState(null);
   const [selectedMapKpiLabel, setSelectedMapKpiLabel] = useState("");
+  const [includeAllPoints, setIncludeAllPoints] = useState(false);
   const [resultsQuery, setResultsQuery] = useState("");
   const [filtersQuery, setFiltersQuery] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -177,6 +178,7 @@ export default function GVADashboardInformes() {
       date_to: appliedDateTo || undefined,
       link_fields: linkFields || undefined,
       selected_map_field_id: selectedMapKpiId || undefined,
+      include_all_points: includeAllPoints,
       limit: 5000,
     };
   }, [
@@ -218,6 +220,7 @@ export default function GVADashboardInformes() {
       date_to: geoLinksPayload.date_to || "",
       link_fields: geoLinksPayload.link_fields || {},
       selected_map_field_id: geoLinksPayload.selected_map_field_id || null,
+      include_all_points: geoLinksPayload.include_all_points || false,
     };
     try {
       return JSON.stringify(key);
@@ -225,6 +228,19 @@ export default function GVADashboardInformes() {
       return "";
     }
   }, [geoLinksPayload]);
+
+  useEffect(() => {
+    setIncludeAllPoints(false);
+  }, [
+    appliedPlantillaId,
+    appliedFiltersPayload,
+    appliedInteractiveFilters,
+    appliedSearchText,
+    appliedSearchFieldIds,
+    appliedDateFieldId,
+    appliedDateFrom,
+    appliedDateTo,
+  ]);
 
   const {
     data: geoLinksData,
@@ -1003,6 +1019,9 @@ export default function GVADashboardInformes() {
           selectedMapKpiId={selectedMapKpiId}
           selectedMapKpiLabel={selectedMapKpiLabel}
           visible={showSubmapa}
+          totalUniverseGeo={geo?.total_geo || 0}
+          isLoadedAll={includeAllPoints}
+          onLoadAll={() => setIncludeAllPoints(true)}
         />
       ) : null}
 
@@ -1614,9 +1633,14 @@ export default function GVADashboardInformes() {
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedMapKpiId(Number(fs.id_pregunta));
-                          setSelectedMapKpiLabel(fs.etiqueta || `Pregunta ${fs.id_pregunta}`);
-                          if (!showSubmapa && canShowSubmapa) setShowSubmapa(true);
+                          if (isMapKpiActive) {
+                            setSelectedMapKpiId(null);
+                            setSelectedMapKpiLabel("");
+                          } else {
+                            setSelectedMapKpiId(Number(fs.id_pregunta));
+                            setSelectedMapKpiLabel(fs.etiqueta || `Pregunta ${fs.id_pregunta}`);
+                            if (!showSubmapa && canShowSubmapa) setShowSubmapa(true);
+                          }
                         }}
                         style={{
                           border: isMapKpiActive ? "1px solid #1d4ed8" : "1px solid #d1d5db",
@@ -1697,7 +1721,63 @@ export default function GVADashboardInformes() {
                     </div>
                   ) : null}
 
-                  {isCounts && chartType === "list" ? (
+                  {isCounts && !isEligible ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {buildSummaryRenderItems(items, kpis.total_informes)
+                        .slice()
+                        .sort((a, b) => (b.count || 0) - (a.count || 0))
+                        .map((it, idx) => {
+                          const value = it.label || "(sin valor)";
+                          const count = Number(it.count || 0);
+                          const isSynthetic = it.isSynthetic === true;
+                          const isActive = !isSynthetic && isInteractiveValueActive(
+                            fs.id_pregunta,
+                            value
+                          );
+                          const pctValue = kpis.total_informes > 0 
+                            ? ((count / kpis.total_informes) * 100).toFixed(1) 
+                            : "0.0";
+                          return (
+                            <div
+                              key={`${fs.id_pregunta}-nolist-${idx}`}
+                              style={{
+                                border: isActive ? "1px solid #111827" : "1px solid #e5e7eb",
+                                background: isActive ? "#f8fafc" : "#ffffff",
+                                borderRadius: 8,
+                                padding: "6px 8px",
+                                cursor: isSynthetic ? "default" : "pointer",
+                              }}
+                              onClick={
+                                isSynthetic
+                                  ? undefined
+                                  : () =>
+                                      addInteractiveFilter({
+                                        id_pregunta: fs.id_pregunta,
+                                        label: fs.etiqueta,
+                                        tipo: fs.tipo,
+                                        value,
+                                      })
+                              }
+                              title={isSynthetic ? "Categoria informativa" : "Filtrar por este valor"}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? "#111827" : "#374151" }}>
+                                  {value}
+                                </div>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280" }}>
+                                  {pctValue}%
+                                </div>
+                              </div>
+                              <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                                {count} informes
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  ) : null}
+
+                  {isCounts && isEligible && chartType === "list" ? (
                     <ListAsBars
                       fs={fs}
                       items={items}
@@ -1710,7 +1790,7 @@ export default function GVADashboardInformes() {
                     />
                   ) : null}
 
-                  {isCounts && chartType === "bar" ? (
+                  {isCounts && isEligible && chartType === "bar" ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {buildSummaryRenderItems(items, kpis.total_informes).map((it, idx) => {
                         const value = it.label || "(sin valor)";
@@ -1810,7 +1890,7 @@ export default function GVADashboardInformes() {
                     </div>
                   ) : null}
 
-                  {isCounts && chartType === "traffic" ? (
+                  {isCounts && isEligible && chartType === "traffic" ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                       {(() => {
                         const total = items.reduce((acc, it) => acc + (it.count || 0), 0) || 1;
@@ -1932,7 +2012,7 @@ export default function GVADashboardInformes() {
                     </div>
                   ) : null}
 
-                  {isCounts && chartType === "donut" ? (
+                  {isCounts && isEligible && chartType === "donut" ? (
                     <div
                       style={{
                         display: "grid",

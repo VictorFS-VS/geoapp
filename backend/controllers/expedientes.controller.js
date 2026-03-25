@@ -1622,10 +1622,52 @@ exports.importExcel = async (req, res) => {
     return isNonSignificant(v) ? null : String(v).trim();
   }
 
+  function normalizeImportDateDefensive(raw) {
+    if (raw === null || raw === undefined || raw === "") return null;
+    
+    const str = String(raw).trim();
+    // 1. Ya tiene formato YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+
+    // 2. Serial numérico Excel
+    const num = Number(raw);
+    if (Number.isFinite(num) && num > 30000 && num < 80000) {
+      const ms = Math.round((Math.floor(num) - 25569) * 86400 * 1000);
+      const d = new Date(ms);
+      if (!Number.isNaN(d.getTime())) {
+        return d.toISOString().split("T")[0];
+      }
+    }
+
+    // 3. String fecha razonable (ISO string o nativo de JS)
+    const dStr = new Date(str);
+    if (!Number.isNaN(dStr.getTime())) {
+      // evitamos falsos positivos extrayendo UTC year
+      const y = dStr.getUTCFullYear();
+      if (y > 1900 && y < 2100) {
+        return dStr.toISOString().split("T")[0];
+      }
+    }
+
+    // 4. Texto DD/MM/YYYY o DD-MM-YYYY
+    const m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) {
+      const d = parseInt(m[1], 10);
+      const mo = parseInt(m[2], 10);
+      const y = parseInt(m[3], 10);
+      if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12 && y > 1900 && y < 2100) {
+        return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      }
+    }
+
+    // Si nada matcheó, retornar null para que el pipeline lo rechace (comportamiento actual)
+    return null;
+  }
+
   const normalized = rows.map((r, idx) => ({
     _rowIndex: idx + 1,
     id_proyecto: idProyecto,
-    fecha_relevamiento: isYmd(r.fecha_relevamiento) ? String(r.fecha_relevamiento).trim() : null,
+    fecha_relevamiento: normalizeImportDateDefensive(r.fecha_relevamiento),
     gps: cleanStr(r.gps),
     tecnico: cleanStr(r.tecnico),
     codigo_exp: normalizeSignificant(r.codigo_exp),

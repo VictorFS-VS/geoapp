@@ -349,8 +349,66 @@ function normalizeCoordLike(v) {
   return v;
 }
 
+/**
+ * Normaliza un valor para ser guardado como fecha YYYY-MM-DD.
+ * Soporta seriales Excel (números > 20000) y strings ISO o DD/MM/YYYY.
+ */
+function _normalizeDateForSave(v) {
+  if (v === null || v === undefined || v === "") return "";
+
+  // Caso A: Serial Excel (numérico) o string numérico
+  let n = NaN;
+  if (typeof v === "number") {
+    n = v;
+  } else if (typeof v === "string") {
+    const s = v.trim();
+    if (s !== "" && /^\d+(\.\d+)?$/.test(s)) {
+      n = Number(s);
+    }
+  }
+
+  // Rango razonable Excel: 20000 (~1954) hasta 100000 (~2173)
+  if (Number.isFinite(n) && n >= 20000 && n <= 100000) {
+    try {
+      // Ignoramos la parte fraccionaria (hora) para la fecha
+      const serial = Math.floor(n);
+      const ms = Math.round((serial - 25569) * 86400 * 1000);
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) {
+        return d.toISOString().split("T")[0];
+      }
+    } catch (e) {
+      // fallback
+    }
+  }
+
+  const s = String(v).trim();
+  if (!s) return "";
+
+  // Caso B: Texto ISO (YYYY-MM-DD...)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return s.substring(0, 10);
+  }
+
+  // Caso C: Formatos manuales DD/MM/YYYY o DD-MM-YYYY
+  const dm = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (dm) {
+    const day = dm[1].padStart(2, "0");
+    const month = dm[2].padStart(2, "0");
+    const year = dm[3];
+    return `${year}-${month}-${day}`;
+  }
+
+  return s;
+}
+
 function normalizeAnswerForSaveByTipo(tipo, valorRaw) {
   const t = String(tipo || "").trim().toLowerCase();
+  
+  if (["fecha", "date", "datetime", "fecha_hora", "timestamp"].includes(t)) {
+    return _normalizeDateForSave(valorRaw);
+  }
+
   if (t === "select" || t === "texto" || t === "semaforo") {
     if (valorRaw === null || valorRaw === undefined) return "";
     return String(valorRaw);

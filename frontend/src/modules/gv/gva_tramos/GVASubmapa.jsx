@@ -215,6 +215,9 @@ export default function GVASubmapa({
   selectedMapKpiId = null,
   selectedMapKpiLabel = "",
   visible = true,
+  totalUniverseGeo = 0,
+  isLoadedAll = false,
+  onLoadAll,
 }) {
   const [activeKey, setActiveKey] = useState("");
   const [selectedInformeId, setSelectedInformeId] = useState(null);
@@ -756,9 +759,35 @@ export default function GVASubmapa({
       }}
     >
       <span style={chipStyle}>
-        Disponibles: {availableInformesCount} informes / {availableTramosCount} tramos /{" "}
+        Disponibles: {isLoadedAll || !totalUniverseGeo ? availableInformesCount : totalUniverseGeo} informes / {availableTramosCount} tramos /{" "}
         {availableProgresivasCount} progresivas
       </span>
+      {typeof totalUniverseGeo === "number" && totalUniverseGeo > availableInformesCount && !isLoadedAll ? (
+        <>
+          <span style={{ ...chipStyle, background: "#fef3c7", borderColor: "#fde68a" }}>
+            Mostrando {availableInformesCount} de {totalUniverseGeo} con geo
+          </span>
+          {typeof onLoadAll === "function" ? (
+            <button
+              type="button"
+              onClick={onLoadAll}
+              style={{
+                border: "1px solid #1d4ed8",
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                borderRadius: 999,
+                padding: "2px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+              title="Cargar y mostrar el universo completo"
+            >
+              Ver todas las respuestas
+            </button>
+          ) : null}
+        </>
+      ) : null}
       <span style={chipStyle}>
         Visibles: {renderedInformesCount} informes / {renderedTramosCount} tramos /{" "}
         {renderedProgresivasCount} progresivas
