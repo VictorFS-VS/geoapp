@@ -444,8 +444,7 @@ export default function GVASubmapa({
           ruta_archivo: foto?.ruta_archivo || "",
           descripcion: foto?.descripcion || "",
           url: resolveInformeFotoUrl(foto?.ruta_archivo),
-        }))
-        .filter((foto) => !!foto.url);
+        }));
 
         setInformePopupCache((prev) => ({
           ...prev,
