@@ -1,24 +1,53 @@
-// src/pages/GestorNotificacionesAdmin.jsx
 import React, { useEffect, useState, useMemo } from 'react';
-import { Card, Form, Button, Table, Modal, Spinner, Badge, Alert, ListGroup, Accordion, Pagination } from 'react-bootstrap';
-import { FaPlus, FaEdit, FaTrash, FaTimes, FaPaperPlane, FaUsers, FaChevronDown } from 'react-icons/fa';
+import {
+  Card,
+  Form,
+  Button,
+  Table,
+  Spinner,
+  Badge,
+  Alert,
+  Accordion,
+  Pagination,
+} from 'react-bootstrap';
+import {
+  FaPlus,
+  FaEdit,
+  FaTrash,
+  FaTimes,
+  FaPaperPlane,
+  FaUsers,
+} from 'react-icons/fa';
 import { alerts } from '@/utils/alerts';
 import '@/styles/GestorNotificacionesAdmin.css';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_URL = RAW_API_URL.endsWith('/api') ? RAW_API_URL : `${RAW_API_URL}/api`;
 const ITEMS_POR_PAGINA = 10;
 
 const authHeaders = () => {
-  const token = localStorage.getItem('token') || localStorage.getItem('access_token') || localStorage.getItem('jwt');
+  const token =
+    localStorage.getItem('token') ||
+    localStorage.getItem('access_token') ||
+    localStorage.getItem('jwt');
+
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
+
+function getStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem('user') || '{}');
+  } catch {
+    return {};
+  }
+}
 
 export default function GestorNotificacionesAdmin() {
   const [notificaciones, setNotificaciones] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [filtroEstado, setFiltroEstado] = useState('todas'); // todas, leidas, noLeidas
+  const [filtroEstado, setFiltroEstado] = useState('todas');
 
   const [formData, setFormData] = useState({
     titulo: '',
@@ -29,83 +58,110 @@ export default function GestorNotificacionesAdmin() {
 
   const [proyectos, setProyectos] = useState([]);
   const [paginaActual, setPaginaActual] = useState(1);
-  const [tipoUsuario, setTipoUsuario] = useState(null);
-  const [usuarioId, setUsuarioId] = useState(null);
 
-  // Obtener tipo de usuario
+  const [user, setUser] = useState({});
+  const [userLoading, setUserLoading] = useState(true);
+
   useEffect(() => {
     const loadUserInfo = async () => {
+      setUserLoading(true);
+
       try {
-        const token = localStorage.getItem('token');
+        const token =
+          localStorage.getItem('token') ||
+          localStorage.getItem('access_token') ||
+          localStorage.getItem('jwt');
+
         if (!token) {
-          const stored = JSON.parse(localStorage.getItem('user') || '{}');
-          setTipoUsuario(Number(stored?.tipo_usuario));
-          setUsuarioId(stored?.id);
+          setUser(getStoredUser());
+          setUserLoading(false);
           return;
         }
 
         const res = await fetch(`${API_URL}/usuarios/me`, {
-          headers: authHeaders(),
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
         });
+
         if (res.ok) {
           const data = await res.json();
-          setTipoUsuario(Number(data?.tipo_usuario));
-          setUsuarioId(data?.id);
+          setUser(data || {});
+        } else {
+          setUser(getStoredUser());
         }
       } catch (err) {
-        console.error('Error:', err);
-        const stored = JSON.parse(localStorage.getItem('user') || '{}');
-        setTipoUsuario(Number(stored?.tipo_usuario));
-        setUsuarioId(stored?.id);
+        console.error('Error cargando usuario:', err);
+        setUser(getStoredUser());
+      } finally {
+        setUserLoading(false);
       }
     };
 
     loadUserInfo();
   }, []);
 
-  // Cargar proyectos
+  // ✅ Lógica corregida:
+  // consultor = tiene id_consultor
+  // cliente = tiene id_cliente y no tiene id_consultor
+  // admin real = no es consultor ni cliente
+  const esConsultor = !!user?.id_consultor;
+  const esCliente = !!user?.id_cliente && !user?.id_consultor;
+  const esAdminReal = !esConsultor && !esCliente;
+
+  const endpointListado = esAdminReal
+    ? `${API_URL}/notificaciones/admin/todas`
+    : `${API_URL}/notificaciones/todas`;
+
+  useEffect(() => {
+    if (!userLoading) {
+      //console.log('USER DEBUG:', user);
+      //console.log('esConsultor:', esConsultor);
+      //console.log('esCliente:', esCliente);
+      //console.log('esAdminReal:', esAdminReal);
+      //console.log('endpointListado:', endpointListado);
+    }
+  }, [userLoading, user, esConsultor, esCliente, esAdminReal, endpointListado]);
+
   const cargarProyectos = async () => {
     try {
       const res = await fetch(`${API_URL}/proyectos`, {
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       const data = await res.json();
       setProyectos(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error cargando proyectos:', err);
     }
   };
 
-  // Cargar todas las notificaciones (para admin = ver todas)
   const cargarTodasLasNotificaciones = async () => {
     try {
       setLoading(true);
-      
-      // Para admin: obtener TODAS las notificaciones sin filtro
-      // Para consultores: obtener notificaciones de sus proyectos
-      const res = await fetch(`${API_URL}/notificaciones/admin/todas`, {
-        headers: authHeaders(),
+
+      const res = await fetch(endpointListado, {
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
       });
 
-      // Si el endpoint admin/todas no existe, intentar con /todas
-      if (res.status === 404) {
-        const resFallback = await fetch(`${API_URL}/notificaciones/todas`, {
-          headers: authHeaders(),
-        });
-        if (resFallback.ok) {
-          const data = await resFallback.json();
-          setNotificaciones(Array.isArray(data) ? data : []);
-        }
-        return;
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setNotificaciones(Array.isArray(data) ? data : []);
       setPaginaActual(1);
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error al cargar notificaciones:', err);
       alerts.toast.error('Error al cargar notificaciones.');
     } finally {
       setLoading(false);
@@ -113,68 +169,72 @@ export default function GestorNotificacionesAdmin() {
   };
 
   useEffect(() => {
-    if (tipoUsuario !== null) {
+    if (!userLoading) {
       cargarProyectos();
       cargarTodasLasNotificaciones();
     }
-  }, [tipoUsuario]);
+  }, [userLoading, endpointListado]);
 
-  // Filtrar notificaciones según estado
   const notificacionesFiltradas = useMemo(() => {
     if (filtroEstado === 'todas') return notificaciones;
+
     if (filtroEstado === 'leidas') {
-      return notificaciones.filter(n => (n.leido_usuario && n.leido_consultor));
+      return notificaciones.filter((n) => n.leido_usuario && n.leido_consultor);
     }
+
     if (filtroEstado === 'noLeidas') {
-      return notificaciones.filter(n => (!n.leido_usuario || !n.leido_consultor));
+      return notificaciones.filter((n) => !n.leido_usuario || !n.leido_consultor);
     }
+
     return notificaciones;
   }, [notificaciones, filtroEstado]);
 
-  // Agrupar por proyecto
   const notificacionesPorProyecto = useMemo(() => {
     const grouped = {};
 
-    // Inicializar con todos los proyectos disponibles
-    proyectos.forEach(p => {
-      grouped[p.id_proyecto] = {
-        proyecto: p,
-        notificaciones: []
+    proyectos.forEach((p) => {
+      const proyectoId = p.id_proyecto ?? p.gid;
+      grouped[proyectoId] = {
+        proyecto: {
+          ...p,
+          id_proyecto: proyectoId,
+        },
+        notificaciones: [],
       };
     });
 
-    // Agregar grupo de globales
-    grouped['global'] = {
+    grouped.global = {
       proyecto: { id_proyecto: 'global', nombre: '🌍 Notificaciones Globales', codigo: '' },
-      notificaciones: []
+      notificaciones: [],
     };
 
-    // Distribuir notificaciones en sus proyectos correspondientes
-    notificacionesFiltradas.forEach(n => {
+    notificacionesFiltradas.forEach((n) => {
       if (n.es_global) {
-        grouped['global'].notificaciones.push(n);
-      } else if (n.id_proyecto && grouped[n.id_proyecto]) {
-        grouped[n.id_proyecto].notificaciones.push(n);
-      } else if (n.id_proyecto) {
-        // Si no existe el proyecto en nuestro listado, crear entrada para él
-        // Usar nombre y código que vienen del backend (LEFT JOIN)
-        if (!grouped[n.id_proyecto]) {
-          grouped[n.id_proyecto] = {
-            proyecto: { 
-              id_proyecto: n.id_proyecto,
-              nombre: n.proyecto_nombre || `Proyecto #${n.id_proyecto}`,
-              codigo: n.proyecto_codigo || ''
-            },
-            notificaciones: []
-          };
-        }
-        grouped[n.id_proyecto].notificaciones.push(n);
+        grouped.global.notificaciones.push(n);
+        return;
+      }
+
+      const proyectoId = n.id_proyecto;
+
+      if (proyectoId && grouped[proyectoId]) {
+        grouped[proyectoId].notificaciones.push(n);
+        return;
+      }
+
+      if (proyectoId) {
+        grouped[proyectoId] = {
+          proyecto: {
+            id_proyecto: proyectoId,
+            nombre: n.proyecto_nombre || `Proyecto #${proyectoId}`,
+            codigo: n.proyecto_codigo || '',
+          },
+          notificaciones: [n],
+        };
       }
     });
 
-    // Filtrar grupos vacíos y ordenar
     return Object.values(grouped)
-      .filter(g => g.notificaciones.length > 0)
+      .filter((g) => g.notificaciones.length > 0)
       .sort((a, b) => {
         if (a.proyecto.id_proyecto === 'global') return -1;
         if (b.proyecto.id_proyecto === 'global') return 1;
@@ -182,13 +242,11 @@ export default function GestorNotificacionesAdmin() {
       });
   }, [notificacionesFiltradas, proyectos]);
 
-  // Paginación
-  const totalPages = Math.ceil(notificacionesPorProyecto.length / ITEMS_POR_PAGINA);
+  const totalPages = Math.ceil(notificacionesPorProyecto.length / ITEMS_POR_PAGINA) || 1;
   const indexStart = (paginaActual - 1) * ITEMS_POR_PAGINA;
   const indexEnd = indexStart + ITEMS_POR_PAGINA;
   const notificacionesPaginadas = notificacionesPorProyecto.slice(indexStart, indexEnd);
 
-  // Crear o editar notificación
   const guardarNotificacion = async () => {
     if (!formData.titulo.trim() || !formData.mensaje.trim()) {
       alerts.toast.error('Completa título y mensaje.');
@@ -212,7 +270,10 @@ export default function GestorNotificacionesAdmin() {
 
       const res = await fetch(url, {
         method,
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify(body),
       });
 
@@ -221,15 +282,19 @@ export default function GestorNotificacionesAdmin() {
       alerts.toast.success(editingId ? 'Notificación actualizada.' : 'Notificación creada.');
       setShowForm(false);
       setEditingId(null);
-      setFormData({ titulo: '', mensaje: '', id_proyecto: '', es_global: false });
+      setFormData({
+        titulo: '',
+        mensaje: '',
+        id_proyecto: '',
+        es_global: false,
+      });
       cargarTodasLasNotificaciones();
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error guardando notificación:', err);
       alerts.toast.error('Error al guardar notificación.');
     }
   };
 
-  // Editar notificación
   const editarNotificacion = (notif) => {
     setFormData({
       titulo: notif.titulo,
@@ -241,7 +306,6 @@ export default function GestorNotificacionesAdmin() {
     setShowForm(true);
   };
 
-  // Eliminar notificación
   const eliminarNotificacion = async (id) => {
     if (!window.confirm('¿Eliminar notificación?')) return;
 
@@ -252,27 +316,31 @@ export default function GestorNotificacionesAdmin() {
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       alerts.toast.success('Notificación eliminada.');
       cargarTodasLasNotificaciones();
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error eliminando notificación:', err);
       alerts.toast.error('Error al eliminar.');
     }
   };
 
-  // Reenviar a cliente
   const reenviarAlCliente = async (id) => {
     try {
       const res = await fetch(`${API_URL}/notificaciones/${id}/reenviar`, {
         method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({ destino: 'cliente' }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       alerts.toast.success('Notificación reenviada al cliente.');
     } catch (err) {
-      console.error('Error:', err);
+      console.error('Error reenviando notificación:', err);
       alerts.toast.error('Error al reenviar.');
     }
   };
@@ -287,6 +355,19 @@ export default function GestorNotificacionesAdmin() {
     </Pagination.Item>
   );
 
+  if (userLoading) {
+    return (
+      <div className="container-fluid py-4">
+        <Card className="shadow-lg">
+          <Card.Body className="text-center py-5">
+            <Spinner animation="border" className="me-2" />
+            Cargando usuario...
+          </Card.Body>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="container-fluid py-4">
       <Card className="shadow-lg">
@@ -296,29 +377,42 @@ export default function GestorNotificacionesAdmin() {
               <FaUsers className="me-2" />
               Gestor de Notificaciones
             </h4>
-            <small>Crear, editar y reenviar notificaciones a clientes • Total: {notificacionesFiltradas.length}</small>
+            <small>
+              {esAdminReal
+                ? 'Crear, editar y reenviar notificaciones a clientes'
+                : 'Notificaciones propias, globales y por cartera'}{' '}
+              • Total: {notificacionesFiltradas.length}
+            </small>
           </div>
         </Card.Header>
 
         <Card.Body>
-          {/* Botón crear nueva */}
-          <div className="mb-4">
-            <Button
-              variant="primary"
-              onClick={() => {
-                setShowForm(true);
-                setEditingId(null);
-                setFormData({ titulo: '', mensaje: '', id_proyecto: '', es_global: false });
-              }}
-            >
-              <FaPlus className="me-2" />
-              Crear nueva notificación
-            </Button>
-          </div>
+          {esAdminReal && (
+            <div className="mb-4">
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setShowForm(true);
+                  setEditingId(null);
+                  setFormData({
+                    titulo: '',
+                    mensaje: '',
+                    id_proyecto: '',
+                    es_global: false,
+                  });
+                }}
+              >
+                <FaPlus className="me-2" />
+                Crear nueva notificación
+              </Button>
+            </div>
+          )}
 
-          {/* Formulario */}
-          {showForm && (
-            <div className="card mb-4 p-4" style={{ borderLeft: '4px solid #007bff', backgroundColor: '#f8f9fa' }}>
+          {showForm && esAdminReal && (
+            <div
+              className="card mb-4 p-4"
+              style={{ borderLeft: '4px solid #007bff', backgroundColor: '#f8f9fa' }}
+            >
               <h6 className="mb-3">{editingId ? '✏️ Editar' : '➕ Nueva'} notificación</h6>
 
               <Form.Group className="mb-3">
@@ -349,11 +443,14 @@ export default function GestorNotificacionesAdmin() {
                   onChange={(e) => setFormData({ ...formData, id_proyecto: e.target.value })}
                 >
                   <option value="">Selecciona un proyecto (Dejar vacío para global)</option>
-                  {proyectos.map((p) => (
-                    <option key={p.id_proyecto} value={p.id_proyecto}>
-                      {p.nombre}
-                    </option>
-                  ))}
+                  {proyectos.map((p) => {
+                    const proyectoId = p.id_proyecto ?? p.gid;
+                    return (
+                      <option key={proyectoId} value={proyectoId}>
+                        {p.nombre}
+                      </option>
+                    );
+                  })}
                 </Form.Select>
               </Form.Group>
 
@@ -378,7 +475,12 @@ export default function GestorNotificacionesAdmin() {
                   onClick={() => {
                     setShowForm(false);
                     setEditingId(null);
-                    setFormData({ titulo: '', mensaje: '', id_proyecto: '', es_global: false });
+                    setFormData({
+                      titulo: '',
+                      mensaje: '',
+                      id_proyecto: '',
+                      es_global: false,
+                    });
                   }}
                 >
                   <FaTimes className="me-2" />
@@ -388,7 +490,6 @@ export default function GestorNotificacionesAdmin() {
             </div>
           )}
 
-          {/* Filtros */}
           <div className="mb-4">
             <Form.Group>
               <Form.Label>Filtrar por estado</Form.Label>
@@ -404,7 +505,6 @@ export default function GestorNotificacionesAdmin() {
             </Form.Group>
           </div>
 
-          {/* Notificaciones agrupadas por proyecto */}
           {loading ? (
             <div className="text-center py-5">
               <Spinner animation="border" className="me-2" />
@@ -425,12 +525,14 @@ export default function GestorNotificacionesAdmin() {
                             {grupo.proyecto.nombre}
                           </strong>
                           <small className="text-muted ms-2">
-                            ({grupo.notificaciones.length} notificación{grupo.notificaciones.length !== 1 ? 'es' : ''})
+                            ({grupo.notificaciones.length} notificación
+                            {grupo.notificaciones.length !== 1 ? 'es' : ''})
                           </small>
                         </div>
                         <Badge bg="info">{grupo.notificaciones.length}</Badge>
                       </div>
                     </Accordion.Header>
+
                     <Accordion.Body className="p-0">
                       <div className="table-responsive">
                         <Table striped hover className="mb-0">
@@ -447,17 +549,25 @@ export default function GestorNotificacionesAdmin() {
                             {grupo.notificaciones.map((n) => (
                               <tr key={n.id_notificacion}>
                                 <td>
-                                  <strong className="text-truncate d-inline-block" style={{ maxWidth: '150px' }} title={n.titulo}>
+                                  <strong
+                                    className="text-truncate d-inline-block"
+                                    style={{ maxWidth: '150px' }}
+                                    title={n.titulo}
+                                  >
                                     {n.titulo}
                                   </strong>
                                 </td>
                                 <td>
-                                  <small className="text-truncate d-inline-block" style={{ maxWidth: '200px' }} title={n.mensaje}>
+                                  <small
+                                    className="text-truncate d-inline-block"
+                                    style={{ maxWidth: '200px' }}
+                                    title={n.mensaje}
+                                  >
                                     {n.mensaje}
                                   </small>
                                 </td>
                                 <td>
-                                  {(n.leido_usuario && n.leido_consultor) ? (
+                                  {n.leido_usuario && n.leido_consultor ? (
                                     <Badge bg="secondary">✓ Leída</Badge>
                                   ) : (
                                     <Badge bg="success">● Nueva</Badge>
@@ -472,32 +582,38 @@ export default function GestorNotificacionesAdmin() {
                                 </td>
                                 <td>
                                   <div className="d-flex gap-1 flex-wrap">
-                                    <Button
-                                      variant="outline-primary"
-                                      size="sm"
-                                      onClick={() => editarNotificacion(n)}
-                                      title="Editar"
-                                    >
-                                      <FaEdit />
-                                    </Button>
+                                    {esAdminReal ? (
+                                      <>
+                                        <Button
+                                          variant="outline-primary"
+                                          size="sm"
+                                          onClick={() => editarNotificacion(n)}
+                                          title="Editar"
+                                        >
+                                          <FaEdit />
+                                        </Button>
 
-                                    <Button
-                                      variant="outline-info"
-                                      size="sm"
-                                      onClick={() => reenviarAlCliente(n.id_notificacion)}
-                                      title="Reenviar al cliente"
-                                    >
-                                      <FaPaperPlane /> 
-                                    </Button>
+                                        <Button
+                                          variant="outline-info"
+                                          size="sm"
+                                          onClick={() => reenviarAlCliente(n.id_notificacion)}
+                                          title="Reenviar al cliente"
+                                        >
+                                          <FaPaperPlane />
+                                        </Button>
 
-                                    <Button
-                                      variant="outline-danger"
-                                      size="sm"
-                                      onClick={() => eliminarNotificacion(n.id_notificacion)}
-                                      title="Eliminar"
-                                    >
-                                      <FaTrash />
-                                    </Button>
+                                        <Button
+                                          variant="outline-danger"
+                                          size="sm"
+                                          onClick={() => eliminarNotificacion(n.id_notificacion)}
+                                          title="Eliminar"
+                                        >
+                                          <FaTrash />
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <span className="text-muted small">Solo lectura</span>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -510,7 +626,6 @@ export default function GestorNotificacionesAdmin() {
                 ))}
               </Accordion>
 
-              {/* Paginación */}
               {totalPages > 1 && (
                 <div className="d-flex justify-content-center mt-4">
                   <Pagination>
@@ -523,7 +638,6 @@ export default function GestorNotificacionesAdmin() {
                       disabled={paginaActual === 1}
                     />
 
-                    {/* Números de página */}
                     {paginaActual > 2 && renderFilaPaginacion(1)}
                     {paginaActual > 3 && <Pagination.Ellipsis disabled />}
 
