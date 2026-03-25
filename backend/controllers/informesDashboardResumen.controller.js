@@ -10,6 +10,38 @@ function toInt(v, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Crea la expresión SQL unificada para resolver la fecha efectiva de una respuesta.
+ * Soporta ISO (texto/json), Excel Serial (texto/json) y formatos manuales DD/MM/YYYY.
+ */
+function getInformesDateFieldExpr(alias = "r_d") {
+  return `(
+    CASE
+      -- 1. ISO (YYYY-MM-DD...) en valor_texto o valor_json
+      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_texto, 1, 10)::date
+      WHEN COALESCE(${alias}.valor_json::text, '') ~ '^"\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_json::text, 2, 10)::date
+
+      -- 2. Formato manual DD/MM/YYYY o DD-MM-YYYY (Solo en valor_texto)
+      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{1,2}[/-]\\\\d{1,2}[/-]\\\\d{4}' THEN 
+        to_date(regexp_replace(substring(${alias}.valor_texto, 1, 10), '[/-]', '-', 'g'), 'DD-MM-YYYY')
+
+      -- 3. Serial Excel en valor_texto
+      WHEN TRIM(COALESCE(${alias}.valor_texto, '')) ~ '^[0-9]+(\\\\.[0-9]+)?$' 
+           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
+           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
+           THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
+
+      -- 4. Serial Excel en valor_json numérico
+      WHEN jsonb_typeof(${alias}.valor_json) = 'number'
+           AND (${alias}.valor_json::text)::double precision >= 20000
+           AND (${alias}.valor_json::text)::double precision <= 100000
+           THEN '1970-01-01'::date + (floor((${alias}.valor_json::text)::double precision))::int - 25569
+
+      ELSE NULL
+    END
+  )`;
+}
+
 function toBool(v, fallback = false) {
   if (v === undefined || v === null) return fallback;
   const s = String(v).trim().toLowerCase();
@@ -563,17 +595,7 @@ async function buildDashboardUniverseContext(options = {}) {
     if (date_from) params.push(date_from);
     if (date_to) params.push(date_to);
 
-    const dateExprSql = `(
-      CASE
-        WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-        WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-        WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
-             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-             THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-        ELSE NULL
-      END
-    )`;
+    const dateExprSql = getInformesDateFieldExpr("r_d");
 
     whereSql += `
       AND EXISTS (
@@ -1027,17 +1049,7 @@ async function getInformesResumenBase(req, res) {
             ON r_d.id_informe = i.id_informe
            AND r_d.id_pregunta = $${temporalFieldParam}
         `;
-        temporalDateExpr = `(
-          CASE
-            WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-            WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-            WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
-                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-                 THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-            ELSE NULL
-          END
-        )`;
+        temporalDateExpr = getInformesDateFieldExpr("r_d");
       }
 
       const temporalBase = `
@@ -1102,17 +1114,7 @@ async function getInformesResumenBase(req, res) {
             ON r_d_abs.id_informe = i.id_informe
            AND r_d_abs.id_pregunta = $${absFieldParam}
         `;
-        absDateExpr = `(
-          CASE
-            WHEN COALESCE(r_d_abs.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d_abs.valor_texto, 1, 10)::date
-            WHEN COALESCE(r_d_abs.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d_abs.valor_json::text, 1, 10)::date
-            WHEN TRIM(COALESCE(r_d_abs.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
-                 AND CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-                 AND CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-                 THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d_abs.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-            ELSE NULL
-          END
-        )`;
+        absDateExpr = getInformesDateFieldExpr("r_d_abs");
       }
 
       const qAbsolute = `
