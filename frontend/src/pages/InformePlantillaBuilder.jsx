@@ -504,11 +504,67 @@ export default function InformeBuilder() {
   const [plantillaSelId, setPlantillaSelId] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showNewImportModal, setShowNewImportModal] = useState(false);
+  const [plantillaSearch, setPlantillaSearch] = useState("");
+  const [plantillasPage, setPlantillasPage] = useState(1);
+  const PLANTILLAS_PER_PAGE = 8;
 
   const plantillaSeleccionada = useMemo(
     () => plantillas.find((p) => Number(p.id_plantilla) === Number(plantillaSelId)) || null,
     [plantillas, plantillaSelId]
   );
+
+  const plantillasFiltradas = useMemo(() => {
+    const term = String(plantillaSearch || "").trim().toLowerCase();
+
+    let arr = Array.isArray(plantillas) ? [...plantillas] : [];
+
+    // ordenar: activas arriba, luego por nombre
+    arr.sort((a, b) => {
+      const actA = a?.activo ? 1 : 0;
+      const actB = b?.activo ? 1 : 0;
+
+      if (actA !== actB) return actB - actA;
+
+      return String(a?.nombre || "").localeCompare(String(b?.nombre || ""), "es", {
+        sensitivity: "base",
+        numeric: true,
+      });
+    });
+
+    if (!term) return arr;
+
+    return arr.filter((p) => {
+      const nombre = String(p?.nombre || "").toLowerCase();
+      const descripcion = String(p?.descripcion || "").toLowerCase();
+      const estado = p?.activo ? "activa" : "inactiva";
+      return (
+        nombre.includes(term) ||
+        descripcion.includes(term) ||
+        estado.includes(term) ||
+        String(p?.id_plantilla || "").includes(term)
+      );
+    });
+  }, [plantillas, plantillaSearch]);
+
+  const totalPlantillasPages = Math.max(
+    1,
+    Math.ceil(plantillasFiltradas.length / PLANTILLAS_PER_PAGE)
+  );
+
+  const plantillasPaginadas = useMemo(() => {
+    const start = (plantillasPage - 1) * PLANTILLAS_PER_PAGE;
+    return plantillasFiltradas.slice(start, start + PLANTILLAS_PER_PAGE);
+  }, [plantillasFiltradas, plantillasPage]);
+
+  useEffect(() => {
+    setPlantillasPage(1);
+  }, [plantillaSearch]);
+
+  useEffect(() => {
+    if (plantillasPage > totalPlantillasPages) {
+      setPlantillasPage(totalPlantillasPages);
+    }
+  }, [plantillasPage, totalPlantillasPages]);
 
   /* ───────────────────────── Permisos por rol ───────────────────────── */
   const currentUser = useMemo(() => getCurrentUser(), []);
@@ -1942,98 +1998,159 @@ export default function InformeBuilder() {
             </div>
 
             <div className="card-body p-2">
+              <div className="mb-2">
+                <Form.Control
+                  size="sm"
+                  type="text"
+                  placeholder="Buscar plantilla por nombre, descripción, estado o ID..."
+                  value={plantillaSearch}
+                  onChange={(e) => setPlantillaSearch(e.target.value)}
+                />
+              </div>
+
+              <div className="d-flex justify-content-between align-items-center mb-2 small text-muted">
+                <span>
+                  {plantillasFiltradas.length} plantilla{plantillasFiltradas.length === 1 ? "" : "s"}
+                </span>
+                <span>
+                  Página {plantillasPage} / {totalPlantillasPages}
+                </span>
+              </div>
+
               {loadingPlantillas ? (
                 <div className="p-3 text-muted">Cargando...</div>
               ) : (
-                <div className="list-group">
-                  {(plantillas || []).map((p) => {
-                    const selected = Number(p.id_plantilla) === Number(plantillaSelId);
+                <>
+                  <div className="list-group">
+                    {plantillasPaginadas.map((p) => {
+                      const selected = Number(p.id_plantilla) === Number(plantillaSelId);
 
-                    return (
-                      <div
-                        key={p.id_plantilla}
-                        className={`list-group-item p-0 border rounded mb-2 overflow-hidden ${
-                          selected ? "border-primary shadow-sm" : ""
-                        }`}
-                      >
-                        <button
-                          className={`btn w-100 text-start border-0 rounded-0 d-flex justify-content-between align-items-center ${
-                            selected ? "btn-primary" : "btn-light"
+                      return (
+                        <div
+                          key={p.id_plantilla}
+                          className={`list-group-item p-0 border rounded mb-2 overflow-hidden ${
+                            selected ? "border-primary shadow-sm" : ""
                           }`}
-                          onClick={() => setPlantillaSelId(p.id_plantilla)}
-                          type="button"
                         >
-                          <div className="me-2">
-                            <div className="fw-semibold">{p.nombre}</div>
-                            <div className={`small ${selected ? "text-white-50" : "text-muted"}`}>
-                              {p.descripcion || "—"}
+                          <button
+                            className={`btn w-100 text-start border-0 rounded-0 d-flex justify-content-between align-items-center ${
+                              selected ? "btn-primary" : "btn-light"
+                            }`}
+                            onClick={() => setPlantillaSelId(p.id_plantilla)}
+                            type="button"
+                          >
+                            <div className="me-2">
+                              <div className="fw-semibold">{p.nombre}</div>
+                              <div className={`small ${selected ? "text-white-50" : "text-muted"}`}>
+                                {p.descripcion || "—"}
+                              </div>
                             </div>
-                          </div>
 
-                          <div className="d-flex gap-2 align-items-center">
-                            <Badge bg={p.activo ? "success" : "secondary"}>
-                              {p.activo ? "Activa" : "Inactiva"}
-                            </Badge>
-                          </div>
-                        </button>
+                            <div className="d-flex gap-2 align-items-center">
+                              <Badge bg={p.activo ? "success" : "secondary"}>
+                                {p.activo ? "Activa" : "Inactiva"}
+                              </Badge>
+                            </div>
+                          </button>
 
-                        {selected && (
-                          <div className="p-2 bg-white border-top">
-                            <div className="d-flex flex-wrap gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline-secondary"
-                                onClick={() => openEditarPlantilla(p)}
-                              >
-                                Editar
-                              </Button>
-
-                              <Button
-                                size="sm"
-                                variant="outline-primary"
-                                onClick={() => setShowDuplicarModal(true)}
-                              >
-                                Copiar plantilla
-                              </Button>
-
-                              <Button
-                                size="sm"
-                                variant={p.activo ? "warning" : "success"}
-                                onClick={() => toggleActivaPlantilla(p)}
-                              >
-                                {p.activo ? "Desactivar" : "Activar"}
-                              </Button>
-
-                              <Button
-                                size="sm"
-                                variant="outline-primary"
-                                onClick={openCompartirModal}
-                                title="Compartir esta plantilla con otros usuarios"
-                              >
-                                Compartir
-                              </Button>
-
-                              {isAdminUser(getCurrentUser()) && (
+                          {selected && (
+                            <div className="p-2 bg-white border-top">
+                              <div className="d-flex flex-wrap gap-2">
                                 <Button
                                   size="sm"
-                                  variant="outline-danger"
-                                  onClick={() => eliminarDefinitivoPlantilla(p.id_plantilla)}
-                                  title="Borra plantilla + secciones + preguntas + links + informes + respuestas + fotos"
+                                  variant="outline-secondary"
+                                  onClick={() => openEditarPlantilla(p)}
                                 >
-                                  Eliminar definitivo
+                                  Editar
                                 </Button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
 
-                  {!plantillas?.length ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline-primary"
+                                  onClick={() => setShowDuplicarModal(true)}
+                                >
+                                  Copiar plantilla
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant={p.activo ? "warning" : "success"}
+                                  onClick={() => toggleActivaPlantilla(p)}
+                                >
+                                  {p.activo ? "Desactivar" : "Activar"}
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant="outline-primary"
+                                  onClick={openCompartirModal}
+                                  title="Compartir esta plantilla con otros usuarios"
+                                >
+                                  Compartir
+                                </Button>
+
+                                {isAdminUser(getCurrentUser()) && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline-danger"
+                                    onClick={() => eliminarDefinitivoPlantilla(p.id_plantilla)}
+                                    title="Borra plantilla + secciones + preguntas + links + informes + respuestas + fotos"
+                                  >
+                                    Eliminar definitivo
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {!plantillasPaginadas.length ? (
                     <div className="p-3 text-muted">Sin plantillas.</div>
                   ) : null}
-                </div>
+
+                  {plantillasFiltradas.length > 0 && (
+                    <div className="d-flex justify-content-between align-items-center mt-3 gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline-secondary"
+                        disabled={plantillasPage <= 1}
+                        onClick={() => setPlantillasPage((prev) => Math.max(1, prev - 1))}
+                      >
+                        Anterior
+                      </Button>
+
+                      <div className="small text-muted text-center flex-grow-1">
+                        Mostrando{" "}
+                        {Math.min(
+                          (plantillasPage - 1) * PLANTILLAS_PER_PAGE + 1,
+                          plantillasFiltradas.length
+                        )}{" "}
+                        a{" "}
+                        {Math.min(
+                          plantillasPage * PLANTILLAS_PER_PAGE,
+                          plantillasFiltradas.length
+                        )}{" "}
+                        de {plantillasFiltradas.length}
+                      </div>
+
+                      <Button
+                        size="sm"
+                        variant="outline-secondary"
+                        disabled={plantillasPage >= totalPlantillasPages}
+                        onClick={() =>
+                          setPlantillasPage((prev) =>
+                            Math.min(totalPlantillasPages, prev + 1)
+                          )
+                        }
+                      >
+                        Siguiente
+                      </Button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

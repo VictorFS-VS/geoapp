@@ -46,7 +46,7 @@ function isNumberLike(v) {
 
 function validateCoords(label, raw) {
   const v = String(raw ?? "").trim();
-  if (!v) return null; // opcional
+  if (!v) return null;
   if (!isNumberLike(v)) return `${label} debe ser numérico (usar punto "." para decimales).`;
   const n = Number(v);
   if (!Number.isFinite(n)) return `${label} no es un número válido.`;
@@ -59,7 +59,6 @@ function validateCoords(label, raw) {
 function validateForm(fd) {
   const e = {};
 
-  // requeridos (como tenías: tipo_estudio, codigo, nombre)
   if (!String(fd.codigo || "").trim()) e.codigo = "Código es obligatorio.";
   if (!String(fd.nombre || "").trim()) e.nombre = "Nombre del proyecto es obligatorio.";
   if (!String(fd.tipo_estudio || "").trim()) e.tipo_estudio = "Seleccione Tipo de Estudio.";
@@ -100,7 +99,6 @@ function validateForm(fd) {
     }
   }
 
-  // ids numéricos (si vinieron)
   if (fd.id_consultor && !/^\d+$/.test(String(fd.id_consultor))) e.id_consultor = "Consultor inválido.";
   if (fd.id_proponente && !/^\d+$/.test(String(fd.id_proponente))) e.id_proponente = "Proponente inválido.";
 
@@ -141,8 +139,12 @@ export default function CrearProyecto() {
     matricula: "",
   });
 
-  // ✅ errores por campo + foco
   const [errors, setErrors] = useState({});
+
+  // ✅ usuario logueado
+  const [me, setMe] = useState(null);
+  const [lockedConsultor, setLockedConsultor] = useState(false);
+
   const refs = {
     nro_expediente: useRef(null),
     tipo_estudio: useRef(null),
@@ -174,7 +176,6 @@ export default function CrearProyecto() {
     if (el?.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
-  // combos
   const [tiposEstudio, setTiposEstudio] = useState([]);
   const [tiposProyecto, setTiposProyecto] = useState([]);
   const [actividades, setActividades] = useState([]);
@@ -182,20 +183,17 @@ export default function CrearProyecto() {
   const [proponentes, setProponentes] = useState([]);
   const [sectores, setSectores] = useState([]);
 
-  // modales
-  const [showModal, setShowModal] = useState(false); // Actividad
+  const [showModal, setShowModal] = useState(false);
   const [nuevaActividad, setNuevaActividad] = useState("");
 
-  const [showModalSector, setShowModalSector] = useState(false); // Sector
+  const [showModalSector, setShowModalSector] = useState(false);
   const [nuevoSectorId, setNuevoSectorId] = useState("");
   const [nuevoSectorNombre, setNuevoSectorNombre] = useState("");
 
-  // Siempre arrancar arriba (como Editar)
   useLayoutEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   }, []);
 
-  // Helpers
   const toArray = (x) =>
     Array.isArray(x?.data) ? x.data : Array.isArray(x?.rows) ? x.rows : Array.isArray(x) ? x : [];
 
@@ -211,7 +209,32 @@ export default function CrearProyecto() {
     }
   };
 
+  // ✅ traer usuario logueado
+  const fetchMe = async () => {
+    try {
+      const res = await fetch(`${API_URL}/auth/me`, { headers: authHeaders });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const user = await res.json();
+      setMe(user);
+
+      if (user?.id_consultor) {
+        setFormData((prev) => ({
+          ...prev,
+          id_consultor: String(user.id_consultor),
+        }));
+        setLockedConsultor(true);
+      } else {
+        setLockedConsultor(false);
+      }
+    } catch (err) {
+      console.error("Error obteniendo usuario logueado:", err);
+      setMe(null);
+      setLockedConsultor(false);
+    }
+  };
+
   useEffect(() => {
+    fetchMe();
     fetchList(`${API_URL}/conceptos/tipo-estudio`, setTiposEstudio);
     fetchList(`${API_URL}/conceptos/tipo-proyecto`, setTiposProyecto);
     fetchList(`${API_URL}/conceptos/actividad`, setActividades);
@@ -223,9 +246,12 @@ export default function CrearProyecto() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+
+    // ✅ si el consultor viene del usuario logueado, no permitir cambiarlo
+    if (name === "id_consultor" && lockedConsultor) return;
+
     setFormData((prev) => ({ ...prev, [name]: value }));
 
-    // ✅ limpia error al tipear
     setErrors((prev) => {
       if (!prev?.[name]) return prev;
       const copy = { ...prev };
@@ -234,7 +260,6 @@ export default function CrearProyecto() {
     });
   };
 
-  // ✅ igual que Editar: mapa integrado con GoogleMapaCoordenadas
   const mapaValue = (() => {
     const lat = Number(formData.coordenada_y);
     const lng = Number(formData.coordenada_x);
@@ -245,7 +270,6 @@ export default function CrearProyecto() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // ✅ Validación front y foco al primer error
     const frontErrors = validateForm(formData);
     if (Object.keys(frontErrors).length) {
       setErrors(frontErrors);
@@ -269,11 +293,18 @@ export default function CrearProyecto() {
         tipo_estudio: formData.tipo_estudio || null,
         tipo_proyecto: formData.tipo_proyecto || null,
         actividad: formData.actividad || null,
-        id_consultor: formData.id_consultor ? parseInt(formData.id_consultor, 10) : null,
+
+        // ✅ prioridad al consultor del usuario logueado si existe
+        id_consultor: me?.id_consultor
+          ? Number(me.id_consultor)
+          : formData.id_consultor
+          ? parseInt(formData.id_consultor, 10)
+          : null,
+
         id_proponente: formData.id_proponente ? parseInt(formData.id_proponente, 10) : null,
         sector_proyecto: formData.sector || null,
-        coor_x: formData.coordenada_x ? Number(formData.coordenada_x) : null, // lng
-        coor_y: formData.coordenada_y ? Number(formData.coordenada_y) : null, // lat
+        coor_x: formData.coordenada_x ? Number(formData.coordenada_x) : null,
+        coor_y: formData.coordenada_y ? Number(formData.coordenada_y) : null,
         dpto: formData.departamento || null,
         distrito: formData.distrito || null,
         barrio: formData.barrio || null,
@@ -294,7 +325,6 @@ export default function CrearProyecto() {
         const raw = await res.text().catch(() => "");
         const low = String(raw || "").toLowerCase();
 
-        // ✅ codigo unique
         if (res.status === 409 || low.includes("llave duplicada") || /duplicate|unique/i.test(raw)) {
           const e2 = { codigo: "El código del proyecto ya existe. Ingrese uno diferente." };
           setErrors((prev) => ({ ...prev, ...e2 }));
@@ -303,7 +333,6 @@ export default function CrearProyecto() {
           return;
         }
 
-        // ✅ largos típicos
         if (/value too long|character varying/i.test(raw)) {
           const e2 = {
             descripcion:
@@ -315,7 +344,6 @@ export default function CrearProyecto() {
           return;
         }
 
-        // ✅ coordenadas numeric
         if (
           /invalid input syntax for type numeric|numeric/i.test(raw) &&
           (low.includes("coor") || low.includes("coor_x") || low.includes("coor_y"))
@@ -325,8 +353,9 @@ export default function CrearProyecto() {
             coordenada_y: "Coordenadas inválidas.",
           };
           setErrors((prev) => ({ ...prev, ...e2 }));
-          alerts?.toast?.warning ? alerts.toast.warning("Coordenadas inválidas.") : console.warn("Coordenadas inválidas.");
-          // foco: no hay input dedicado si sólo usás mapa, pero mantenemos scroll en el bloque
+          alerts?.toast?.warning
+            ? alerts.toast.warning("Coordenadas inválidas.")
+            : console.warn("Coordenadas inválidas.");
           return;
         }
 
@@ -343,14 +372,16 @@ export default function CrearProyecto() {
       alerts?.toast?.success
         ? alerts.toast.success("Proyecto creado con éxito.")
         : console.info("Proyecto creado con éxito");
+
       navigate("/proyectos");
     } catch (err) {
       console.error(err);
-      alerts?.toast?.error ? alerts.toast.error("Error al crear el proyecto.") : console.error("Error al crear el proyecto");
+      alerts?.toast?.error
+        ? alerts.toast.error("Error al crear el proyecto.")
+        : console.error("Error al crear el proyecto");
     }
   };
 
-  // === Alta rápida de ACTIVIDAD ===
   const getNextActividadIdLocal = (lista) => {
     const nums = (Array.isArray(lista) ? lista : [])
       .map((a) => parseInt(String(a.concepto).trim(), 10))
@@ -423,7 +454,6 @@ export default function CrearProyecto() {
     }
   };
 
-  // === Alta de SECTOR ===
   const agregarSector = async () => {
     const idRaw = (nuevoSectorId || "").trim();
     const nombre = (nuevoSectorNombre || "").trim();
@@ -460,7 +490,6 @@ export default function CrearProyecto() {
     const idLower = idRaw.toLowerCase();
     const existente = sectores.find((s) => String(s.concepto).toLowerCase() === idLower);
     if (existente) {
-      // eslint-disable-next-line no-restricted-globals
       if (confirm(`El ID ${idRaw} ya existe (${existente.nombre}). ¿Desea usar este sector?`)) {
         setFormData((prev) => ({ ...prev, sector: existente.concepto }));
         setShowModalSector(false);
@@ -493,13 +522,16 @@ export default function CrearProyecto() {
     }
   };
 
+  const consultorSeleccionado = consultores.find(
+    (c) => Number(c.id_consultor) === Number(formData.id_consultor)
+  );
+
   return (
     <>
       <Container className="py-4">
         <h2 className="mb-4">Crear Nuevo Proyecto</h2>
 
         <Form onSubmit={handleSubmit} noValidate>
-          {/* Expediente + Estudio */}
           <Row className="mb-3">
             <Col md={6}>
               <Form.Group>
@@ -539,7 +571,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Código + Tipo proyecto */}
           <Row className="mb-3">
             <Col md={6}>
               <Form.Group>
@@ -579,7 +610,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Nombre + Actividad */}
           <Row className="mb-3">
             <Col md={6}>
               <Form.Group>
@@ -625,7 +655,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Estado + Consultor + Proponente */}
           <Row className="mb-3">
             <Col md={4}>
               <Form.Group>
@@ -651,6 +680,7 @@ export default function CrearProyecto() {
                   value={formData.id_consultor}
                   onChange={handleChange}
                   isInvalid={!!errors.id_consultor}
+                  disabled={lockedConsultor}
                 >
                   <option value="">Seleccione el Consultor</option>
                   {consultores.map((c) => (
@@ -660,6 +690,13 @@ export default function CrearProyecto() {
                   ))}
                 </Form.Select>
                 <Form.Control.Feedback type="invalid">{errors.id_consultor}</Form.Control.Feedback>
+
+                {lockedConsultor && (
+                  <Form.Text className="text-muted">
+                    Se asignó automáticamente el consultor del usuario logueado
+                    {consultorSeleccionado?.nombre ? `: ${consultorSeleccionado.nombre}` : ""}.
+                  </Form.Text>
+                )}
               </Form.Group>
             </Col>
 
@@ -685,7 +722,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Sector + Fechas */}
           <Row className="mb-3">
             <Col md={4}>
               <Form.Group>
@@ -745,7 +781,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Registro + Expediente hídrico */}
           <Row className="mb-3">
             <Col md={6}>
               <Form.Group>
@@ -778,7 +813,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* ✅ Ubicación (Mapa integrado igual que Editar) */}
           <Row className="mb-3">
             <Col md={12}>
               <Form.Group>
@@ -787,14 +821,12 @@ export default function CrearProyecto() {
                 <GoogleMapaCoordenadas
                   value={mapaValue}
                   onChange={(pos) => {
-                    // pos: {lat, lng}
                     setFormData((prev) => ({
                       ...prev,
                       coordenada_x: pos?.lng != null ? String(pos.lng) : "",
                       coordenada_y: pos?.lat != null ? String(pos.lat) : "",
                     }));
 
-                    // limpiar errores de coords si existían
                     setErrors((prev) => {
                       const copy = { ...prev };
                       delete copy.coordenada_x;
@@ -818,7 +850,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Ubicación textual */}
           <Row className="mb-3">
             <Col md={4}>
               <Form.Group>
@@ -866,7 +897,6 @@ export default function CrearProyecto() {
             </Col>
           </Row>
 
-          {/* Descripción */}
           <Form.Group className="mb-3">
             <Form.Label>Descripción</Form.Label>
             <Form.Control
@@ -882,7 +912,6 @@ export default function CrearProyecto() {
             <Form.Control.Feedback type="invalid">{errors.descripcion}</Form.Control.Feedback>
           </Form.Group>
 
-          {/* Catastral */}
           <fieldset className="border p-3 mb-3">
             <legend className="w-auto px-2">Información Catastral</legend>
             <Row>
@@ -959,7 +988,6 @@ export default function CrearProyecto() {
         </Form>
       </Container>
 
-      {/* Modal Nueva Actividad */}
       {showModal && (
         <div className="modal d-block" tabIndex="-1" style={{ background: "rgba(0,0,0,0.5)" }}>
           <div className="modal-dialog">
@@ -978,7 +1006,9 @@ export default function CrearProyecto() {
                     placeholder="Ingrese el nombre de la nueva actividad"
                     maxLength={LIMITS.actividad}
                   />
-                  <Form.Text className="text-muted">El ID (concepto) se asignará automáticamente como un número correlativo.</Form.Text>
+                  <Form.Text className="text-muted">
+                    El ID (concepto) se asignará automáticamente como un número correlativo.
+                  </Form.Text>
                 </Form.Group>
               </div>
 
@@ -995,7 +1025,6 @@ export default function CrearProyecto() {
         </div>
       )}
 
-      {/* Modal Nuevo Sector */}
       {showModalSector && (
         <div className="modal d-block" tabIndex="-1" style={{ background: "rgba(0,0,0,0.5)" }}>
           <div className="modal-dialog">

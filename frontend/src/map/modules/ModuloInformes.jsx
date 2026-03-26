@@ -19,7 +19,7 @@ const TRACE_INF_MARKERS = false; // ← activado temporalmente para validación
 /* =========================================================
    ✅ Paleta estable para colores por plantilla
    ========================================================= */
-const PLANTILLA_COLORS = [
+/*const PLANTILLA_COLORS = [
   "#2563eb",
   "#16a34a",
   "#f97316",
@@ -32,13 +32,19 @@ const PLANTILLA_COLORS = [
   "#db2777",
   "#64748b",
   "#7c3aed",
-];
+]; */
 
 function plantillaColorOf(id) {
   const n = Number(id);
   if (!Number.isFinite(n) || !n) return null;
-  const h = (n * 2654435761) >>> 0;
-  return PLANTILLA_COLORS[h % PLANTILLA_COLORS.length];
+
+  const hue = (n * 137.508) % 360;
+
+  // Más contraste para mapa satelital
+  const sat = 78;
+  const light = 48;
+
+  return `hsl(${hue.toFixed(1)}, ${sat}%, ${light}%)`;
 }
 
 const authHeaders = () => {

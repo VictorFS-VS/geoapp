@@ -132,7 +132,11 @@ const PERMS = {
   RESOLUCIONES: ["resoluciones.read", "resoluciones.create", "resoluciones.update", "resoluciones.delete"],
   EVALUACIONES: ["evaluaciones.read", "evaluaciones.create", "evaluaciones.update", "evaluaciones.delete"],
 
-  REGENCIA: ["regencia.read", "regencia.create", "regencia.update", "regencia.delete"],
+  REGENCIA: [
+    "regencia.contratos.read",
+    "regencia.actividades.read",
+    "regencia.responsables.read",
+  ],
   REGENCIA_CONTRATOS: [
     "regencia.contratos.read",
     "regencia.contratos.create",
@@ -191,7 +195,7 @@ const PERMS = {
 
   REPORTES: ["reportes.read", "reportes.create", "reportes.update", "reportes.delete"],
 
-  NDVI: ["ndvi.read", "ndvi.create", "ndvi.update"],
+  NDVI: ["use_change.read", "use_change.create", "use_change.delete"],
 };
 
 /* =========================
