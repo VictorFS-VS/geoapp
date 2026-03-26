@@ -8,6 +8,7 @@ const {
   MAP_KPI_CATEGORY_PALETTE,
   MAP_KPI_DEFAULT_COLOR_HEX,
 } = require("../helpers/informesDashboardStyles");
+const { getInformesDateFieldExpr } = require("../helpers/informesDashboardTemporal");
 
 function toInt(v, fallback = null) {
   if (v === undefined || v === null) return fallback;
@@ -19,34 +20,6 @@ function toInt(v, fallback = null) {
  * Crea la expresión SQL unificada para resolver la fecha efectiva de una respuesta.
  * Soporta ISO (texto/json), Excel Serial (texto/json) y formatos manuales DD/MM/YYYY.
  */
-function getInformesDateFieldExpr(alias = "r_d") {
-  return `(
-    CASE
-      -- 1. ISO (YYYY-MM-DD...) en valor_texto o valor_json
-      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_texto, 1, 10)::date
-      WHEN COALESCE(${alias}.valor_json::text, '') ~ '^"\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_json::text, 2, 10)::date
-
-      -- 2. Formato manual DD/MM/YYYY o DD-MM-YYYY (Solo en valor_texto)
-      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{1,2}[/-]\\\\d{1,2}[/-]\\\\d{4}' THEN 
-        to_date(regexp_replace(substring(${alias}.valor_texto, 1, 10), '[/-]', '-', 'g'), 'DD-MM-YYYY')
-
-      -- 3. Serial Excel en valor_texto
-      WHEN TRIM(COALESCE(${alias}.valor_texto, '')) ~ '^[0-9]+(\\\\.[0-9]+)?$' 
-           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-           THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-
-      -- 4. Serial Excel en valor_json numérico
-      WHEN jsonb_typeof(${alias}.valor_json) = 'number'
-           AND (${alias}.valor_json::text)::double precision >= 20000
-           AND (${alias}.valor_json::text)::double precision <= 100000
-           THEN '1970-01-01'::date + (floor((${alias}.valor_json::text)::double precision))::int - 25569
-
-      ELSE NULL
-    END
-  )`;
-}
-
 function toBool(v, fallback = false) {
   if (v === undefined || v === null) return fallback;
   const s = String(v).trim().toLowerCase();
@@ -550,6 +523,8 @@ async function buildDashboardUniverseContext(options = {}) {
   let dateFieldId = "__created_at";
   let dateFieldLabel = "Fecha de carga";
 
+  let dateFieldIsStrict = false;
+
   if (rawDateFieldId && rawDateFieldId !== "__created_at") {
     const idDateField = toInt(rawDateFieldId, null);
     if (idDateField) {
@@ -565,6 +540,7 @@ async function buildDashboardUniverseContext(options = {}) {
         dateFieldKind = "field";
         dateFieldId = String(idDateField);
         dateFieldLabel = row.etiqueta || `Pregunta ${idDateField}`;
+        dateFieldIsStrict = isDateableTipo(row.tipo);
       }
     }
   }
@@ -608,7 +584,7 @@ async function buildDashboardUniverseContext(options = {}) {
     if (date_from) params.push(date_from);
     if (date_to) params.push(date_to);
 
-    const dateExprSql = getInformesDateFieldExpr("r_d");
+    const dateExprSql = getInformesDateFieldExpr("r_d", dateFieldIsStrict);
 
     whereSql += `
       AND EXISTS (
@@ -655,6 +631,7 @@ async function buildDashboardUniverseContext(options = {}) {
     dateFieldKind,
     dateFieldId,
     dateFieldLabel,
+    dateFieldIsStrict,
     searchFieldIds,
     search_text,
     dynamicFilters,
@@ -729,6 +706,7 @@ async function getInformesResumenBase(req, res) {
       dateFieldKind,
       dateFieldId,
       dateFieldLabel,
+      dateFieldIsStrict,
       searchFieldIds,
       search_text,
       dynamicFilters,
@@ -1065,7 +1043,7 @@ async function getInformesResumenBase(req, res) {
             ON r_d.id_informe = i.id_informe
            AND r_d.id_pregunta = $${temporalFieldParam}
         `;
-        temporalDateExpr = getInformesDateFieldExpr("r_d");
+        temporalDateExpr = getInformesDateFieldExpr("r_d", dateFieldIsStrict);
       }
 
       const temporalBase = `
@@ -1104,85 +1082,212 @@ async function getInformesResumenBase(req, res) {
 
       const rTemporal = await pool.query(qTemporal, temporalParams);
 
-      const absoluteUniverse = await buildDashboardUniverseContext({
+      const absoluteScopeBase = buildDashboardFilters({
         id_proyecto,
         id_plantilla,
-        date_from: null,
-        date_to: null,
-        solo_cerrados,
-        filters: req.query.filters,
-        interactive_filters: req.query.interactive_filters,
-        search_text: req.query.search_text,
-        search_field_ids: req.query.search_field_ids,
-        date_field_id: req.query.date_field_id,
-        user: req.user,
+        desde: null,
+        hasta: null,
+        solo_cerrados: false,
       });
+      const absoluteScope = buildInformeVisibleScope({
+        userId: req.user?.id,
+        isAdmin: Number(req.user?.tipo_usuario) === 1,
+        plantillaId: null,
+        startIndex: absoluteScopeBase.params.length + 1,
+      });
+      const absoluteWhereSql = `${absoluteScopeBase.whereSql} ${absoluteScope.whereSql}`;
+      const absoluteParams = absoluteScopeBase.params.concat(absoluteScope.params);
+      const absoluteJoinSql = `
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_plantilla_usuario pu
+          ON pu.id_plantilla = p.id_plantilla
+         AND pu.id_usuario = $${absoluteScope.userParamIndex}
+      `;
 
       let absDateExpr = "i.fecha_creado::date";
       let absJoin = "";
-      let absParams = absoluteUniverse.params.slice();
+      let absParams = absoluteParams.slice();
 
-      if (absoluteUniverse.dateFieldKind === "field") {
+      if (dateFieldKind === "field") {
         const absFieldParam = absParams.length + 1;
-        absParams.push(toInt(absoluteUniverse.dateFieldId, null));
+        absParams.push(toInt(dateFieldId, null));
         absJoin = `
           JOIN ema.informe_respuesta r_d_abs
             ON r_d_abs.id_informe = i.id_informe
            AND r_d_abs.id_pregunta = $${absFieldParam}
         `;
-        absDateExpr = getInformesDateFieldExpr("r_d_abs");
+        absDateExpr = getInformesDateFieldExpr("r_d_abs", dateFieldIsStrict);
       }
 
       const qAbsolute = `
         SELECT 
           MIN(${absDateExpr}) AS absolute_min,
           MAX(${absDateExpr}) AS absolute_max
-        ${absoluteUniverse.joinSql}
+        ${absoluteJoinSql}
         ${absJoin}
-        ${absoluteUniverse.whereSql}
+        ${absoluteWhereSql}
       `;
 
+      console.info("[TEMPORAL_ABS_DEBUG] request", {
+        id_proyecto,
+        id_plantilla,
+        date_field_id: dateFieldId,
+        time_grouping,
+        dateFieldIsStrict,
+      });
+      console.info("[TEMPORAL_ABS_DEBUG] absDateExpr", String(absDateExpr).slice(0, 300));
+      console.info("[TEMPORAL_ABS_DEBUG] qAbsolute", String(qAbsolute).slice(0, 500));
       const rAbsolute = await pool.query(qAbsolute, absParams);
+      console.info("[TEMPORAL_ABS_DEBUG] qAbsolute row", rAbsolute.rows?.[0] || null);
       temporal.absolute_min = rAbsolute.rows[0]?.absolute_min ? new Date(rAbsolute.rows[0].absolute_min).toISOString().slice(0, 10) : null;
       temporal.absolute_max = rAbsolute.rows[0]?.absolute_max ? new Date(rAbsolute.rows[0].absolute_max).toISOString().slice(0, 10) : null;
-
-      const qAbsoluteSeries = `
-        SELECT
-          ${bucketStartExpr.replace(/date_value/g, absDateExpr)} AS bucket_start,
-          ${labelExpr.replace(/date_value/g, absDateExpr)} AS label,
-          COUNT(*)::int AS count
-        ${absoluteUniverse.joinSql}
-        ${absJoin}
-        ${absoluteUniverse.whereSql}
-        AND ${absDateExpr} IS NOT NULL
-        GROUP BY bucket_start, label
-        ORDER BY bucket_start ASC
-      `;
-      const rAbsoluteSeries = await pool.query(qAbsoluteSeries, absParams);
-      const temporalRows = rTemporal.rows || [];
-      const rangeTotal = temporalRows.reduce(
-        (acc, row) => acc + (Number(row.count) || 0),
-        0
-      );
-      temporal.range_total = rangeTotal;
-
-      const normalizeSeries = (rows) => (rows || []).map((row) => {
-        const count = Number(row.count) || 0;
-        const percent = rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
-        return {
-          key: row.label,
-          label: row.label,
-          bucket_start: row.bucket_start
-            ? new Date(row.bucket_start).toISOString().slice(0, 10)
-            : null,
-          count,
-          percent_of_range: percent,
-        };
+      console.info("[TEMPORAL_ABS_DEBUG] assigned", {
+        absolute_min: temporal.absolute_min,
+        absolute_max: temporal.absolute_max,
       });
 
-      temporal.series_absolute = normalizeSeries(rAbsoluteSeries.rows);
-      temporal.series = normalizeSeries(temporalRows);
+      try {
+        const absoluteBase = `
+          SELECT
+            i.id_informe,
+            ${absDateExpr} AS date_value
+          ${absoluteJoinSql}
+          ${absJoin}
+          ${absoluteWhereSql}
+        `;
+        const qAbsoluteSeries = `
+          WITH absolute_base AS (
+            ${absoluteBase}
+          )
+          SELECT
+            ${bucketStartExpr} AS bucket_start,
+            ${labelExpr} AS label,
+            COUNT(*)::int AS count
+          FROM absolute_base
+          WHERE date_value IS NOT NULL
+          GROUP BY bucket_start, label
+          ORDER BY bucket_start ASC
+        `;
+        const rAbsoluteSeries = await pool.query(qAbsoluteSeries, absParams);
+        const temporalRows = rTemporal.rows || [];
+        const rangeTotal = temporalRows.reduce(
+          (acc, row) => acc + (Number(row.count) || 0),
+          0
+        );
+        temporal.range_total = rangeTotal;
+
+        const normalizeSeries = (rows) => (rows || []).map((row) => {
+          const count = Number(row.count) || 0;
+          const percent = rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
+          return {
+            key: row.label,
+            label: row.label,
+            bucket_start: row.bucket_start
+              ? new Date(row.bucket_start).toISOString().slice(0, 10)
+              : null,
+            count,
+            percent_of_range: percent,
+          };
+        });
+
+        temporal.series_absolute = normalizeSeries(rAbsoluteSeries.rows);
+        temporal.series = normalizeSeries(temporalRows);
+      } catch (err) {
+        console.error("[TEMPORAL_ABS_ERROR] series failed", {
+          id_proyecto,
+          id_plantilla,
+          date_field_id: dateFieldId,
+          time_grouping,
+          message: err?.message || String(err),
+        });
+        temporal.series_absolute = [];
+        temporal.series = [];
+        temporal.range_total = 0;
+      }
+
+      try {
+        const qValidCreatedAt = `
+          SELECT COUNT(i.fecha_creado)::int AS valid_count
+          ${absoluteJoinSql}
+          ${absoluteWhereSql}
+        `;
+        const qValidFields = `
+          SELECT 
+            r.id_pregunta, 
+            COUNT(*)::int AS valid_count
+          ${absoluteJoinSql}
+          JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
+          JOIN ema.informe_pregunta q ON r.id_pregunta = q.id_pregunta
+          ${absoluteWhereSql}
+          AND LOWER(TRIM(q.tipo)) IN ('fecha', 'date', 'datetime', 'fecha_hora', 'timestamp')
+          AND ${getInformesDateFieldExpr("r", true)} IS NOT NULL
+          GROUP BY r.id_pregunta
+        `;
+        const qValidCreatedAtFiltered = `
+          SELECT COUNT(i.fecha_creado)::int AS valid_count
+          ${joinSql}
+          ${whereSql}
+        `;
+        const qValidFieldsFiltered = `
+          SELECT 
+            r.id_pregunta, 
+            COUNT(*)::int AS valid_count
+          ${joinSql}
+          JOIN ema.informe_respuesta r ON r.id_informe = i.id_informe
+          JOIN ema.informe_pregunta q ON r.id_pregunta = q.id_pregunta
+          ${whereSql}
+          AND LOWER(TRIM(q.tipo)) IN ('fecha', 'date', 'datetime', 'fecha_hora', 'timestamp')
+          AND ${getInformesDateFieldExpr("r", true)} IS NOT NULL
+          GROUP BY r.id_pregunta
+        `;
+        
+        const [rValidCreatedAt, rValidFields, rValidCreatedAtFiltered, rValidFieldsFiltered] = await Promise.all([
+          pool.query(qValidCreatedAt, absoluteParams),
+          pool.query(qValidFields, absoluteParams),
+          pool.query(qValidCreatedAtFiltered, params),
+          pool.query(qValidFieldsFiltered, params),
+        ]);
+        
+        const sources_counts_absolute = {
+          "__created_at": rValidCreatedAt.rows[0]?.valid_count || 0
+        };
+        const sources_counts_filtered = {
+          "__created_at": rValidCreatedAtFiltered.rows[0]?.valid_count || 0
+        };
+        
+        for (const row of rValidFields.rows || []) {
+          sources_counts_absolute[row.id_pregunta] = row.valid_count;
+        }
+        for (const row of rValidFieldsFiltered.rows || []) {
+          sources_counts_filtered[row.id_pregunta] = row.valid_count;
+        }
+        temporal.sources_counts = sources_counts_absolute;
+        temporal.sources_counts_absolute = sources_counts_absolute;
+        temporal.sources_counts_filtered = sources_counts_filtered;
+      } catch (err) {
+        console.error("[TEMPORAL_ABS_ERROR] counts failed", {
+          id_proyecto,
+          id_plantilla,
+          date_field_id: dateFieldId,
+          time_grouping,
+          message: err?.message || String(err),
+        });
+        temporal.sources_counts = temporal.sources_counts || { "__created_at": 0 };
+        temporal.sources_counts_absolute = temporal.sources_counts_absolute || temporal.sources_counts;
+        temporal.sources_counts_filtered = temporal.sources_counts_filtered || { "__created_at": 0 };
+      }
     } catch (err) {
+      console.error("[TEMPORAL_ABS_ERROR] temporal block failed", {
+        id_proyecto,
+        id_plantilla,
+        date_field_id: dateFieldId,
+        time_grouping,
+        message: err?.message || String(err),
+      });
+      if (err?.stack) {
+        console.error("[TEMPORAL_ABS_ERROR] stack", String(err.stack).slice(0, 1000));
+      }
       temporal = {
         enabled: false,
         date_field_id: dateFieldId,

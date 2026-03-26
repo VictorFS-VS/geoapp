@@ -2,6 +2,11 @@
 
 const pool = require("../db");
 const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
+const {
+  collectFieldTemporalStats,
+  collectCreatedAtTemporalStats,
+  buildTemporalCapabilities,
+} = require("../helpers/informesDashboardTemporal");
 
 function toInt(v, fallback = null) {
   if (v === undefined || v === null) return fallback;
@@ -220,15 +225,7 @@ async function getPlantillaDashboardMetadata(req, res) {
     );
 
     const preguntasBySeccion = new Map();
-    const temporalSources = [
-      {
-        id: "__created_at",
-        label: "Fecha de carga",
-        kind: "created_at",
-        dateable: true,
-        default: true,
-      },
-    ];
+    const dateableFields = [];
     for (const q of preguntasRes.rows || []) {
       const dateable = isDateableType(q.tipo);
       const searchable = isSearchableType(q.tipo);
@@ -258,14 +255,52 @@ async function getPlantillaDashboardMetadata(req, res) {
       preguntasBySeccion.set(q.id_seccion, list);
 
       if (dateable) {
-        temporalSources.push({
-          id: Number(q.id_pregunta),
+        dateableFields.push({
+          id_pregunta: Number(q.id_pregunta),
           label: q.etiqueta || `Pregunta ${q.id_pregunta}`,
-          kind: "field",
-          dateable: true,
-          default: false,
         });
       }
+    }
+
+    const baseParamsWithScope = baseParams.concat(scope.params);
+    const baseQuery = `
+      SELECT
+        i.id_informe,
+        i.fecha_creado::date AS created_date
+      FROM ema.informe i
+      JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+      LEFT JOIN ema.informe_plantilla_usuario pu
+        ON pu.id_plantilla = p.id_plantilla
+        AND pu.id_usuario = $${scope.userParamIndex}
+      WHERE i.id_proyecto = $1
+        AND i.id_plantilla = $2
+      ${scope.whereSql}
+    `;
+    const [fieldStats, createdAtStats] = await Promise.all([
+      collectFieldTemporalStats(pool, baseQuery, baseParamsWithScope, dateableFields.map((f) => f.id_pregunta)),
+      collectCreatedAtTemporalStats(pool, baseQuery, baseParamsWithScope),
+    ]);
+
+    const temporalSources = [];
+    const createdAtCapabilities = buildTemporalCapabilities(createdAtStats);
+    temporalSources.push({
+      id: "__created_at",
+      label: "Fecha de carga",
+      kind: "created_at",
+      dateable: true,
+      default: true,
+      ...createdAtCapabilities,
+    });
+    for (const field of dateableFields) {
+      const stats = fieldStats.get(field.id_pregunta) || {};
+      temporalSources.push({
+        id: field.id_pregunta,
+        label: field.label,
+        kind: "field",
+        dateable: true,
+        default: false,
+        ...buildTemporalCapabilities(stats),
+      });
     }
 
     const secciones = (seccionesRes.rows || []).map((s) => ({

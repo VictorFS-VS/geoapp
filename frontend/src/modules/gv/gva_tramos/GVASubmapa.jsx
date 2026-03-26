@@ -219,6 +219,9 @@ export default function GVASubmapa({
   totalUniverseGeo = 0,
   isLoadedAll = false,
   onLoadAll,
+  selectedMapKpiTipo = "",
+  addInteractiveFilter,
+  isInteractiveValueActive,
 }) {
   const [activeKey, setActiveKey] = useState("");
   const [selectedInformeId, setSelectedInformeId] = useState(null);
@@ -823,27 +826,65 @@ export default function GVASubmapa({
           <span style={{ ...chipStyle, background: "#eff6ff", borderColor: "#bfdbfe" }}>
             KPI mapa: {selectedMapKpiLabel || "KPI seleccionado"}
           </span>
-          {activeMapKpiLegend.map((item) => (
-            <span
-              key={`kpi-legend-${item.key}`}
-              style={{ ...chipStyle, gap: 8 }}
-              title={`${item.label}: ${item.count}`}
-            >
+          {activeMapKpiLegend.map((item) => {
+            const isMissing = item.label === "Sin dato" || item.label === "Sin responder";
+            const isActive =
+              !isMissing &&
+              typeof isInteractiveValueActive === "function" &&
+              isInteractiveValueActive(selectedMapKpiId, item.label);
+
+            return (
               <span
+                key={`kpi-legend-${item.key}`}
+                onClick={
+                  !isMissing && typeof addInteractiveFilter === "function"
+                    ? () =>
+                        addInteractiveFilter({
+                          id_pregunta: selectedMapKpiId,
+                          label: selectedMapKpiLabel,
+                          tipo: selectedMapKpiTipo,
+                          value: item.label,
+                        })
+                    : undefined
+                }
                 style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: "999px",
-                  background: item.colorHex,
-                  boxShadow: "inset 0 0 0 1px rgba(15,23,42,0.12)",
-                  flex: "0 0 auto",
+                  ...chipStyle,
+                  gap: 8,
+                  cursor: isMissing ? "default" : "pointer",
+                  transition: "all 0.2s ease",
+                  borderColor: isActive ? "#111827" : "#dbe3ee",
+                  background: isActive ? "#f8fafc" : "#ffffff",
+                  boxShadow: isActive ? "0 2px 4px rgba(15,23,42,0.1)" : "none",
+                  transform: !isMissing ? "translateY(0)" : "none",
                 }}
-              />
-              <span>
-                {item.label} · {item.count}
+                className={!isMissing ? "kpi-legend-chip" : ""}
+                title={
+                  isMissing ? `${item.label}: ${item.count}` : `Filtrar por ${item.label} · ${item.count}`
+                }
+              >
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: "999px",
+                    background: item.colorHex,
+                    boxShadow: "inset 0 0 0 1px rgba(15,23,42,0.12)",
+                    flex: "0 0 auto",
+                  }}
+                />
+                <span style={{ color: isActive ? "#111827" : "inherit" }}>
+                  {item.label} · {item.count}
+                </span>
+                <style>{`
+                  .kpi-legend-chip:hover {
+                    border-color: #111827 !important;
+                    background: #f8fafc !important;
+                    transform: translateY(-1px);
+                  }
+                `}</style>
               </span>
-            </span>
-          ))}
+            );
+          })}
         </div>
       ) : null}
     </div>
