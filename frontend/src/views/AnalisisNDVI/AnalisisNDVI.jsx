@@ -313,15 +313,20 @@ const AnalisisNDVI = () => {
 
   const recomputeTargets = () => {
     const activeAlt = new Set(
-      Object.values(altCatsRef.current).filter(c => c.active).map(c => c.key)
-    );
-    const candidates = altRawRef.current.filter(
-      f => activeAlt.has(f.properties._catKey) &&
-      TARGET_USES.includes(normalizeString(f.properties?.uso))
+      Object.values(altCatsRef.current)
+        .filter(c => c.active)
+        .map(c => c.key)
     );
 
-    const waterFeatures = [ ...altRawRef.current, ...actRawRef.current ]
-      .filter(f => WATER_KEYS.includes(f.properties._catKey));
+    const candidates = altRawRef.current.filter(
+      f =>
+        activeAlt.has(f.properties._catKey) &&
+        TARGET_USES.includes(normalizeString(f.properties?.uso))
+    );
+
+    const waterFeatures = [...altRawRef.current, ...actRawRef.current].filter(
+      f => WATER_KEYS.includes(f.properties._catKey)
+    );
 
     let waterUnion = null;
     try {
@@ -331,17 +336,22 @@ const AnalisisNDVI = () => {
       if (waterUnion) {
         waterUnion = turf.buffer(waterUnion, WATER_BUFFER_M, { units: 'meters' });
       }
-    } catch { waterUnion = null; }
+    } catch {
+      waterUnion = null;
+    }
 
     const mask = [];
+
     for (const g of candidates) {
       let geom = g;
+
       if (waterUnion) {
         try {
           const diff = turf.difference(geom, waterUnion);
           if (diff && diff.geometry) geom = diff;
         } catch {}
       }
+
       try {
         const eroded = turf.buffer(geom, -EDGE_EROSION_M, { units: 'meters' });
         if (eroded && eroded.geometry) {
@@ -352,7 +362,8 @@ const AnalisisNDVI = () => {
         try {
           const fixed = turf.buffer(
             turf.buffer(geom, 0.01, { units: 'meters' }),
-            -EDGE_EROSION_M, { units: 'meters' }
+            -EDGE_EROSION_M,
+            { units: 'meters' }
           );
           if (fixed && fixed.geometry) {
             fixed.properties = { ...g.properties };
@@ -362,12 +373,34 @@ const AnalisisNDVI = () => {
       }
     }
 
-    setTargetUseGeometries(mask);
-    setIsDataReady(mask.length > 0);
+    // 1) Caso normal: usar Uso Alternativo filtrado
+    if (mask.length > 0) {
+      setTargetUseGeometries(mask);
+      setIsDataReady(true);
+      setStatus(
+        `Se usarán ${mask.length.toLocaleString('es')} polígonos objetivo ` +
+        `(excluyendo agua +${WATER_BUFFER_M}m y con erosión interna ${EDGE_EROSION_M}m).`
+      );
+      return;
+    }
+
+    // 2) Fallback: usar Polígono del Proyecto
+    if (projRawRef.current?.length > 0) {
+      setTargetUseGeometries(projRawRef.current);
+      setIsDataReady(true);
+      setStatus(
+        "No hay zonas objetivo activas en 'Uso Alternativo'. " +
+        "Se usará el Polígono del Proyecto para el análisis."
+      );
+      return;
+    }
+
+    // 3) Si no hay nada, bloquear
+    setTargetUseGeometries([]);
+    setIsDataReady(false);
     setStatus(
-      mask.length > 0
-        ? `Se usarán ${mask.length.toLocaleString('es')} polígonos objetivo (excluyendo agua +${WATER_BUFFER_M}m y con erosión interna ${EDGE_EROSION_M}m).`
-        : 'No hay zonas objetivo activas (o quedaron excluidas por agua/erosión).'
+      "No hay geometrías disponibles para analizar " +
+      "(sin Uso Alternativo válido y sin Polígono del Proyecto)."
     );
   };
 
@@ -1276,10 +1309,14 @@ const AnalisisNDVI = () => {
   /* ============================ Análisis (multitemporal) ============================ */
   const handleStartAnalysis = async () => {
     if (!isDataReady || targetUseGeometries.length === 0) {
-      setStatus("No hay zonas objetivo activas de 'Uso Alternativo' para analizar.");
+      setStatus(
+        "No hay geometrías válidas para analizar " +
+        "(ni Uso Alternativo ni Polígono del Proyecto)."
+      );
       setMenuOpen(true);
       return;
     }
+
     if (!mapRef.current || !window.google) {
       setStatus('Google Maps aún no está listo.');
       return;
@@ -1350,8 +1387,8 @@ const AnalisisNDVI = () => {
 
       appendStatus(
         `Usando meses manuales:
-  • Antigua: ${oldYM.year}/${String(oldYM.month).padStart(2,'0')} ⇒ ${bestOldest.date} (escena ${bestOldest.cloudCover ?? '?'}% | AOI ${bestOldest.aoiCloudPct ?? '?'}%)
-  • Reciente: ${newYM.year}/${String(newYM.month).padStart(2,'0')} ⇒ ${bestLatest.date} (escena ${bestLatest.cloudCover ?? '?'}% | AOI ${bestLatest.aoiCloudPct ?? '?'}%)`
+    • Antigua: ${oldYM.year}/${String(oldYM.month).padStart(2,'0')} ⇒ ${bestOldest.date} (escena ${bestOldest.cloudCover ?? '?'}% | AOI ${bestOldest.aoiCloudPct ?? '?'}%)
+    • Reciente: ${newYM.year}/${String(newYM.month).padStart(2,'0')} ⇒ ${bestLatest.date} (escena ${bestLatest.cloudCover ?? '?'}% | AOI ${bestLatest.aoiCloudPct ?? '?'}%)`
       );
     } else {
       const shToken = await getAccessToken();
@@ -1377,7 +1414,6 @@ const AnalisisNDVI = () => {
 
     setDates({ oldest: bestOldest.date, latest: bestLatest.date });
 
-    // ===== Imagen Sentinel como GroundOverlay en Google Maps =====
     const [minX, minY, maxX, maxY] = mainBbox;
     const bounds = new google.maps.LatLngBounds(
       { lat: minY, lng: minX },
@@ -1388,9 +1424,9 @@ const AnalisisNDVI = () => {
     const urlNew = buildSentinelImageUrl(bestLatest.date, mainBbox, agricolaLayerName);
 
     const overlayOld = new google.maps.GroundOverlay(urlOld, bounds, { opacity: 0.9 });
-    overlayOld.setMap(null); // oculta por defecto
+    overlayOld.setMap(null);
     const overlayNew = new google.maps.GroundOverlay(urlNew, bounds, { opacity: 1 });
-    overlayNew.setMap(mapRef.current); // visible por defecto
+    overlayNew.setMap(mapRef.current);
 
     addLayer({
       id: 'sat-old',
@@ -1413,7 +1449,6 @@ const AnalisisNDVI = () => {
 
     setProgress(30);
 
-    // ====== Datos de píxeles (NDVI) ====== */
     setStatus(`Descargando datos de píxeles para el área completa (${IMG_SIZE}px)…`);
     const bandsOld = await getWMSPixelDataForNDVICalc(bestOldest.date, mainBbox, ndviLayerName, IMG_SIZE, IMG_SIZE);
     setProgress(45);
@@ -1427,7 +1462,6 @@ const AnalisisNDVI = () => {
     const ndviOld = calculateNDVI(bandsOld);
     const ndviNew = calculateNDVI(bandsNew);
 
-    // Detectar cambio sobre máscara
     setStatus('Detectando píxeles de cambio...');
     const maskEntries = targetUseGeometries.map(g => ({ bbox: turf.bbox(g), geom: g }));
     const allChangedPixels = [];
@@ -1461,7 +1495,6 @@ const AnalisisNDVI = () => {
     const pixelClusters = groupAdjacentPixels(allChangedPixels);
     setProgress(85);
 
-    // Ahora usamos GeoJSON en 4326 para las features por clase
     const featuresByClass = {
       gt_2ha: [],
       '1_to_2ha': [],
@@ -1478,7 +1511,7 @@ const AnalisisNDVI = () => {
         const endLon = startLon + lonPerPixel;
         const startLat = mainBbox[3] - p.y * latPerPixel;
         const endLat = startLat - latPerPixel;
-        return turf.polygon([[ // 4326
+        return turf.polygon([[
           [startLon, startLat], [endLon, startLat],
           [endLon, endLat], [startLon, endLat], [startLon, startLat]
         ]]);
@@ -1526,7 +1559,6 @@ const AnalisisNDVI = () => {
 
     setProgress(95);
 
-    // Pintar capas de resultados (polígonos Google)
     const makeChangeLayer = (id, name, feats, strokeColor) => {
       if (!feats.length) return;
       const polys = [];
