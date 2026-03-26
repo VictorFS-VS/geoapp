@@ -197,13 +197,15 @@ const InformesProyecto = () => {
     kmzPickGlobalRef.current = Number.isFinite(n) && n > 0 ? n : null;
   }, [idProyecto, idPlantillaFiltro]);
 
-  // ✅ PERMISOS REALES (igual que Sidebar)
+  // ✅ PERMISOS REALES
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
   const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
-  const puedeEliminarAdmin = useMemo(() => puedeEliminar && esAdmin, [puedeEliminar, esAdmin]);
 
-  // KMZ (vos tenés informes.export)
+  // 👇 ya NO depende de admin
+  const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
+
+  // KMZ
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
 
   const cargarInformes = async () => {
@@ -355,7 +357,10 @@ const InformesProyecto = () => {
       const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}${suffixModo}.docx`;
 
       await downloadWithAuth(url, filename);
-      Toast.fire({ icon: "success", title: modo === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado." });
+      Toast.fire({
+        icon: "success",
+        title: modo === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado."
+      });
     } catch (err) {
       console.error("Error descargando docx:", err);
       Toast.fire({ icon: "error", title: "No se pudo descargar el WORD." });
@@ -737,9 +742,11 @@ const InformesProyecto = () => {
               </Button>
             </div>
           ) : null}
+
           <Button variant="secondary" onClick={() => navigate(-1)}>
             Volver
           </Button>
+
           <Button
             variant="outline-primary"
             onClick={() => {
@@ -754,24 +761,54 @@ const InformesProyecto = () => {
 
           <div className="btn-group">
             <Button variant="outline-danger" onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>
-              {downloading.pdf ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>📄 PDF</>}
+              {downloading.pdf ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>📄 PDF</>
+              )}
             </Button>
 
             <Button variant="outline-primary" onClick={() => descargarProyectoDocx("normal")} disabled={anyDownloading}>
-              {downloading.docx ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>📝 Word</>}
+              {downloading.docx ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>📝 Word</>
+              )}
             </Button>
 
             <Button variant="outline-primary" onClick={() => descargarProyectoDocx("tabla")} disabled={anyDownloading}>
-              {downloading.docxTabla ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>🧾 Word Tabla</>}
+              {downloading.docxTabla ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>🧾 Word Tabla</>
+              )}
             </Button>
 
             <Button variant="outline-success" onClick={() => descargarProyecto("xlsx")} disabled={anyDownloading}>
-              {downloading.xlsx ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>📊 Excel</>}
+              {downloading.xlsx ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>📊 Excel</>
+              )}
             </Button>
 
             {puedeDescargarKmz && (
               <Button variant="outline-dark" onClick={descargarProyectoKmz} disabled={anyDownloading}>
-                {downloading.kmz ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>🗺️ KMZ</>}
+                {downloading.kmz ? (
+                  <>
+                    <Spinner animation="border" size="sm" className="me-2" />...
+                  </>
+                ) : (
+                  <>🗺️ KMZ</>
+                )}
               </Button>
             )}
           </div>
@@ -844,14 +881,18 @@ const InformesProyecto = () => {
                       }}
                     />
                   </td>
-                  <td><Badge bg="secondary">{inf.id_informe}</Badge></td>
+                  <td>
+                    <Badge bg="secondary">{inf.id_informe}</Badge>
+                  </td>
                   <td>{inf.nombre_plantilla || inf.id_plantilla}</td>
                   <td>{inf.titulo || "-"}</td>
                   <td>{formatearFecha(inf.fecha_creado)}</td>
                   <td>{inf.creado_por || "-"}</td>
                   <td>
                     <div className="btn-group btn-group-sm">
-                      <Button variant="primary" onClick={() => abrirVer(inf.id_informe)}>Ver</Button>
+                      <Button variant="primary" onClick={() => abrirVer(inf.id_informe)}>
+                        Ver
+                      </Button>
 
                       <Button variant="outline-secondary" onClick={() => descargarPdfInforme(inf.id_informe)}>
                         PDF
@@ -863,7 +904,13 @@ const InformesProyecto = () => {
                           onClick={() => descargarKmzInforme(inf.id_informe)}
                           disabled={kmzLoading || anyDownloading}
                         >
-                          {kmzLoading ? <><Spinner animation="border" size="sm" className="me-2" />...</> : <>KMZ</>}
+                          {kmzLoading ? (
+                            <>
+                              <Spinner animation="border" size="sm" className="me-2" />...
+                            </>
+                          ) : (
+                            <>KMZ</>
+                          )}
                         </Button>
                       )}
 
@@ -887,8 +934,20 @@ const InformesProyecto = () => {
         </Table>
       )}
 
-      <InformeModal show={showViewModal} onHide={() => setShowViewModal(false)} idInforme={idInformeSel} mode="view" />
-      <InformeModal show={showEditModal} onHide={() => setShowEditModal(false)} idInforme={idInformeSel} mode="edit" onSaved={() => cargarInformes()} />
+      <InformeModal
+        show={showViewModal}
+        onHide={() => setShowViewModal(false)}
+        idInforme={idInformeSel}
+        mode="view"
+      />
+
+      <InformeModal
+        show={showEditModal}
+        onHide={() => setShowEditModal(false)}
+        idInforme={idInformeSel}
+        mode="edit"
+        onSaved={() => cargarInformes()}
+      />
 
       <Modal
         show={kmzChoiceOpen}
@@ -907,7 +966,9 @@ const InformesProyecto = () => {
         </Modal.Header>
 
         <Modal.Body>
-          <Alert variant="info" className="mb-3">{modalHint}</Alert>
+          <Alert variant="info" className="mb-3">
+            {modalHint}
+          </Alert>
 
           {choiceCandidates.length === 0 ? (
             <div className="text-muted">No se recibieron candidatos desde el backend.</div>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { Modal, Badge } from "react-bootstrap";
 import { useInformesDashboard } from "./hooks/useInformesDashboard";
 import { useGVATramos } from "../gva_tramos/hooks/useGVATramos";
@@ -106,9 +106,12 @@ export default function GVADashboardInformes() {
     clearInteractiveFilters,
     applyTemporalBucket,
     isTemporalBucketActive,
+    applyTemporalRange,
     applyConfig,
     resetDraftFromApplied,
   } = useInformesDashboard();
+
+  const timelineRangeRef = useRef({ from: "", to: "" });
   
   const parseDateYMD = (value) => {
     if (!value || typeof value !== "string") return null;
@@ -238,21 +241,105 @@ export default function GVADashboardInformes() {
   const temporalSeries = Array.isArray(temporal?.series_absolute) && temporal.series_absolute.length > 0 
     ? temporal.series_absolute 
     : Array.isArray(temporal?.series) ? temporal.series : [];
-  const temporalEnabled = temporal?.enabled !== false;
   const temporalRangeTotal = Number(temporal?.range_total || 0);
   const temporalLabel = temporal?.date_field_label || "Fecha de carga";
   const absoluteMin = temporal?.absolute_min;
   const absoluteMax = temporal?.absolute_max;
 
-  const diffInDays = useMemo(() => {
-    if (!absoluteMin || !absoluteMax) return 0;
+  const appliedTemporalSource = useMemo(() => {
+    return availableTemporalSources.find((s) => String(s.id) === String(appliedDateFieldId)) || null;
+  }, [availableTemporalSources, appliedDateFieldId]);
+
+  const temporalFilterable = appliedTemporalSource ? !!appliedTemporalSource.filterable : true;
+  const temporalTimelineEnabled = appliedTemporalSource ? !!appliedTemporalSource.timeline_enabled : false;
+  const temporalGroupingEnabled = appliedTemporalSource ? !!appliedTemporalSource.grouping_enabled : temporalTimelineEnabled;
+  const hasAbsoluteRange = !!(absoluteMin && absoluteMax);
+  const absoluteRangeDegenerate = useMemo(() => {
+    if (!absoluteMin || !absoluteMax) return false;
     const d1 = parseDateYMD(absoluteMin);
     const d2 = parseDateYMD(absoluteMax);
-    if (!d1 || !d2) return 0;
-    return Math.abs(Math.floor((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
+    if (!d1 || !d2) return false;
+    return d1.getTime() === d2.getTime();
   }, [absoluteMin, absoluteMax]);
+  const showTimeline = temporalFilterable && temporalTimelineEnabled && hasAbsoluteRange && !absoluteRangeDegenerate;
 
-  const showTimeline = !!(absoluteMin && absoluteMax && diffInDays > 7);
+  const temporalState = useMemo(() => {
+    if (!temporalFilterable) {
+      return {
+        status: "not_filterable",
+        message: "La fuente temporal seleccionada no es usable para filtro temporal.",
+      };
+    }
+    if (!temporalTimelineEnabled || absoluteRangeDegenerate) {
+      return {
+        status: "no_timeline",
+        message:
+          "La fuente temporal seleccionada tiene fechas validas, pero no suficiente variacion para evolucion temporal.",
+      };
+    }
+    if (!hasAbsoluteRange) {
+      return {
+        status: "no_range",
+        message: "No hay rango temporal absoluto disponible para esta fuente.",
+      };
+    }
+    if (temporalSeries.length === 0) {
+      return {
+        status: "empty_range",
+        message: "No hay datos temporales para el rango actual.",
+      };
+    }
+    return { status: "ok", message: "" };
+  }, [
+    temporalFilterable,
+    temporalTimelineEnabled,
+    absoluteRangeDegenerate,
+    hasAbsoluteRange,
+    temporalSeries.length,
+  ]);
+  const temporalDiagnostic = useMemo(() => {
+    const baseCount = Number(appliedTemporalSource?.valid_count || 0);
+    const distinctCount = Number(appliedTemporalSource?.distinct_valid_count || 0);
+    const distinctLabel = distinctCount === 1 ? "distinta" : "distintas";
+
+    if (!temporalFilterable) {
+      return baseCount > 0
+        ? `${baseCount} fechas validas, ${distinctCount} ${distinctLabel}; fuente no usable para filtro temporal.`
+        : "Sin fechas validas para esta fuente.";
+    }
+    if (!temporalTimelineEnabled) {
+      return baseCount > 0
+        ? `${baseCount} fechas validas, ${distinctCount} ${distinctLabel}; sirve para filtro pero no para evolucion temporal.`
+        : "Sin fechas validas para esta fuente.";
+    }
+    if (absoluteRangeDegenerate) {
+      return "Rango temporal degenerado (min = max); agrupacion no disponible.";
+    }
+    if (temporalSeries.length === 0) {
+      return `${baseCount} fechas validas, ${distinctCount} ${distinctLabel}; sin datos para el rango actual.`;
+    }
+    return "";
+  }, [
+    appliedTemporalSource,
+    temporalFilterable,
+    temporalTimelineEnabled,
+    absoluteRangeDegenerate,
+    temporalSeries.length,
+  ]);
+  const canUseTemporalBuckets =
+    temporalFilterable &&
+    temporalTimelineEnabled &&
+    temporalGroupingEnabled &&
+    temporalSeries.length > 0 &&
+    temporalState.status === "ok";
+
+  const activeMapKpiId = Number(selectedMapKpiId);
+  const activeMapKpiField = useMemo(() => {
+    if (!activeMapKpiId) return null;
+    return availableFields.find((f) => Number(f.id_pregunta) === activeMapKpiId);
+  }, [availableFields, activeMapKpiId]);
+
+  const activeMapKpiTipo = activeMapKpiField?.tipo || "";
 
   const { minTs, maxTs, dFromTs, dToTs } = useMemo(() => {
     if (!absoluteMin || !absoluteMax) return { minTs: 0, maxTs: 0, dFromTs: 0, dToTs: 0 };
@@ -269,6 +356,13 @@ export default function GVADashboardInformes() {
     }
     return { minTs: min, maxTs: max, dFromTs: f, dToTs: t };
   }, [absoluteMin, absoluteMax, draftDateFrom, draftDateTo]);
+
+  useEffect(() => {
+    timelineRangeRef.current = {
+      from: String(draftDateFrom || ""),
+      to: String(draftDateTo || ""),
+    };
+  }, [draftDateFrom, draftDateTo]);
 
   const linkFields = useMemo(() => {
     const raw =
@@ -435,6 +529,7 @@ export default function GVADashboardInformes() {
       : appliedTimeGrouping === "month"
       ? "Mes"
       : "Semana";
+  const groupingLabelDisplay = temporalGroupingEnabled ? groupingLabel : "No disponible";
 
 
   if (!idProyecto) {
@@ -1102,6 +1197,9 @@ export default function GVADashboardInformes() {
           geometryError={geometryError}
           selectedMapKpiId={selectedMapKpiId}
           selectedMapKpiLabel={selectedMapKpiLabel}
+          selectedMapKpiTipo={activeMapKpiTipo}
+          addInteractiveFilter={addInteractiveFilter}
+          isInteractiveValueActive={isInteractiveValueActive}
           visible={showSubmapa}
           totalUniverseGeo={geo?.total_geo || 0}
           isLoadedAll={includeAllPoints}
@@ -1246,10 +1344,25 @@ export default function GVADashboardInformes() {
                             const val = Number(e.target.value);
                             const currentTo = parseDateYMD(draftDateTo || absoluteMax).getTime();
                             const next = new Date(Math.min(val, currentTo - 86400000));
-                            setDraftDateFrom(next.toISOString().slice(0, 10));
+                            const nextFrom = next.toISOString().slice(0, 10);
+                            timelineRangeRef.current = {
+                              from: nextFrom,
+                              to: timelineRangeRef.current.to || String(draftDateTo || ""),
+                            };
+                            setDraftDateFrom(nextFrom);
                           }}
-                          onMouseUp={() => applyFilters()}
-                          onTouchEnd={() => applyFilters()}
+                          onMouseUp={() =>
+                            applyTemporalRange(
+                              timelineRangeRef.current.from,
+                              timelineRangeRef.current.to
+                            )
+                          }
+                          onTouchEnd={() =>
+                            applyTemporalRange(
+                              timelineRangeRef.current.from,
+                              timelineRangeRef.current.to
+                            )
+                          }
                           style={{
                             position: "absolute",
                             width: "100%",
@@ -1272,10 +1385,25 @@ export default function GVADashboardInformes() {
                             const val = Number(e.target.value);
                             const currentFrom = parseDateYMD(draftDateFrom || absoluteMin).getTime();
                             const next = new Date(Math.max(val, currentFrom + 86400000));
-                            setDraftDateTo(next.toISOString().slice(0, 10));
+                            const nextTo = next.toISOString().slice(0, 10);
+                            timelineRangeRef.current = {
+                              from: timelineRangeRef.current.from || String(draftDateFrom || ""),
+                              to: nextTo,
+                            };
+                            setDraftDateTo(nextTo);
                           }}
-                          onMouseUp={() => applyFilters()}
-                          onTouchEnd={() => applyFilters()}
+                          onMouseUp={() =>
+                            applyTemporalRange(
+                              timelineRangeRef.current.from,
+                              timelineRangeRef.current.to
+                            )
+                          }
+                          onTouchEnd={() =>
+                            applyTemporalRange(
+                              timelineRangeRef.current.from,
+                              timelineRangeRef.current.to
+                            )
+                          }
                           style={{
                             position: "absolute",
                             width: "100%",
@@ -1344,8 +1472,16 @@ export default function GVADashboardInformes() {
                       background: isActive ? "#eff6ff" : "transparent",
                       transition: "background 0.2s ease",
                     }}
-                    onClick={() => applyTemporalBucket(bucket, temporal?.time_grouping)}
-                    title="Click para ver solo este periodo"
+                    onClick={
+                      canUseTemporalBuckets
+                        ? () => applyTemporalBucket(bucket, temporal?.time_grouping)
+                        : undefined
+                    }
+                    title={
+                      canUseTemporalBuckets
+                        ? "Click para ver solo este periodo"
+                        : "Fuente temporal no apta para agrupacion"
+                    }
                   >
                     <div
                       style={{
@@ -1412,16 +1548,18 @@ export default function GVADashboardInformes() {
               fontWeight: 700,
             }}
           >
-            Agrupacion: {groupingLabel}
+            Agrupacion: {groupingLabelDisplay}
             <button
               type="button"
               onClick={resetAppliedTimeGrouping}
               title="Volver a Semana"
+              disabled={!temporalGroupingEnabled}
               style={{
                 border: "none",
                 background: "transparent",
-                cursor: "pointer",
+                cursor: temporalGroupingEnabled ? "pointer" : "not-allowed",
                 fontWeight: 900,
+                opacity: temporalGroupingEnabled ? 1 : 0.5,
               }}
             >
               ×
@@ -1591,6 +1729,7 @@ export default function GVADashboardInformes() {
                 <select
                   value={draftTimeGrouping}
                   onChange={(e) => setDraftTimeGrouping(e.target.value)}
+                  disabled={!temporalGroupingEnabled}
                 >
                   <option value="day">Dia</option>
                   <option value="week">Semana</option>
@@ -1619,6 +1758,7 @@ export default function GVADashboardInformes() {
                         type="date"
                         value={draftDateFrom}
                         onChange={(e) => setDraftDateFrom(e.target.value)}
+                        disabled={!temporalFilterable}
                         style={{
                           border: "none",
                           outline: "none",
@@ -1648,6 +1788,7 @@ export default function GVADashboardInformes() {
                         type="date"
                         value={draftDateTo}
                         onChange={(e) => setDraftDateTo(e.target.value)}
+                        disabled={!temporalFilterable}
                         style={{
                           border: "none",
                           outline: "none",
@@ -1808,12 +1949,23 @@ export default function GVADashboardInformes() {
         <div style={{ fontWeight: 800, marginBottom: 6 }}>Evolucion temporal</div>
         <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>
           Fuente temporal: <b>{temporalLabel}</b> · Agrupacion:{" "}
-          <b>{groupingLabel}</b> · Total del rango: <b>{temporalRangeTotal}</b>
+          <b>{groupingLabelDisplay}</b> · Total del rango: <b>{temporalRangeTotal}</b>
+        </div>
+        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>
+          Min absoluto: {absoluteMin || "—"} · Max absoluto: {absoluteMax || "—"} ·
+          {" "}timeline_enabled: {temporalTimelineEnabled ? "true" : "false"} ·
+          {" "}grouping_enabled: {temporalGroupingEnabled ? "true" : "false"} ·
+          {" "}range_total: {temporalRangeTotal}
         </div>
 
-        {!temporalEnabled || temporalSeries.length === 0 ? (
+        {temporalState.status !== "ok" ? (
           <div style={{ color: "#6b7280", fontSize: 13 }}>
-            No hay datos temporales disponibles para el rango actual.
+            {temporalState.message}
+            {temporalDiagnostic ? (
+              <div style={{ marginTop: 6 }}>
+                {temporalDiagnostic}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div
@@ -1826,23 +1978,32 @@ export default function GVADashboardInformes() {
             {temporalSeries.map((row) => {
               const count = Number(row.count || 0);
               const width = temporalRangeTotal > 0 ? (count / temporalRangeTotal) * 100 : 0;
-              const isActive = isTemporalBucketActive(row, temporal?.time_grouping);
+              const isActive =
+                canUseTemporalBuckets && isTemporalBucketActive(row, temporal?.time_grouping);
               const label = formatTemporalLabel(row);
               return (
                 <div
                   key={row.key || row.label}
-                  onClick={() => applyTemporalBucket(row, temporal?.time_grouping)}
+                  onClick={
+                    canUseTemporalBuckets
+                      ? () => applyTemporalBucket(row, temporal?.time_grouping)
+                      : undefined
+                  }
                   style={{
                     border: isActive ? "1px solid #111827" : "1px solid #e5e7eb",
                     borderRadius: 10,
                     padding: 10,
                     background: isActive ? "#eef2ff" : "#f8fafc",
-                    cursor: "pointer",
+                    cursor: canUseTemporalBuckets ? "pointer" : "not-allowed",
                     boxShadow: isActive
                       ? "inset 0 0 0 1px rgba(17,24,39,0.08)"
                       : "none",
                   }}
-                  title="Aplicar este rango al dashboard"
+                  title={
+                    canUseTemporalBuckets
+                      ? "Aplicar este rango al dashboard"
+                      : "Fuente temporal no apta para agrupacion"
+                  }
                 >
                   <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
                     {label}
@@ -2593,12 +2754,34 @@ export default function GVADashboardInformes() {
                 <select
                   value={dateFieldId || "__created_at"}
                   onChange={(e) => setDateFieldId(String(e.target.value || "__created_at"))}
+                  style={{ width: "100%", padding: "8px", borderRadius: "8px", border: "1px solid #d1d5db", fontSize: "14px" }}
                 >
-                  {availableTemporalSources.map((src) => (
-                    <option key={String(src.id)} value={String(src.id)}>
-                      {src.label}
-                    </option>
-                  ))}
+                  {availableTemporalSources.map((src) => {
+                    const countsFiltered = data?.temporal?.sources_counts_filtered || null;
+                    const baseCount = Number(src?.valid_count || 0);
+                    const distinctCount = Number(src?.distinct_valid_count || 0);
+                    const distinctLabel = distinctCount === 1 ? "distinta" : "distintas";
+                    const hasFiltered =
+                      countsFiltered &&
+                      Object.prototype.hasOwnProperty.call(countsFiltered, src.id);
+                    const filteredCount = hasFiltered ? Number(countsFiltered[src.id]) || 0 : null;
+                    const countStr = ` (${baseCount} · ${distinctCount} ${distinctLabel})`;
+                    const filteredStr =
+                      filteredCount !== null &&
+                      Number(filteredCount) !== Number(baseCount)
+                        ? ` · en rango: ${filteredCount}`
+                        : "";
+                    const hasZeroCount = baseCount === 0;
+                    return (
+                      <option
+                        key={String(src.id)}
+                        value={String(src.id)}
+                        style={hasZeroCount ? { color: "#9ca3af" } : {}}
+                      >
+                        {src.label}{countStr}{filteredStr}
+                      </option>
+                    );
+                  })}
                 </select>
                 <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
                   Resultados: {selectedFieldIds.size} · Filtros: {selectedFilterFieldIds.size} ·

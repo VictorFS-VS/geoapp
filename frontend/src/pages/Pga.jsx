@@ -93,11 +93,6 @@ const isPdfMime = (mime = "") => String(mime).toLowerCase().includes("pdf");
 
 /* =========================
    Endpoints docs (RAÍZ REAL)
-   -> Igual que VerProyecto/EditarProyecto:
-   - carpetas: /documentos/carpetas/:id_proyecto
-   - listar:   /documentos/listar/:id_proyecto/otros?carpeta=...
-   - upload:   /documentos/upload/:id_proyecto/otros  (FormData con subcarpeta)
-   - ver/descargar/eliminar/renombrar: por id_archivo
 ========================= */
 const PROY_DOCS = {
   listCarpetas: (idProyecto) => `${API_URL}/documentos/carpetas/${idProyecto}`,
@@ -150,10 +145,10 @@ export default function Pga() {
   const [guardando, setGuardando] = useState(false);
   const [eliminandoId, setEliminandoId] = useState(null);
 
-  // ===== Documentación (RAÍZ REAL DEL PROYECTO) =====
+  // ===== Documentación =====
   const [docsModalOpen, setDocsModalOpen] = useState(false);
-  const [carpetas, setCarpetas] = useState([]); // string[]
-  const [carpetaSel, setCarpetaSel] = useState(""); // '' raíz
+  const [carpetas, setCarpetas] = useState([]);
+  const [carpetaSel, setCarpetaSel] = useState("");
   const [documentos, setDocumentos] = useState([]);
   const [archivo, setArchivo] = useState(null);
   const [busyDocId, setBusyDocId] = useState(null);
@@ -164,6 +159,7 @@ export default function Pga() {
   const isPreviewPdf = useMemo(() => isPdfMime(preview?.mime), [preview?.mime]);
 
   const fileInputRef = useRef(null);
+  const docsModalContentRef = useRef(null);
   const didLoadRefs = useRef({ pga: false, conceptos: false });
 
   const cerrarPreview = () => {
@@ -286,7 +282,6 @@ export default function Pga() {
     setMensaje(null);
 
     try {
-      // Enviamos CSV para compatibilidad (si tu backend ya acepta arrays, puedes enviar arrays).
       const payload = {
         ...formData,
         id_proyecto: Number(id),
@@ -338,17 +333,17 @@ export default function Pga() {
   };
 
   /* =========================
-     Documentación: RAÍZ REAL
-     (misma UI “mejorada” estilo VerProyecto)
+     Documentación
 ========================= */
   const abrirDocs = async () => {
     setDocsModalOpen(true);
     cerrarPreview();
     setArchivo(null);
+    setCarpetaSel("");
     if (fileInputRef.current) fileInputRef.current.value = "";
 
     await cargarCarpetas();
-    await cargarDocs();
+    await cargarDocs("");
   };
 
   const cargarCarpetas = async () => {
@@ -387,6 +382,19 @@ export default function Pga() {
       confirmButtonText: "Crear",
       cancelButtonText: "Cancelar",
       reverseButtons: true,
+      allowOutsideClick: false,
+      allowEscapeKey: true,
+      width: 520,
+      target: docsModalContentRef.current || document.body,
+      customClass: {
+        popup: "shadow",
+        confirmButton: "btn btn-primary ms-2",
+        cancelButton: "btn btn-secondary",
+      },
+      buttonsStyling: false,
+      inputAttributes: {
+        style: "max-width:100%; box-sizing:border-box;",
+      },
       inputValidator: (v) => (!v?.trim() ? "Ingrese un nombre" : undefined),
     });
 
@@ -411,15 +419,48 @@ export default function Pga() {
       setCarpetaSel(n);
       await cargarDocs(n);
 
-      alerts.toast?.success?.("Carpeta creada");
+      await Swal.fire({
+        icon: "success",
+        title: "Carpeta creada",
+        text: `La carpeta "${n}" fue creada correctamente.`,
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } catch (e) {
       alerts.close?.();
-      alerts.toast?.error?.(e.message || "Error creando carpeta");
+      console.error(e);
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "Error creando carpeta",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     }
   };
 
   const subirDocumento = async () => {
-    if (!archivo) return alerts.toast?.warn?.("Debe seleccionar un archivo");
+    if (!archivo) {
+      return Swal.fire({
+        icon: "warning",
+        title: "Atención",
+        text: "Debe seleccionar un archivo",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
+    }
 
     try {
       const fd = new FormData();
@@ -429,7 +470,7 @@ export default function Pga() {
       alerts.loading?.("Subiendo documento...");
       const res = await fetch(PROY_DOCS.upload(id), {
         method: "POST",
-        headers: { ...authHeaders() }, // no Content-Type con FormData
+        headers: { ...authHeaders() },
         body: fd,
       });
       const j = await res.json().catch(() => ({}));
@@ -442,10 +483,30 @@ export default function Pga() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       await cargarDocs();
 
-      alerts.toast?.success?.("Documento subido");
+      await Swal.fire({
+        icon: "success",
+        title: "Documento subido",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } catch (e) {
       alerts.close?.();
-      alerts.toast?.error?.(e.message || "Error al subir documento");
+      console.error(e);
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "Error al subir documento",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     }
   };
 
@@ -471,7 +532,17 @@ export default function Pga() {
       });
     } catch (e) {
       console.error(e);
-      alerts.toast?.error?.(e.message || "No se pudo previsualizar");
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "No se pudo previsualizar",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } finally {
       setBusyDocId(null);
     }
@@ -504,7 +575,17 @@ export default function Pga() {
       URL.revokeObjectURL(blobUrl);
     } catch (e) {
       console.error(e);
-      alerts.toast?.error?.(e.message || "Error al descargar");
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "Error al descargar",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } finally {
       setBusyDocId(null);
     }
@@ -521,6 +602,12 @@ export default function Pga() {
       confirmButtonText: "Eliminar",
       cancelButtonText: "Cancelar",
       reverseButtons: true,
+      target: docsModalContentRef.current || document.body,
+      customClass: {
+        confirmButton: "btn btn-danger ms-2",
+        cancelButton: "btn btn-secondary",
+      },
+      buttonsStyling: false,
     });
 
     if (!ok.isConfirmed) return;
@@ -538,11 +625,31 @@ export default function Pga() {
       if (!res.ok) throw new Error(await res.text());
 
       await cargarDocs();
-      alerts.toast?.success?.("Documento eliminado");
+
+      await Swal.fire({
+        icon: "success",
+        title: "Documento eliminado",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } catch (e) {
       alerts.close?.();
       console.error(e);
-      alerts.toast?.error?.(e.message || "Error al eliminar");
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "Error al eliminar",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } finally {
       setBusyDocId(null);
     }
@@ -564,6 +671,17 @@ export default function Pga() {
       confirmButtonText: "Guardar",
       cancelButtonText: "Cancelar",
       reverseButtons: true,
+      allowOutsideClick: false,
+      width: 560,
+      target: docsModalContentRef.current || document.body,
+      customClass: {
+        confirmButton: "btn btn-primary ms-2",
+        cancelButton: "btn btn-secondary",
+      },
+      buttonsStyling: false,
+      inputAttributes: {
+        style: "max-width:100%; box-sizing:border-box;",
+      },
       inputValidator: (v) => (!v?.trim() ? "Ingrese un nombre" : undefined),
     });
 
@@ -584,11 +702,31 @@ export default function Pga() {
       if (!res.ok) throw new Error(text || "No se pudo renombrar/mover");
 
       await cargarDocs();
-      alerts.toast?.success?.("Documento actualizado");
+
+      await Swal.fire({
+        icon: "success",
+        title: "Documento actualizado",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } catch (e) {
       alerts.close?.();
       console.error(e);
-      alerts.toast?.error?.(e.message || "Error al actualizar");
+      Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: e.message || "Error al actualizar",
+        confirmButtonText: "Aceptar",
+        target: docsModalContentRef.current || document.body,
+        customClass: {
+          confirmButton: "btn btn-primary",
+        },
+        buttonsStyling: false,
+      });
     } finally {
       setBusyDocId(null);
     }
@@ -846,14 +984,13 @@ export default function Pga() {
         )}
       </Modal>
 
-      {/* ================= Modal: Documentación del PROYECTO (raíz real) ================= */}
+      {/* ================= Modal: Documentación ================= */}
       <Modal show={docsModalOpen} onHide={() => setDocsModalOpen(false)} centered size="xl" scrollable>
         <Modal.Header closeButton>
           <Modal.Title>📁 Documentación del Proyecto {id}</Modal.Title>
         </Modal.Header>
 
-        <Modal.Body>
-          {/* controles carpetas + upload */}
+        <Modal.Body ref={docsModalContentRef}>
           <div className="d-flex flex-wrap align-items-end gap-2 mb-3">
             <div style={{ minWidth: 260 }}>
               <Form.Label className="mb-1">Carpeta</Form.Label>
@@ -896,7 +1033,6 @@ export default function Pga() {
             </div>
           </div>
 
-          {/* tabla docs */}
           <div className="table-responsive">
             <table className="table table-bordered align-middle">
               <thead>
@@ -964,7 +1100,6 @@ export default function Pga() {
             </table>
           </div>
 
-          {/* Modal preview embebido (igual que VerProyecto) */}
           {preview && (
             <div
               className="modal d-block"

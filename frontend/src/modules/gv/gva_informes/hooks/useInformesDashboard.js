@@ -3,6 +3,95 @@ import { useSearchParams } from "react-router-dom";
 import { getResumen, getPlantillas, getPlantillaMetadata } from "../services/informesDashboardService";
 
 const MAX_DEFAULT_SELECTED_FIELDS = 10;
+const DEFAULT_TEMPORAL_SOURCE_ID = "__created_at";
+
+function parseRangeTimestamp(value) {
+  if (!value) return null;
+  const ts = Date.parse(String(value));
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function temporalRangeSpan(source) {
+  const minTs = parseRangeTimestamp(source?.absolute_min);
+  const maxTs = parseRangeTimestamp(source?.absolute_max);
+  if (minTs === null || maxTs === null) return -1;
+  return maxTs - minTs;
+}
+
+function compareTemporalSources(a, b) {
+  const distinctA = Number(a?.distinct_valid_count || 0);
+  const distinctB = Number(b?.distinct_valid_count || 0);
+  if (distinctB !== distinctA) return distinctB - distinctA;
+  const validA = Number(a?.valid_count || 0);
+  const validB = Number(b?.valid_count || 0);
+  if (validB !== validA) return validB - validA;
+  const spanA = temporalRangeSpan(a);
+  const spanB = temporalRangeSpan(b);
+  if (spanB !== spanA) return spanB - spanA;
+  const aIsFallback = String(a?.id) === DEFAULT_TEMPORAL_SOURCE_ID;
+  const bIsFallback = String(b?.id) === DEFAULT_TEMPORAL_SOURCE_ID;
+  if (aIsFallback !== bIsFallback) return aIsFallback ? 1 : -1;
+  return 0;
+}
+
+function pickBestTemporalSource(sources = []) {
+  const normalized = Array.isArray(sources)
+    ? sources.map((src) => ({ ...(src || {}), id: String(src?.id || "") }))
+    : [];
+  const filterable = normalized.filter((src) => src.filterable);
+  if (!filterable.length) return null;
+  const timelineCandidates = filterable.filter((src) => src.timeline_enabled);
+  const pool = timelineCandidates.length ? timelineCandidates : filterable;
+  const sorted = [...pool].sort(compareTemporalSources);
+  return sorted[0] || null;
+}
+
+function resolveInitialTemporalSource({ temporalSources = [], persistedId }) {
+  const normalizedSources = Array.isArray(temporalSources)
+    ? temporalSources.map((src) => ({ ...(src || {}), id: String(src?.id || "") }))
+    : [];
+
+  const sourceById = new Map(normalizedSources.map((src) => [src.id, src]));
+  const persistedSource =
+    persistedId && sourceById.has(String(persistedId))
+      ? sourceById.get(String(persistedId))
+      : null;
+
+  if (persistedSource && persistedSource.filterable) {
+    return persistedSource.id;
+  }
+
+  const best = pickBestTemporalSource(normalizedSources);
+  return best?.id || DEFAULT_TEMPORAL_SOURCE_ID;
+}
+
+function sanitizeTemporalDraft({ draft, temporalSources, persistedId }) {
+  const resolvedDateFieldId = resolveInitialTemporalSource({
+    temporalSources,
+    persistedId: persistedId ?? draft?.dateFieldId,
+  });
+  const source =
+    (Array.isArray(temporalSources)
+      ? temporalSources.find((s) => String(s.id) === String(resolvedDateFieldId))
+      : null) || null;
+  const groupingEnabled = source ? !!source.grouping_enabled : false;
+  const nextGrouping = groupingEnabled
+    ? String(draft?.timeGrouping || "week")
+    : "week";
+  const nextRange = resolveCompatibleTemporalRange({
+    appliedDateFrom: draft?.dateFrom || "",
+    appliedDateTo: draft?.dateTo || "",
+    source,
+  });
+
+  return {
+    ...(draft || {}),
+    dateFieldId: resolvedDateFieldId,
+    timeGrouping: nextGrouping,
+    dateFrom: nextRange.dateFrom || "",
+    dateTo: nextRange.dateTo || "",
+  };
+}
 
 function toPositiveInt(v) {
   const n = Number(v);
@@ -86,6 +175,60 @@ function getTemporalBucketRange(bucketStart, grouping) {
     dateFrom: formatDateISO(start),
     dateTo: end ? formatDateISO(end) : formatDateISO(start),
   };
+}
+
+function normalizeAbsoluteDate(value) {
+  const ts = parseRangeTimestamp(value);
+  if (ts === null) return "";
+  return formatDateISO(new Date(ts));
+}
+
+function resolveCompatibleTemporalRange({ appliedDateFrom, appliedDateTo, source }) {
+  const rawFrom = String(appliedDateFrom || "");
+  const rawTo = String(appliedDateTo || "");
+  const normalizedFrom = normalizeDateString(rawFrom);
+  const normalizedTo = normalizeDateString(rawTo);
+
+  if (!rawFrom && !rawTo) {
+    return { dateFrom: "", dateTo: "", changed: false };
+  }
+
+  if (!normalizedFrom || !normalizedTo) {
+    const absFrom = normalizeAbsoluteDate(source?.absolute_min);
+    const absTo = normalizeAbsoluteDate(source?.absolute_max);
+    if (absFrom && absTo) {
+      return { dateFrom: absFrom, dateTo: absTo, changed: true };
+    }
+    return { dateFrom: "", dateTo: "", changed: true };
+  }
+
+  const fromDate = parseDateOnly(normalizedFrom);
+  const toDate = parseDateOnly(normalizedTo);
+  if (!fromDate || !toDate || fromDate.getTime() > toDate.getTime()) {
+    const absFrom = normalizeAbsoluteDate(source?.absolute_min);
+    const absTo = normalizeAbsoluteDate(source?.absolute_max);
+    if (absFrom && absTo) {
+      return { dateFrom: absFrom, dateTo: absTo, changed: true };
+    }
+    return { dateFrom: "", dateTo: "", changed: true };
+  }
+
+  const minTs = parseRangeTimestamp(source?.absolute_min);
+  const maxTs = parseRangeTimestamp(source?.absolute_max);
+  if (minTs !== null && maxTs !== null) {
+    const fromTs = fromDate.getTime();
+    const toTs = toDate.getTime();
+    if (fromTs < minTs || toTs > maxTs) {
+      const absFrom = normalizeAbsoluteDate(source?.absolute_min);
+      const absTo = normalizeAbsoluteDate(source?.absolute_max);
+      if (absFrom && absTo) {
+        return { dateFrom: absFrom, dateTo: absTo, changed: true };
+      }
+      return { dateFrom: "", dateTo: "", changed: true };
+    }
+  }
+
+  return { dateFrom: rawFrom, dateTo: rawTo, changed: false };
 }
 
 export function useInformesDashboard() {
@@ -237,6 +380,13 @@ export function useInformesDashboard() {
         kind: src?.kind || (id === "__created_at" ? "created_at" : "field"),
         dateable: src?.dateable !== false,
         default: !!src?.default,
+        filterable: !!src?.filterable,
+        timeline_enabled: !!src?.timeline_enabled,
+        grouping_enabled: !!src?.grouping_enabled,
+        valid_count: Number(src?.valid_count || 0),
+        distinct_valid_count: Number(src?.distinct_valid_count || 0),
+        absolute_min: src?.absolute_min ?? null,
+        absolute_max: src?.absolute_max ?? null,
       });
     }
 
@@ -247,6 +397,13 @@ export function useInformesDashboard() {
         kind: "created_at",
         dateable: true,
         default: true,
+        filterable: false,
+        timeline_enabled: false,
+        grouping_enabled: false,
+        valid_count: 0,
+        distinct_valid_count: 0,
+        absolute_min: null,
+        absolute_max: null,
       });
     }
 
@@ -861,10 +1018,17 @@ export function useInformesDashboard() {
       availableFields,
       availableTemporalSources
     );
-    const storedDraft =
+    const baseDraft =
       localStored ||
       memoryStored ||
       buildDefaultDraftConfig(availableFields);
+    const persistedDateFieldId = localStored?.dateFieldId || memoryStored?.dateFieldId || null;
+    const storedDraft = sanitizeTemporalDraft({
+      draft: baseDraft,
+      temporalSources: availableTemporalSources,
+      persistedId: persistedDateFieldId,
+    });
+    const resolvedDateFieldId = storedDraft.dateFieldId;
 
     const nextSelectedFieldIds = [
       ...new Set(
@@ -889,7 +1053,7 @@ export function useInformesDashboard() {
     setSelectedFieldIds(new Set(nextSelectedFieldIds));
     setSelectedFilterFieldIds(new Set(nextSelectedFilterFieldIds));
     setSearchFieldIds(new Set(storedDraft.searchFieldIds || []));
-    setDateFieldId(String(storedDraft.dateFieldId || "__created_at"));
+    setDateFieldId(String(resolvedDateFieldId || "__created_at"));
     setDraftDateFrom(storedDraft.dateFrom || "");
     setDraftDateTo(storedDraft.dateTo || "");
     setDraftTimeGrouping(storedDraft.timeGrouping || "week");
@@ -948,7 +1112,7 @@ export function useInformesDashboard() {
       fieldIds: nextSelectedFieldIds,
       filterFieldIds: nextSelectedFilterFieldIds,
       searchIds: storedDraft.searchFieldIds || [],
-      dateSourceId: storedDraft.dateFieldId || "__created_at",
+      dateSourceId: resolvedDateFieldId || "__created_at",
       filtersState: nextDynamicFilters,
       fields: availableFields,
       plantillaNombre: metadata?.plantilla?.nombre || "",
@@ -1044,6 +1208,87 @@ export function useInformesDashboard() {
     });
   }, [selectedFilterFieldIds]);
 
+  useEffect(() => {
+    if (!selectedPlantillaId) return;
+    const nextDateFieldId = String(dateFieldId || DEFAULT_TEMPORAL_SOURCE_ID);
+    if (nextDateFieldId === String(appliedDateFieldId || DEFAULT_TEMPORAL_SOURCE_ID)) {
+      return;
+    }
+
+    const source =
+      availableTemporalSources.find((s) => String(s.id) === nextDateFieldId) || null;
+    const groupingEnabled = source ? !!source.grouping_enabled : false;
+    const nextRange = resolveCompatibleTemporalRange({
+      appliedDateFrom,
+      appliedDateTo,
+      source,
+    });
+
+    setAppliedDateFieldId(nextDateFieldId);
+    if (nextRange.changed) {
+      setAppliedDateFrom(nextRange.dateFrom || "");
+      setAppliedDateTo(nextRange.dateTo || "");
+      setDraftDateFrom(nextRange.dateFrom || "");
+      setDraftDateTo(nextRange.dateTo || "");
+      if (selectedPlantillaId) {
+        appliedFiltersByPlantillaRef.current[String(selectedPlantillaId)] = {
+          dateFrom: nextRange.dateFrom || "",
+          dateTo: nextRange.dateTo || "",
+          timeGrouping: appliedTimeGrouping || "week",
+          searchText: appliedSearchText || "",
+        };
+      }
+    }
+    if (!groupingEnabled && (appliedTimeGrouping || "week") !== "week") {
+      setAppliedTimeGrouping("week");
+      setDraftTimeGrouping("week");
+      if (selectedPlantillaId) {
+        appliedFiltersByPlantillaRef.current[String(selectedPlantillaId)] = {
+          dateFrom: nextRange.changed ? nextRange.dateFrom || "" : appliedDateFrom || "",
+          dateTo: nextRange.changed ? nextRange.dateTo || "" : appliedDateTo || "",
+          timeGrouping: "week",
+          searchText: appliedSearchText || "",
+        };
+      }
+    }
+  }, [
+    dateFieldId,
+    appliedDateFieldId,
+    appliedDateFrom,
+    appliedDateTo,
+    availableTemporalSources,
+    selectedPlantillaId,
+    appliedTimeGrouping,
+    appliedSearchText,
+  ]);
+
+  useEffect(() => {
+    if (!selectedPlantillaId) return;
+    const activeSource =
+      availableTemporalSources.find((s) => String(s.id) === String(appliedDateFieldId)) || null;
+    const groupingEnabled = activeSource ? !!activeSource.grouping_enabled : false;
+    if (!groupingEnabled) return;
+    const nextGrouping = String(draftTimeGrouping || "week");
+    if (nextGrouping === String(appliedTimeGrouping || "week")) return;
+
+    setAppliedTimeGrouping(nextGrouping);
+    appliedFiltersByPlantillaRef.current[String(selectedPlantillaId)] = {
+      dateFrom: appliedDateFrom || "",
+      dateTo: appliedDateTo || "",
+      timeGrouping: nextGrouping,
+      searchText: appliedSearchText || "",
+    };
+  }, [
+    draftTimeGrouping,
+    appliedTimeGrouping,
+    selectedPlantillaId,
+    appliedDateFrom,
+    appliedDateTo,
+    appliedSearchText,
+    appliedDateFieldId,
+    availableTemporalSources,
+  ]);
+
   const toggleFieldSelected = (id, next) => {
     const pid = Number(id);
     if (!Number.isFinite(pid) || pid <= 0) return;
@@ -1123,6 +1368,29 @@ export function useInformesDashboard() {
 
   const clearAllDynamicFilters = () => {
     setDynamicFilters({});
+  };
+
+  const applyTemporalRange = (nextFrom, nextTo) => {
+    const dateFrom = String(nextFrom || "");
+    const dateTo = String(nextTo || "");
+
+    if (dateFrom === String(appliedDateFrom || "") && dateTo === String(appliedDateTo || "")) {
+      return;
+    }
+
+    setAppliedDateFrom(dateFrom);
+    setAppliedDateTo(dateTo);
+    setDraftDateFrom(dateFrom);
+    setDraftDateTo(dateTo);
+
+    if (selectedPlantillaId) {
+      appliedFiltersByPlantillaRef.current[String(selectedPlantillaId)] = {
+        dateFrom,
+        dateTo,
+        timeGrouping: appliedTimeGrouping || "week",
+        searchText: appliedSearchText || "",
+      };
+    }
   };
 
   const applyFilters = () => {
@@ -1314,6 +1582,23 @@ export function useInformesDashboard() {
     );
     if (!dateFrom || !dateTo) return;
 
+    const isActive = appliedDateFrom === dateFrom && appliedDateTo === dateTo;
+    if (isActive) {
+      setAppliedDateFrom("");
+      setAppliedDateTo("");
+      setDraftDateFrom("");
+      setDraftDateTo("");
+      if (selectedPlantillaId) {
+        appliedFiltersByPlantillaRef.current[String(selectedPlantillaId)] = {
+          dateFrom: "",
+          dateTo: "",
+          timeGrouping: appliedTimeGrouping || "week",
+          searchText: appliedSearchText || "",
+        };
+      }
+      return;
+    }
+
     setAppliedDateFrom(dateFrom);
     setAppliedDateTo(dateTo);
     setDraftDateFrom(dateFrom);
@@ -1486,6 +1771,7 @@ export function useInformesDashboard() {
     clearAppliedDateTo,
     clearAppliedSearchText,
     resetAppliedTimeGrouping,
+    applyTemporalRange,
     applyConfig,
     resetDraftFromApplied,
   };
