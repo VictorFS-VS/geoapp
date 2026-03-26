@@ -79,6 +79,7 @@ export default function GVAMapPointLayer({
   getPointInfo,
   getPointPopupState,
   onSelectPopupPhoto,
+  onPreviewPhoto,
   showLabel = false,
   getPointLabel,
   labelMinZoom = 16,
@@ -94,6 +95,7 @@ export default function GVAMapPointLayer({
   const onPopupOpenRef = useRef(onPopupOpen);
   const getPointPopupStateRef = useRef(getPointPopupState);
   const onSelectPopupPhotoRef = useRef(onSelectPopupPhoto);
+  const onPreviewPhotoRef = useRef(onPreviewPhoto);
   const openPopupEntryRef = useRef(null);
   const [zoom, setZoom] = useState(null);
   const infoAdapter = useMemo(() => {
@@ -137,6 +139,168 @@ export default function GVAMapPointLayer({
   }, [getPointInfo]);
   const items = useMemo(() => toPointItems(points, infoAdapter), [points, infoAdapter]);
 
+  const buildPhotoBlock = (popupState, entry, info) => {
+    const photos = Array.isArray(popupState?.photos) ? popupState.photos : [];
+    if (popupState?.loadingPhotos) {
+      const loadingNode = document.createElement("div");
+      loadingNode.style.fontSize = "12px";
+      loadingNode.style.color = "#6b7280";
+      loadingNode.style.marginTop = "2px";
+      loadingNode.textContent = "Cargando fotos...";
+      return loadingNode;
+    }
+    if (photos.length === 0) {
+      if (popupState?.loading === true) return document.createElement("div"); 
+      const emptyNode = document.createElement("div");
+      emptyNode.style.fontSize = "12px";
+      emptyNode.style.color = "#6b7280";
+      emptyNode.style.marginTop = "2px";
+      emptyNode.textContent = popupState?.photosError || "Sin fotos";
+      return emptyNode;
+    }
+
+    const block = document.createElement("div");
+    block.style.display = "flex";
+    block.style.flexDirection = "column";
+    block.style.gap = "8px";
+    block.style.marginTop = "4px";
+
+    const activeIndex = Math.max(
+      0,
+      Math.min(Number(popupState?.activePhotoIndex) || 0, Math.max(photos.length - 1, 0))
+    );
+    const activePhoto = photos[activeIndex] || photos[0];
+
+    if (activePhoto?.url) {
+      const imgContainer = document.createElement("div");
+      imgContainer.style.position = "relative";
+      imgContainer.style.width = "175px";
+      imgContainer.style.height = "175px";
+
+      const mainImage = document.createElement("img");
+      mainImage.src = activePhoto.url;
+      mainImage.alt = activePhoto.descripcion || info.title || "Foto";
+      mainImage.style.width = "175px";
+      mainImage.style.height = "175px";
+      mainImage.style.objectFit = "cover";
+      mainImage.style.borderRadius = "10px";
+      mainImage.style.border = "1px solid #dbe3ee";
+      imgContainer.appendChild(mainImage);
+
+      if (onPreviewPhotoRef.current) {
+        const zoomBtn = document.createElement("button");
+        zoomBtn.type = "button";
+        zoomBtn.innerHTML = "&#128269; Ampliar";
+        zoomBtn.style.position = "absolute";
+        zoomBtn.style.bottom = "8px";
+        zoomBtn.style.right = "8px";
+        zoomBtn.style.background = "rgba(15, 23, 42, 0.75)";
+        zoomBtn.style.color = "#fff";
+        zoomBtn.style.border = "none";
+        zoomBtn.style.borderRadius = "6px";
+        zoomBtn.style.padding = "4px 8px";
+        zoomBtn.style.fontSize = "10px";
+        zoomBtn.style.fontWeight = "700";
+        zoomBtn.style.cursor = "pointer";
+        zoomBtn.style.backdropFilter = "blur(4px)";
+        zoomBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onPreviewPhotoRef.current?.(activePhoto.url, activePhoto.descripcion || info.title);
+        });
+        imgContainer.appendChild(zoomBtn);
+      }
+      block.appendChild(imgContainer);
+    }
+
+    if (photos.length > 1) {
+      const strip = document.createElement("div");
+      strip.style.display = "flex";
+      strip.style.gap = "6px";
+      strip.style.overflowX = "auto";
+      strip.style.paddingBottom = "4px";
+
+      photos.forEach((photo, index) => {
+        const thumb = document.createElement("img");
+        thumb.src = photo?.url || "";
+        thumb.alt = `Miniatura ${index + 1}`;
+        thumb.style.width = "56px";
+        thumb.style.height = "56px";
+        thumb.style.minWidth = "56px";
+        thumb.style.objectFit = "cover";
+        thumb.style.borderRadius = "8px";
+        thumb.style.border = index === activeIndex ? "3px solid #2563eb" : "1px solid #dbe3ee";
+        thumb.style.cursor = "pointer";
+        thumb.style.transition = "all 0.2s";
+        thumb.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onSelectPopupPhotoRef.current?.(entry.raw, index);
+        });
+        strip.appendChild(thumb);
+      });
+      block.appendChild(strip);
+    }
+
+    return block;
+  };
+
+  const buildPopupContent = (entry, popupState) => {
+    const info = entry?.info || {};
+
+    const popup = document.createElement("div");
+    popup.style.minWidth = "220px";
+    popup.style.maxWidth = "280px";
+    popup.style.display = "flex";
+    popup.style.flexDirection = "column";
+    popup.style.gap = "6px";
+    popup.style.padding = "2px";
+
+    const title = document.createElement("div");
+    title.style.fontWeight = "800";
+    title.style.fontSize = "13px";
+    title.textContent = info.title || `Item #${entry?.id || ""}`;
+    popup.appendChild(title);
+
+    const metaRows = Array.isArray(info.rows) ? info.rows : [];
+    for (const [label, value] of metaRows) {
+      const row = document.createElement("div");
+      row.style.fontSize = "12px";
+      row.innerHTML = `<strong>${label}:</strong> ${value}`;
+      popup.appendChild(row);
+    }
+
+    popup.appendChild(buildPhotoBlock(popupState || {}, entry, info));
+
+    const actionRow = document.createElement("div");
+    actionRow.style.display = "flex";
+    actionRow.style.gap = "6px";
+    actionRow.style.flexWrap = "wrap";
+    actionRow.style.marginTop = "4px";
+
+    if (info.actionLabel && onOpenPointRef.current) {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.textContent = String(info.actionLabel);
+      action.style.border = "1px solid #2563eb";
+      action.style.background = "#2563eb";
+      action.style.color = "#ffffff";
+      action.style.borderRadius = "8px";
+      action.style.padding = "6px 14px";
+      action.style.fontSize = "12px";
+      action.style.fontWeight = "700";
+      action.style.cursor = "pointer";
+      action.addEventListener("click", () => {
+        onOpenPointRef.current?.(entry.raw);
+      });
+      actionRow.appendChild(action);
+    }
+
+    if (actionRow.childNodes.length > 0) {
+      popup.appendChild(actionRow);
+    }
+
+    return popup;
+  };
+
   useEffect(() => {
     if (!map || !google) return undefined;
     const onZoomChanged = () => {
@@ -172,6 +336,10 @@ export default function GVAMapPointLayer({
   useEffect(() => {
     onSelectPopupPhotoRef.current = onSelectPopupPhoto;
   }, [onSelectPopupPhoto]);
+
+  useEffect(() => {
+    onPreviewPhotoRef.current = onPreviewPhoto;
+  }, [onPreviewPhoto]);
 
   useEffect(() => {
     advancedMarkerCtorRef.current = undefined;
@@ -223,133 +391,6 @@ export default function GVAMapPointLayer({
 
       advancedMarkerCtorRef.current = ctor || null;
       return advancedMarkerCtorRef.current;
-    };
-
-    const buildPopupContent = (entry) => {
-      const info = entry?.info || {};
-      const popupState =
-        typeof getPointPopupStateRef.current === "function"
-          ? getPointPopupStateRef.current(entry?.raw, info) || {}
-          : {};
-
-      const popup = document.createElement("div");
-      popup.style.minWidth = "220px";
-      popup.style.maxWidth = "280px";
-      popup.style.display = "flex";
-      popup.style.flexDirection = "column";
-      popup.style.gap = "6px";
-      popup.style.padding = "2px";
-
-      const title = document.createElement("div");
-      title.style.fontWeight = "800";
-      title.style.fontSize = "13px";
-      title.textContent = info.title || `Item #${entry?.id || ""}`;
-      popup.appendChild(title);
-
-      const metaRows = Array.isArray(info.rows) ? info.rows : [];
-      for (const [label, value] of metaRows) {
-        const row = document.createElement("div");
-        row.style.fontSize = "12px";
-        row.innerHTML = `<strong>${label}:</strong> ${value}`;
-        popup.appendChild(row);
-      }
-
-      if (popupState?.loadingPhotos) {
-        const loadingNode = document.createElement("div");
-        loadingNode.style.fontSize = "12px";
-        loadingNode.style.color = "#6b7280";
-        loadingNode.style.marginTop = "2px";
-        loadingNode.textContent = "Cargando fotos...";
-        popup.appendChild(loadingNode);
-      } else {
-        const photos = Array.isArray(popupState?.photos) ? popupState.photos : [];
-        const activeIndex = Math.max(
-          0,
-          Math.min(Number(popupState?.activePhotoIndex) || 0, Math.max(photos.length - 1, 0))
-        );
-
-        if (photos.length === 0) {
-          const emptyNode = document.createElement("div");
-          emptyNode.style.fontSize = "12px";
-          emptyNode.style.color = "#6b7280";
-          emptyNode.style.marginTop = "2px";
-          emptyNode.textContent = popupState?.photosError || "Sin fotos";
-          popup.appendChild(emptyNode);
-        } else {
-          const activePhoto = photos[activeIndex] || photos[0];
-          if (activePhoto?.url) {
-            const mainImage = document.createElement("img");
-            mainImage.src = activePhoto.url;
-            mainImage.alt = activePhoto.descripcion || info.title || "Foto del informe";
-            mainImage.style.width = "100px";
-            mainImage.style.height = "100px";
-            mainImage.style.objectFit = "cover";
-            mainImage.style.borderRadius = "10px";
-            mainImage.style.border = "1px solid #dbe3ee";
-            mainImage.style.marginTop = "4px";
-            mainImage.style.alignSelf = "flex-start";
-            popup.appendChild(mainImage);
-          }
-
-          if (photos.length > 1) {
-            const strip = document.createElement("div");
-            strip.style.display = "flex";
-            strip.style.gap = "6px";
-            strip.style.overflowX = "auto";
-            strip.style.paddingBottom = "2px";
-            strip.style.marginTop = "2px";
-
-            photos.forEach((photo, index) => {
-              const thumb = document.createElement("img");
-              thumb.src = photo?.url || "";
-              thumb.alt = photo?.descripcion || `Miniatura ${index + 1}`;
-              thumb.style.width = "34px";
-              thumb.style.height = "34px";
-              thumb.style.objectFit = "cover";
-              thumb.style.borderRadius = "8px";
-              thumb.style.border =
-                index === activeIndex ? "2px solid #2563eb" : "1px solid #dbe3ee";
-              thumb.style.cursor = "pointer";
-              thumb.addEventListener("click", () => {
-                onSelectPopupPhotoRef.current?.(entry.raw, index);
-              });
-              strip.appendChild(thumb);
-            });
-
-            popup.appendChild(strip);
-          }
-        }
-      }
-
-      const actionRow = document.createElement("div");
-      actionRow.style.display = "flex";
-      actionRow.style.gap = "6px";
-      actionRow.style.flexWrap = "wrap";
-      actionRow.style.marginTop = "4px";
-
-      if (info.actionLabel && onOpenPointRef.current) {
-        const action = document.createElement("button");
-        action.type = "button";
-        action.textContent = String(info.actionLabel);
-        action.style.border = "1px solid #2563eb";
-        action.style.background = "#2563eb";
-        action.style.color = "#ffffff";
-        action.style.borderRadius = "8px";
-        action.style.padding = "6px 10px";
-        action.style.fontSize = "12px";
-        action.style.fontWeight = "700";
-        action.style.cursor = "pointer";
-        action.addEventListener("click", () => {
-          onOpenPointRef.current?.(entry.raw);
-        });
-        actionRow.appendChild(action);
-      }
-
-      if (actionRow.childNodes.length > 0) {
-        popup.appendChild(actionRow);
-      }
-
-      return popup;
     };
 
     const run = async () => {
@@ -413,7 +454,12 @@ export default function GVAMapPointLayer({
             onPointClickRef.current?.(entry.raw);
             return;
           }
-          const popup = buildPopupContent(entry);
+          const info = entry?.info || {};
+          const popupState =
+            typeof getPointPopupStateRef.current === "function"
+              ? getPointPopupStateRef.current(entry?.raw, info) || {}
+              : {};
+          const popup = buildPopupContent(entry, popupState);
           openPopupEntryRef.current = entry;
           infoWindowRef.current.setContent(popup);
           infoWindowRef.current.open({ map, anchor: marker });
@@ -466,121 +512,15 @@ export default function GVAMapPointLayer({
           ? getPointPopupState(pointEntry.raw, pointEntry.info)
           : null;
       if (!popupState) return;
-      const popup = (() => {
-        const info = pointEntry?.info || {};
-        const state = popupState || {};
-        const container = document.createElement("div");
-        container.style.minWidth = "220px";
-        container.style.maxWidth = "280px";
-        container.style.display = "flex";
-        container.style.flexDirection = "column";
-        container.style.gap = "6px";
-        container.style.padding = "2px";
-
-        const title = document.createElement("div");
-        title.style.fontWeight = "800";
-        title.style.fontSize = "13px";
-        title.textContent = info.title || `Item #${pointEntry?.id || ""}`;
-        container.appendChild(title);
-
-        const metaRows = Array.isArray(info.rows) ? info.rows : [];
-        for (const [label, value] of metaRows) {
-          const row = document.createElement("div");
-          row.style.fontSize = "12px";
-          row.innerHTML = `<strong>${label}:</strong> ${value}`;
-          container.appendChild(row);
-        }
-
-        if (state?.loadingPhotos) {
-          const loadingNode = document.createElement("div");
-          loadingNode.style.fontSize = "12px";
-          loadingNode.style.color = "#6b7280";
-          loadingNode.textContent = "Cargando fotos...";
-          container.appendChild(loadingNode);
-        } else {
-          const photos = Array.isArray(state?.photos) ? state.photos : [];
-          const activeIndex = Math.max(
-            0,
-            Math.min(Number(state?.activePhotoIndex) || 0, Math.max(photos.length - 1, 0))
-          );
-          if (!photos.length) {
-            const emptyNode = document.createElement("div");
-            emptyNode.style.fontSize = "12px";
-            emptyNode.style.color = "#6b7280";
-            emptyNode.textContent = state?.photosError || "Sin fotos";
-            container.appendChild(emptyNode);
-          } else {
-            const activePhoto = photos[activeIndex] || photos[0];
-            const mainImage = document.createElement("img");
-            mainImage.src = activePhoto?.url || "";
-            mainImage.alt = activePhoto?.descripcion || info.title || "Foto del informe";
-            mainImage.style.width = "100px";
-            mainImage.style.height = "100px";
-            mainImage.style.objectFit = "cover";
-            mainImage.style.borderRadius = "10px";
-            mainImage.style.border = "1px solid #dbe3ee";
-            mainImage.style.marginTop = "4px";
-            mainImage.style.alignSelf = "flex-start";
-            container.appendChild(mainImage);
-
-            if (photos.length > 1) {
-              const strip = document.createElement("div");
-              strip.style.display = "flex";
-              strip.style.gap = "6px";
-              strip.style.overflowX = "auto";
-              photos.forEach((photo, index) => {
-                const thumb = document.createElement("img");
-                thumb.src = photo?.url || "";
-                thumb.alt = photo?.descripcion || `Miniatura ${index + 1}`;
-                thumb.style.width = "34px";
-                thumb.style.height = "34px";
-                thumb.style.objectFit = "cover";
-                thumb.style.borderRadius = "8px";
-                thumb.style.border =
-                  index === activeIndex ? "2px solid #2563eb" : "1px solid #dbe3ee";
-                thumb.style.cursor = "pointer";
-                thumb.addEventListener("click", () => {
-                  onSelectPopupPhotoRef.current?.(pointEntry.raw, index);
-                });
-                strip.appendChild(thumb);
-              });
-              container.appendChild(strip);
-            }
-          }
-        }
-
-        const actionRow = document.createElement("div");
-        actionRow.style.display = "flex";
-        actionRow.style.gap = "6px";
-        actionRow.style.flexWrap = "wrap";
-        actionRow.style.marginTop = "4px";
-        if (info.actionLabel && onOpenPointRef.current) {
-          const action = document.createElement("button");
-          action.type = "button";
-          action.textContent = String(info.actionLabel);
-          action.style.border = "1px solid #2563eb";
-          action.style.background = "#2563eb";
-          action.style.color = "#ffffff";
-          action.style.borderRadius = "8px";
-          action.style.padding = "6px 10px";
-          action.style.fontSize = "12px";
-          action.style.fontWeight = "700";
-          action.style.cursor = "pointer";
-          action.addEventListener("click", () => {
-            onOpenPointRef.current?.(pointEntry.raw);
-          });
-          actionRow.appendChild(action);
-        }
-        if (actionRow.childNodes.length > 0) {
-          container.appendChild(actionRow);
-        }
-        return container;
-      })();
-      infoWindowRef.current.setContent(popup);
-      infoWindowRef.current.open({ map, anchor: pointEntry.marker });
+      infoWindowRef.current.setContent(buildPopupContent(pointEntry, popupState));
+      // Reabrir solo si cambió el ancla o no está visible
+      const isSameAnchor = infoWindowRef.current.getAnchor?.() === pointEntry.marker;
+      if (!isSameAnchor) {
+        infoWindowRef.current.open({ map, anchor: pointEntry.marker });
+      }
       openPopupEntryRef.current = pointEntry;
     } catch {}
-  }, [getPointPopupState, onSelectPopupPhoto, visible, map, enablePopup]);
+  }, [getPointPopupState, onSelectPopupPhoto, onPreviewPhoto, visible, map, enablePopup]);
 
   useEffect(() => {
     for (const entry of markersRef.current) {

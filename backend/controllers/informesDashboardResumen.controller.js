@@ -3,11 +3,48 @@
 const pool = require("../db");
 const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
 const { computeInformeGeoSummary } = require("../helpers/informesGeoSummary");
+const {
+  semaforoColorHexFromKey,
+  MAP_KPI_CATEGORY_PALETTE,
+  MAP_KPI_DEFAULT_COLOR_HEX,
+} = require("../helpers/informesDashboardStyles");
 
 function toInt(v, fallback = null) {
   if (v === undefined || v === null) return fallback;
   const n = parseInt(String(v), 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Crea la expresión SQL unificada para resolver la fecha efectiva de una respuesta.
+ * Soporta ISO (texto/json), Excel Serial (texto/json) y formatos manuales DD/MM/YYYY.
+ */
+function getInformesDateFieldExpr(alias = "r_d") {
+  return `(
+    CASE
+      -- 1. ISO (YYYY-MM-DD...) en valor_texto o valor_json
+      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_texto, 1, 10)::date
+      WHEN COALESCE(${alias}.valor_json::text, '') ~ '^"\\\\d{4}-\\\\d{2}-\\\\d{2}' THEN substring(${alias}.valor_json::text, 2, 10)::date
+
+      -- 2. Formato manual DD/MM/YYYY o DD-MM-YYYY (Solo en valor_texto)
+      WHEN COALESCE(${alias}.valor_texto, '') ~ '^\\\\d{1,2}[/-]\\\\d{1,2}[/-]\\\\d{4}' THEN 
+        to_date(regexp_replace(substring(${alias}.valor_texto, 1, 10), '[/-]', '-', 'g'), 'DD-MM-YYYY')
+
+      -- 3. Serial Excel en valor_texto
+      WHEN TRIM(COALESCE(${alias}.valor_texto, '')) ~ '^[0-9]+(\\\\.[0-9]+)?$' 
+           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
+           AND CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
+           THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(${alias}.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
+
+      -- 4. Serial Excel en valor_json numérico
+      WHEN jsonb_typeof(${alias}.valor_json) = 'number'
+           AND (${alias}.valor_json::text)::double precision >= 20000
+           AND (${alias}.valor_json::text)::double precision <= 100000
+           THEN '1970-01-01'::date + (floor((${alias}.valor_json::text)::double precision))::int - 25569
+
+      ELSE NULL
+    END
+  )`;
 }
 
 function toBool(v, fallback = false) {
@@ -50,27 +87,34 @@ function titleCaseLabel(v) {
 function normalizeSemaforoValue(raw) {
   const norm = normalizeLooseText(raw);
   if (!norm) {
-    return { key: "gris", label: "Gris", color_key: "gris", sort_order: 5 };
+    return { 
+      key: "gris", 
+      label: "Gris", 
+      color_key: "gris", 
+      color_hex: semaforoColorHexFromKey("gris"),
+      sort_order: 5 
+    };
   }
   if (["verde", "green"].includes(norm)) {
-    return { key: "verde", label: "Verde", color_key: "verde", sort_order: 1 };
+    return { key: "verde", label: "Verde", color_key: "verde", color_hex: semaforoColorHexFromKey("verde"), sort_order: 1 };
   }
   if (["amarillo", "yellow", "ambar", "amber"].includes(norm)) {
-    return { key: "amarillo", label: "Amarillo", color_key: "amarillo", sort_order: 2 };
+    return { key: "amarillo", label: "Amarillo", color_key: "amarillo", color_hex: semaforoColorHexFromKey("amarillo"), sort_order: 2 };
   }
   if (["naranja", "orange"].includes(norm)) {
-    return { key: "naranja", label: "Naranja", color_key: "naranja", sort_order: 3 };
+    return { key: "naranja", label: "Naranja", color_key: "naranja", color_hex: semaforoColorHexFromKey("naranja"), sort_order: 3 };
   }
   if (["rojo", "red"].includes(norm)) {
-    return { key: "rojo", label: "Rojo", color_key: "rojo", sort_order: 4 };
+    return { key: "rojo", label: "Rojo", color_key: "rojo", color_hex: semaforoColorHexFromKey("rojo"), sort_order: 4 };
   }
   if (["gris", "gray", "grey"].includes(norm)) {
-    return { key: "gris", label: "Gris", color_key: "gris", sort_order: 5 };
+    return { key: "gris", label: "Gris", color_key: "gris", color_hex: semaforoColorHexFromKey("gris"), sort_order: 5 };
   }
   return {
     key: norm,
     label: titleCaseLabel(String(raw || "").trim() || norm),
     color_key: "gris",
+    color_hex: semaforoColorHexFromKey("gris"),
     sort_order: 99,
   };
 }
@@ -86,6 +130,7 @@ function buildSemaforoSummaryItems(items) {
         label: meta.label,
         count: 0,
         color_key: meta.color_key,
+        color_hex: meta.color_hex,
         sort_order: meta.sort_order,
       });
     }
@@ -516,7 +561,7 @@ async function buildDashboardUniverseContext(options = {}) {
       `;
       const rDate = await pool.query(qDate, [idDateField]);
       const row = rDate.rows[0];
-      if (row && isDateableTipo(row.tipo)) {
+      if (row) {
         dateFieldKind = "field";
         dateFieldId = String(idDateField);
         dateFieldLabel = row.etiqueta || `Pregunta ${idDateField}`;
@@ -563,17 +608,7 @@ async function buildDashboardUniverseContext(options = {}) {
     if (date_from) params.push(date_from);
     if (date_to) params.push(date_to);
 
-    const dateExprSql = `(
-      CASE
-        WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-        WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-        WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
-             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-             AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-             THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-        ELSE NULL
-      END
-    )`;
+    const dateExprSql = getInformesDateFieldExpr("r_d");
 
     whereSql += `
       AND EXISTS (
@@ -963,7 +998,10 @@ async function getInformesResumenBase(req, res) {
           const isSemaforo = tipo === "semaforo";
           const items = isSemaforo
             ? buildSemaforoSummaryItems(rawItems)
-            : rawItems.slice(0, 10);
+            : rawItems.slice(0, 10).map((it, idx) => ({
+                ...it,
+                color_hex: MAP_KPI_CATEGORY_PALETTE[idx % MAP_KPI_CATEGORY_PALETTE.length],
+              }));
           const distinct = isSemaforo ? items.length : distinctMap.get(id) || 0;
           const kpiEligible = distinct > 0 && distinct <= 10;
           return {
@@ -1000,7 +1038,10 @@ async function getInformesResumenBase(req, res) {
       date_field_id: dateFieldId,
       date_field_label: dateFieldLabel,
       time_grouping,
+      absolute_min: null,
+      absolute_max: null,
       series: [],
+      series_absolute: [],
     };
 
     try {
@@ -1024,17 +1065,7 @@ async function getInformesResumenBase(req, res) {
             ON r_d.id_informe = i.id_informe
            AND r_d.id_pregunta = $${temporalFieldParam}
         `;
-        temporalDateExpr = `(
-          CASE
-            WHEN COALESCE(r_d.valor_texto, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_texto, 1, 10)::date
-            WHEN COALESCE(r_d.valor_json::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(r_d.valor_json::text, 1, 10)::date
-            WHEN TRIM(COALESCE(r_d.valor_texto, '')) ~ '^[0-9]+(\\.[0-9]+)?$' 
-                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) >= 20000 
-                 AND CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION) <= 100000 
-                 THEN '1970-01-01'::date + (floor(CAST(NULLIF(TRIM(r_d.valor_texto), '') AS DOUBLE PRECISION))::int - 25569)
-            ELSE NULL
-          END
-        )`;
+        temporalDateExpr = getInformesDateFieldExpr("r_d");
       }
 
       const temporalBase = `
@@ -1072,34 +1103,96 @@ async function getInformesResumenBase(req, res) {
       `;
 
       const rTemporal = await pool.query(qTemporal, temporalParams);
+
+      const absoluteUniverse = await buildDashboardUniverseContext({
+        id_proyecto,
+        id_plantilla,
+        date_from: null,
+        date_to: null,
+        solo_cerrados,
+        filters: req.query.filters,
+        interactive_filters: req.query.interactive_filters,
+        search_text: req.query.search_text,
+        search_field_ids: req.query.search_field_ids,
+        date_field_id: req.query.date_field_id,
+        user: req.user,
+      });
+
+      let absDateExpr = "i.fecha_creado::date";
+      let absJoin = "";
+      let absParams = absoluteUniverse.params.slice();
+
+      if (absoluteUniverse.dateFieldKind === "field") {
+        const absFieldParam = absParams.length + 1;
+        absParams.push(toInt(absoluteUniverse.dateFieldId, null));
+        absJoin = `
+          JOIN ema.informe_respuesta r_d_abs
+            ON r_d_abs.id_informe = i.id_informe
+           AND r_d_abs.id_pregunta = $${absFieldParam}
+        `;
+        absDateExpr = getInformesDateFieldExpr("r_d_abs");
+      }
+
+      const qAbsolute = `
+        SELECT 
+          MIN(${absDateExpr}) AS absolute_min,
+          MAX(${absDateExpr}) AS absolute_max
+        ${absoluteUniverse.joinSql}
+        ${absJoin}
+        ${absoluteUniverse.whereSql}
+      `;
+
+      const rAbsolute = await pool.query(qAbsolute, absParams);
+      temporal.absolute_min = rAbsolute.rows[0]?.absolute_min ? new Date(rAbsolute.rows[0].absolute_min).toISOString().slice(0, 10) : null;
+      temporal.absolute_max = rAbsolute.rows[0]?.absolute_max ? new Date(rAbsolute.rows[0].absolute_max).toISOString().slice(0, 10) : null;
+
+      const qAbsoluteSeries = `
+        SELECT
+          ${bucketStartExpr.replace(/date_value/g, absDateExpr)} AS bucket_start,
+          ${labelExpr.replace(/date_value/g, absDateExpr)} AS label,
+          COUNT(*)::int AS count
+        ${absoluteUniverse.joinSql}
+        ${absJoin}
+        ${absoluteUniverse.whereSql}
+        AND ${absDateExpr} IS NOT NULL
+        GROUP BY bucket_start, label
+        ORDER BY bucket_start ASC
+      `;
+      const rAbsoluteSeries = await pool.query(qAbsoluteSeries, absParams);
       const temporalRows = rTemporal.rows || [];
       const rangeTotal = temporalRows.reduce(
         (acc, row) => acc + (Number(row.count) || 0),
         0
       );
       temporal.range_total = rangeTotal;
-      temporal.series = temporalRows.map((row) => {
+
+      const normalizeSeries = (rows) => (rows || []).map((row) => {
         const count = Number(row.count) || 0;
-        const percent =
-          rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
+        const percent = rangeTotal > 0 ? Number(((count / rangeTotal) * 100).toFixed(2)) : 0;
         return {
-        key: row.label,
-        label: row.label,
-        bucket_start: row.bucket_start
-          ? new Date(row.bucket_start).toISOString().slice(0, 10)
-          : null,
+          key: row.label,
+          label: row.label,
+          bucket_start: row.bucket_start
+            ? new Date(row.bucket_start).toISOString().slice(0, 10)
+            : null,
           count,
           percent_of_range: percent,
         };
       });
+
+      temporal.series_absolute = normalizeSeries(rAbsoluteSeries.rows);
+      temporal.series = normalizeSeries(temporalRows);
     } catch (err) {
       temporal = {
         enabled: false,
         date_field_id: dateFieldId,
         date_field_label: dateFieldLabel,
         time_grouping,
+        absolute_min: null,
+        absolute_max: null,
         range_total: 0,
         series: [],
+        series_absolute: [],
       };
     }
 
