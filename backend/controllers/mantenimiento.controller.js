@@ -46,7 +46,12 @@ const {
 // FIX DEFINITIVO GDAL / PROJ
 // ===========================
 applyGdalProcessEnv(process.env);
+process.env.PROJ_LIB = "C:\\OSGeo4W\\share\\proj";
+process.env.PROJ_DATA = "C:\\OSGeo4W\\share\\proj";
+process.env.GDAL_DATA = "C:\\OSGeo4W\\share\\gdal";
 
+// 🔥 CRÍTICO
+delete process.env.PROJ_DATABASE_PATH;
 /* ===========================
    ✅ CRS: regla del sistema
    =========================== */
@@ -70,7 +75,7 @@ function gdalConfigArgs(tool = "ogr2ogr") {
   if (env.PROJ_DATA) args.push("--config", "PROJ_DATA", env.PROJ_DATA);
   if (env.PROJ_LIB) args.push("--config", "PROJ_LIB", env.PROJ_LIB);
   if (env.GDAL_DATA) args.push("--config", "GDAL_DATA", env.GDAL_DATA);
-  if (env.PROJ_DATABASE_PATH) args.push("--config", "PROJ_DATABASE_PATH", env.PROJ_DATABASE_PATH);
+  //if (env.PROJ_DATABASE_PATH) args.push("--config", "PROJ_DATABASE_PATH", env.PROJ_DATABASE_PATH);
   args.push("--config", "PROJ_NETWORK", String(env.PROJ_NETWORK || "OFF"));
 
   return args;

@@ -5,7 +5,8 @@ const MODULES = [
   "usuarios",
   "roles",
   "permisos",
-  "proyectos"
+  "proyectos",
+  "project_home_config"
 ];
 
 const ACTIONS = ["read", "create", "update", "delete"];

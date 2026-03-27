@@ -11,7 +11,16 @@ function getUserPerms(req) {
 }
 
 function isAdmin(req) {
-  return Number(req.user?.tipo_usuario ?? req.user?.group_id) === ADMIN_ROLE_ID;
+  const primaryRole = Number(req.user?.tipo_usuario ?? req.user?.group_id ?? 0);
+  if (primaryRole === ADMIN_ROLE_ID) return true;
+
+  const roleIds = Array.isArray(req.user?.role_ids)
+    ? req.user.role_ids
+    : Array.isArray(req.user?.roleIds)
+      ? req.user.roleIds
+      : [];
+
+  return roleIds.some((roleId) => Number(roleId) === ADMIN_ROLE_ID);
 }
 
 async function ensurePermsLoaded(req) {
@@ -32,6 +41,14 @@ async function ensurePermsLoaded(req) {
 
 function deny(res, payload) {
   return res.status(403).json(payload);
+}
+
+function requireAdmin() {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: "No autenticado" });
+    if (isAdmin(req)) return next();
+    return deny(res, { error: "Solo administradores" });
+  };
 }
 
 function requirePerm(perm) {
@@ -84,4 +101,4 @@ function requireAll(permsRequired = []) {
   };
 }
 
-module.exports = { requirePerm, requireAny, requireAll, ADMIN_ROLE_ID };
+module.exports = { requirePerm, requireAny, requireAll, requireAdmin, ADMIN_ROLE_ID };

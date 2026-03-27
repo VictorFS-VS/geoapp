@@ -15,6 +15,7 @@ import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "re
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
 import { useAuth } from "@/auth/AuthContext";
 import { alerts } from "@/utils/alerts";
+import { useProjectContext } from "@/context/ProjectContext";
 import * as XLSX from "xlsx";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -52,6 +53,62 @@ async function apiDelete(url) {
   const r = await fetch(url, { method: "DELETE", headers: { ...authHeaders() } });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+function normalizeDocName(doc) {
+  return String(
+    doc?.nombre_archivo ||
+    doc?.nombre ||
+    doc?.filename ||
+    doc?.file_name ||
+    ""
+  ).trim();
+}
+
+function normalizeDocUrl(doc) {
+  return String(
+    doc?.ruta_archivo ||
+    doc?.ruta ||
+    doc?.url ||
+    doc?.link ||
+    ""
+  ).trim();
+}
+
+function docsToNames(arr) {
+  return (Array.isArray(arr) ? arr : [])
+    .map((d) => normalizeDocName(d))
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function docsToUrls(arr) {
+  return (Array.isArray(arr) ? arr : [])
+    .map((d) => normalizeDocUrl(d))
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function findDocByKeywords(arr, keywords = []) {
+  const docs = Array.isArray(arr) ? arr : [];
+  const keys = keywords.map((k) => String(k).toLowerCase());
+
+  return (
+    docs.find((doc) => {
+      const name = normalizeDocName(doc).toLowerCase();
+      const url = normalizeDocUrl(doc).toLowerCase();
+      return keys.some((k) => name.includes(k) || url.includes(k));
+    }) || null
+  );
+}
+
+async function getAllDocsOfExpediente(idExpediente) {
+  try {
+    const data = await apiGet(`${API}/expedientes/${idExpediente}/documentos`);
+    return Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+  } catch {
+    return [];
+  }
 }
 
 function todayYMD() {
@@ -211,11 +268,31 @@ function matchesTipoRule(nameOrBase, tipoCarpeta) {
 
 export default function Expedientes() {
   const { id } = useParams(); // id_proyecto
-  const idProyecto = Number(id);
+  const { currentProjectId, setCurrentProjectId } = useProjectContext();
   const { can } = useAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
   const didAutoOpenRef = useRef(false);
+  const paramProjectId = normalizePositiveId(id);
+  const queryProjectId = normalizePositiveId(
+    searchParams.get("id_proyecto") || searchParams.get("idProyecto")
+  );
+  const contextProjectId = normalizePositiveId(currentProjectId);
+  const idProyecto = paramProjectId ?? queryProjectId ?? contextProjectId ?? null;
+
+  useEffect(() => {
+    if (paramProjectId && paramProjectId !== contextProjectId) {
+      setCurrentProjectId(paramProjectId);
+      return;
+    }
+    if (!paramProjectId && queryProjectId && queryProjectId !== contextProjectId) {
+      setCurrentProjectId(queryProjectId);
+    }
+  }, [paramProjectId, queryProjectId, contextProjectId, setCurrentProjectId]);
+
+  if (!idProyecto) {
+    return <div className="container mt-4">Proyecto no definido</div>;
+  }
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -895,6 +972,10 @@ export default function Expedientes() {
     { key: "ci_propietario_dorso_url", label: "CI Propietario Dorso URL", type: "text" },
     { key: "ci_adicional_frente_url", label: "CI Adicional Frente URL", type: "text" },
     { key: "ci_adicional_dorso_url", label: "CI Adicional Dorso URL", type: "text" },
+
+    // ✅ NUEVOS: documentos generales desde Excel
+    { key: "documentos_urls", label: "Documentos URL(s)", type: "text" },
+    { key: "documentos_subcarpeta", label: "Subcarpeta documentos", type: "text" },
   ];
 
   const [showImport, setShowImport] = useState(false);
@@ -908,6 +989,101 @@ export default function Expedientes() {
   const [importErrors, setImportErrors] = useState([]);
   const [importResult, setImportResult] = useState(null);
   const [showImportDetails, setShowImportDetails] = useState(false);
+
+  // =========================
+  // EXPORT EXCEL
+  // =========================
+  const EXPORT_FIELDS = [
+    // =========================
+    // BASE
+    // =========================
+    { key: "id_expediente", label: "ID Expediente", group: "base" },
+    { key: "id_import", label: "Código importación", group: "base" },
+    { key: "fecha_relevamiento", label: "Fecha relevamiento", group: "base" },
+    { key: "gps", label: "GPS", group: "base" },
+    { key: "tecnico", label: "Técnico", group: "base" },
+    { key: "codigo_exp", label: "Código expediente", group: "base" },
+    { key: "codigo_censo", label: "Código censo", group: "base" },
+    { key: "propietario_nombre", label: "Propietario nombre", group: "base" },
+    { key: "propietario_ci", label: "Propietario CI", group: "base" },
+    { key: "pareja_nombre", label: "Pareja nombre", group: "base" },
+    { key: "pareja_ci", label: "Pareja CI", group: "base" },
+    { key: "id_tramo", label: "ID Tramo", group: "base" },
+    { key: "id_sub_tramo", label: "ID Subtramo", group: "base" },
+    { key: "parte_a", label: "Parte A", group: "base" },
+    { key: "parte_b", label: "Parte B", group: "base" },
+    { key: "premio_aplica", label: "Premio aplica", group: "base" },
+
+    // =========================
+    // DOCUMENTACIÓN
+    // =========================
+    { key: "doc_total", label: "Cantidad total documentos", group: "docs" },
+    { key: "doc_nombres", label: "Todos los documentos - nombres", group: "docs" },
+    { key: "doc_urls", label: "Todos los documentos - links/rutas", group: "docs" },
+
+    { key: "ci_frente", label: "CI propietario frente", group: "docs" },
+    { key: "ci_dorso", label: "CI propietario dorso", group: "docs" },
+    { key: "ci_adicional_frente", label: "CI adicional frente", group: "docs" },
+    { key: "ci_adicional_dorso", label: "CI adicional dorso", group: "docs" },
+
+    { key: "docs_documentacion_nombres", label: "Documentación - nombres", group: "docs" },
+    { key: "docs_documentacion_urls", label: "Documentación - links/rutas", group: "docs" },
+
+    { key: "docs_documentacion_final_nombres", label: "Documentación final - nombres", group: "docs" },
+    { key: "docs_documentacion_final_urls", label: "Documentación final - links/rutas", group: "docs" },
+
+    { key: "docs_avaluo_nombres", label: "Avalúo - nombres", group: "docs" },
+    { key: "docs_avaluo_urls", label: "Avalúo - links/rutas", group: "docs" },
+
+    { key: "docs_informe_pericial_nombres", label: "Informe pericial - nombres", group: "docs" },
+    { key: "docs_informe_pericial_urls", label: "Informe pericial - links/rutas", group: "docs" },
+
+    { key: "docs_plantilla_nombres", label: "Plantilla - nombres", group: "docs" },
+    { key: "docs_plantilla_urls", label: "Plantilla - links/rutas", group: "docs" },
+
+    { key: "docs_notif_conformidad_nombres", label: "Notif. conformidad - nombres", group: "docs" },
+    { key: "docs_notif_conformidad_urls", label: "Notif. conformidad - links/rutas", group: "docs" },
+  ];
+
+  const DEFAULT_EXPORT_SELECTION = {
+    id_expediente: true,
+    id_import: true,
+    fecha_relevamiento: true,
+    gps: true,
+    tecnico: true,
+    codigo_exp: true,
+    codigo_censo: true,
+    propietario_nombre: true,
+    propietario_ci: true,
+    id_tramo: true,
+    id_sub_tramo: true,
+
+    doc_total: true,
+    ci_frente: true,
+    ci_dorso: true,
+    ci_adicional_frente: true,
+    ci_adicional_dorso: true,
+
+    doc_nombres: false,
+    doc_urls: false,
+
+    docs_documentacion_nombres: false,
+    docs_documentacion_urls: false,
+    docs_documentacion_final_nombres: false,
+    docs_documentacion_final_urls: false,
+    docs_avaluo_nombres: false,
+    docs_avaluo_urls: false,
+    docs_informe_pericial_nombres: false,
+    docs_informe_pericial_urls: false,
+    docs_plantilla_nombres: false,
+    docs_plantilla_urls: false,
+    docs_notif_conformidad_nombres: false,
+    docs_notif_conformidad_urls: false,
+  };
+
+  const [showExport, setShowExport] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportSelection, setExportSelection] = useState(DEFAULT_EXPORT_SELECTION);
 
   function norm(s) {
     return String(s || "")
@@ -1049,6 +1225,33 @@ export default function Expedientes() {
         "ci adicional dorso",
         "cedula adicional dorso"
       ),
+
+      documentos_urls: pick(
+        "documentos",
+        "documentos url",
+        "documentos urls",
+        "documento",
+        "documento url",
+        "documento urls",
+        "links documentos",
+        "links de documentos",
+        "url documentos",
+        "url documento",
+        "adjuntos",
+        "adjunto",
+        "archivos",
+        "links archivos"
+      ),
+
+      documentos_subcarpeta: pick(
+        "subcarpeta documentos",
+        "subcarpeta",
+        "carpeta documentos",
+        "carpeta",
+        "tipo documento",
+        "categoria documento",
+        "categoría documento"
+      ),
     };
   }
 
@@ -1181,10 +1384,33 @@ export default function Expedientes() {
       return !/^0+$/.test(raw);
     };
 
+    const splitLinks = (value) => {
+      const raw = String(value ?? "").trim();
+      if (!raw) return [];
+
+      return raw
+        .split(/\r?\n|;|,|\|/g)
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+    };
+
+    const getMultiSelectedColumns = (value) => {
+      if (Array.isArray(value)) return value.filter(Boolean);
+      if (!value) return [];
+      return [value].filter(Boolean);
+    };
+
     const mapped = excelRows.map((r) => {
       const obj = { id_proyecto: idProyecto };
 
       for (const f of EXP_FIELDS) {
+        if (f.key === "documentos_urls") {
+          const cols = getMultiSelectedColumns(mapCols[f.key]);
+          const allLinks = cols.flatMap((col) => splitLinks(r[col]));
+          obj[f.key] = [...new Set(allLinks)];
+          continue;
+        }
+
         const col = mapCols[f.key];
         const val = col ? r[col] : "";
 
@@ -1196,6 +1422,10 @@ export default function Expedientes() {
         }
       }
 
+      if (!obj.documentos_subcarpeta) {
+        obj.documentos_subcarpeta = "documentacion";
+      }
+
       return obj;
     });
 
@@ -1205,11 +1435,14 @@ export default function Expedientes() {
         isSignificant(x.ci_propietario_frente_url) ||
         isSignificant(x.ci_propietario_dorso_url);
 
+      const hasDocumentos =
+        Array.isArray(x.documentos_urls) && x.documentos_urls.length > 0;
+
       return (
         isSignificant(x.fecha_relevamiento) &&
         isSignificant(x.propietario_nombre) &&
         isSignificant(x.gps) &&
-        (hasCi || hasCiImage)
+        (hasCi || hasCiImage || hasDocumentos)
       );
     });
 
@@ -1246,11 +1479,190 @@ export default function Expedientes() {
     } finally {
       setImportBusy(false);
     }
+    }
+
+  async function exportarExcelConDocumentacion() {
+    try {
+      setExportBusy(true);
+
+      const selectedFields = EXPORT_FIELDS.filter((f) => exportSelection[f.key]);
+
+      if (!selectedFields.length) {
+        alert("Seleccioná al menos una columna para exportar.");
+        return;
+      }
+
+      const dataForExcel = await Promise.all(
+        (rows || []).map(async (r) => {
+          const item = {};
+          const needsDocs = selectedFields.some((f) => f.group === "docs");
+          const docs = needsDocs ? await collectExportDocs(r.id_expediente) : null;
+
+          for (const f of selectedFields) {
+            let value = "";
+
+            switch (f.key) {
+              case "id_expediente":
+              case "id_import":
+              case "fecha_relevamiento":
+              case "gps":
+              case "tecnico":
+              case "codigo_exp":
+              case "codigo_censo":
+              case "propietario_nombre":
+              case "propietario_ci":
+              case "pareja_nombre":
+              case "pareja_ci":
+              case "id_tramo":
+              case "id_sub_tramo":
+              case "parte_a":
+              case "parte_b":
+                value = r?.[f.key] ?? "";
+                break;
+
+              case "premio_aplica":
+                value = r?.premio_aplica ? "Sí" : "No";
+                break;
+
+              case "doc_total":
+                value = docs?.allDocs?.length ?? 0;
+                break;
+              case "doc_nombres":
+                value = docsToNames(docs?.allDocs);
+                break;
+              case "doc_urls":
+                value = docsToUrls(docs?.allDocs);
+                break;
+
+              case "ci_frente":
+                value = docs?.ciFrente || "";
+                break;
+              case "ci_dorso":
+                value = docs?.ciDorso || "";
+                break;
+              case "ci_adicional_frente":
+                value = docs?.ciAdicionalFrente || "";
+                break;
+              case "ci_adicional_dorso":
+                value = docs?.ciAdicionalDorso || "";
+                break;
+
+              case "docs_documentacion_nombres":
+                value = docsToNames(docs?.docsDocumentacion);
+                break;
+              case "docs_documentacion_urls":
+                value = docsToUrls(docs?.docsDocumentacion);
+                break;
+
+              case "docs_documentacion_final_nombres":
+                value = docsToNames(docs?.docsDocumentacionFinal);
+                break;
+              case "docs_documentacion_final_urls":
+                value = docsToUrls(docs?.docsDocumentacionFinal);
+                break;
+
+              case "docs_avaluo_nombres":
+                value = docsToNames(docs?.docsAvaluo);
+                break;
+              case "docs_avaluo_urls":
+                value = docsToUrls(docs?.docsAvaluo);
+                break;
+
+              case "docs_informe_pericial_nombres":
+                value = docsToNames(docs?.docsInformePericial);
+                break;
+              case "docs_informe_pericial_urls":
+                value = docsToUrls(docs?.docsInformePericial);
+                break;
+
+              case "docs_plantilla_nombres":
+                value = docsToNames(docs?.docsPlantilla);
+                break;
+              case "docs_plantilla_urls":
+                value = docsToUrls(docs?.docsPlantilla);
+                break;
+
+              case "docs_notif_conformidad_nombres":
+                value = docsToNames(docs?.docsNotifConformidad);
+                break;
+              case "docs_notif_conformidad_urls":
+                value = docsToUrls(docs?.docsNotifConformidad);
+                break;
+
+              default:
+                value = r?.[f.key] ?? "";
+                break;
+            }
+
+            item[f.label] = value ?? "";
+          }
+
+          return item;
+        })
+      );
+
+      const ws = XLSX.utils.json_to_sheet(dataForExcel);
+      const totalCols = Object.keys(dataForExcel?.[0] || {}).length;
+      ws["!cols"] = Array.from({ length: totalCols }, () => ({ wch: 28 }));
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Expedientes");
+      XLSX.writeFile(wb, `expedientes_${idProyecto}_con_documentacion.xlsx`);
+
+      setShowExport(false);
+    } catch (e) {
+      alert(String(e?.message || e));
+    } finally {
+      setExportBusy(false);
+    }
   }
 
   // =========================
   // LOAD LIST + DOCS
   // =========================
+  async function collectExportDocs(idExpediente) {
+    const [
+      allDocs,
+      ciDocs,
+      ciAdicionalDocs,
+      docsDocumentacion,
+      docsDocumentacionFinal,
+      docsAvaluo,
+      docsInformePericial,
+      docsPlantilla,
+      docsNotifConformidad,
+    ] = await Promise.all([
+      getAllDocsOfExpediente(idExpediente),
+      loadDocsBySubcarpeta(idExpediente, "ci"),
+      loadDocsBySubcarpeta(idExpediente, "ci_adicional"),
+      loadDocsBySubcarpeta(idExpediente, "documentacion"),
+      loadDocsBySubcarpeta(idExpediente, "documentacion_final"),
+      loadDocsBySubcarpeta(idExpediente, "avaluo"),
+      loadDocsBySubcarpeta(idExpediente, "informe_pericial"),
+      loadDocsBySubcarpeta(idExpediente, "plantilla"),
+      loadDocsBySubcarpeta(idExpediente, "notif_conformidad"),
+    ]);
+
+    const ciFrente = findDocByKeywords(ciDocs, ["frente"]);
+    const ciDorso = findDocByKeywords(ciDocs, ["dorso", "reverso"]);
+    const ciAdicionalFrente = findDocByKeywords(ciAdicionalDocs, ["frente"]);
+    const ciAdicionalDorso = findDocByKeywords(ciAdicionalDocs, ["dorso", "reverso"]);
+
+    return {
+      allDocs,
+      docsDocumentacion,
+      docsDocumentacionFinal,
+      docsAvaluo,
+      docsInformePericial,
+      docsPlantilla,
+      docsNotifConformidad,
+      ciFrente: normalizeDocUrl(ciFrente),
+      ciDorso: normalizeDocUrl(ciDorso),
+      ciAdicionalFrente: normalizeDocUrl(ciAdicionalFrente),
+      ciAdicionalDorso: normalizeDocUrl(ciAdicionalDorso),
+    };
+  }
+
   const load = async (overrides = null) => {
     setLoading(true);
     try {
@@ -2038,11 +2450,22 @@ export default function Expedientes() {
               />
             </>
           )}
+
+          <Button
+            className="ms-2"
+            variant="outline-success"
+            onClick={() => setShowExport(true)}
+            disabled={!rows.length}
+          >
+            Exportar Excel
+          </Button>
+
           {canCreate && (
             <Button className="ms-2" onClick={openCrear}>
               Nuevo
             </Button>
           )}
+
           <Link
             className="btn btn-outline-success btn-sm ms-2"
             to={`/proyectos/${id}/gv-catastro`}
@@ -2262,7 +2685,7 @@ export default function Expedientes() {
 
       {/* =========================
           MODAL CRUD
-         ========================= */}
+        ========================= */}
       <Modal show={show} onHide={() => setShow(false)} size="xl" centered>
         <Modal.Header closeButton>
           <Modal.Title>
@@ -2578,7 +3001,7 @@ export default function Expedientes() {
 
           {/* =========================
               ✅ PARTE 2: Elaboración de carpetas
-             ========================= */}
+            ========================= */}
           <Row className="g-3">
             <div className="text-muted small">
               * El check es secuencial: no te deja marcar el siguiente si el anterior no está OK.
@@ -2960,7 +3383,7 @@ export default function Expedientes() {
 
           {/* =========================
               ✅ Carpeta DBI
-             ========================= */}
+            ========================= */}
           <Row className="g-3">
             <Col md={12}>
               <h5 className="mb-2">Carpeta DBI</h5>
@@ -3096,81 +3519,81 @@ export default function Expedientes() {
                     const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
                     if (!dbiIniciado) return null;
                     return (
-                    <div className="mt-3">
-                      <h6 className="mb-2">Agregar hito DBI</h6>
-                      {dbiEventoError && (
-                        <div className="text-danger small mb-2">{dbiEventoError}</div>
-                      )}
-                      <Row className="g-2 align-items-end">
-                        <Col md={4}>
-                          <Form.Group>
-                            <Form.Label>Estado</Form.Label>
-                            <Form.Select
-                              value={dbiEventoEstadoPreset}
-                              disabled={dbiEventoBusy}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setDbiEventoEstadoPreset(val);
-                                if (val !== "otro") setDbiEventoEstado("");
-                              }}
+                      <div className="mt-3">
+                        <h6 className="mb-2">Agregar hito DBI</h6>
+                        {dbiEventoError && (
+                          <div className="text-danger small mb-2">{dbiEventoError}</div>
+                        )}
+                        <Row className="g-2 align-items-end">
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Estado</Form.Label>
+                              <Form.Select
+                                value={dbiEventoEstadoPreset}
+                                disabled={dbiEventoBusy}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setDbiEventoEstadoPreset(val);
+                                  if (val !== "otro") setDbiEventoEstado("");
+                                }}
+                              >
+                                <option value="">Seleccioná un estado</option>
+                                <option value="ingresado">ingresado</option>
+                                <option value="devuelto">devuelto</option>
+                                <option value="reingresado">reingresado</option>
+                                <option value="aprobado">aprobado</option>
+                                <option value="observado">observado</option>
+                                <option value="rechazado">rechazado</option>
+                                <option value="otro">Otro / personalizado</option>
+                              </Form.Select>
+                            </Form.Group>
+                            {dbiEventoEstadoPreset === "otro" && (
+                              <Form.Control
+                                className="mt-2"
+                                value={dbiEventoEstado}
+                                disabled={dbiEventoBusy}
+                                onChange={(e) => setDbiEventoEstado(e.target.value)}
+                                placeholder="estado personalizado"
+                              />
+                            )}
+                          </Col>
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Fecha (opcional)</Form.Label>
+                              <Form.Control
+                                type="datetime-local"
+                                value={dbiEventoFecha}
+                                disabled={dbiEventoBusy}
+                                onChange={(e) => setDbiEventoFecha(e.target.value)}
+                              />
+                            </Form.Group>
+                          </Col>
+                          <Col md={4}>
+                            <Form.Group>
+                              <Form.Label>Observación (opcional)</Form.Label>
+                              <Form.Control
+                                value={dbiEventoObs}
+                                disabled={dbiEventoBusy}
+                                onChange={(e) => setDbiEventoObs(e.target.value)}
+                                placeholder="detalle..."
+                              />
+                            </Form.Group>
+                          </Col>
+                          <Col md={12} className="text-end">
+                            <Button
+                              variant="outline-success"
+                              disabled={
+                                dbiEventoBusy ||
+                                (!dbiEventoEstadoPreset &&
+                                  !dbiEventoEstado.trim())
+                              }
+                              onClick={agregarDbiEvento}
                             >
-                              <option value="">Seleccioná un estado</option>
-                              <option value="ingresado">ingresado</option>
-                              <option value="devuelto">devuelto</option>
-                              <option value="reingresado">reingresado</option>
-                              <option value="aprobado">aprobado</option>
-                              <option value="observado">observado</option>
-                              <option value="rechazado">rechazado</option>
-                              <option value="otro">Otro / personalizado</option>
-                            </Form.Select>
-                          </Form.Group>
-                          {dbiEventoEstadoPreset === "otro" && (
-                            <Form.Control
-                              className="mt-2"
-                              value={dbiEventoEstado}
-                              disabled={dbiEventoBusy}
-                              onChange={(e) => setDbiEventoEstado(e.target.value)}
-                              placeholder="estado personalizado"
-                            />
-                          )}
-                        </Col>
-                        <Col md={4}>
-                          <Form.Group>
-                            <Form.Label>Fecha (opcional)</Form.Label>
-                            <Form.Control
-                              type="datetime-local"
-                              value={dbiEventoFecha}
-                              disabled={dbiEventoBusy}
-                              onChange={(e) => setDbiEventoFecha(e.target.value)}
-                            />
-                          </Form.Group>
-                        </Col>
-                        <Col md={4}>
-                          <Form.Group>
-                            <Form.Label>Observación (opcional)</Form.Label>
-                            <Form.Control
-                              value={dbiEventoObs}
-                              disabled={dbiEventoBusy}
-                              onChange={(e) => setDbiEventoObs(e.target.value)}
-                              placeholder="detalle..."
-                            />
-                          </Form.Group>
-                        </Col>
-                        <Col md={12} className="text-end">
-                          <Button
-                            variant="outline-success"
-                            disabled={
-                              dbiEventoBusy ||
-                              (!dbiEventoEstadoPreset &&
-                                !dbiEventoEstado.trim())
-                            }
-                            onClick={agregarDbiEvento}
-                          >
-                            {dbiEventoBusy ? "Guardando..." : "Agregar hito"}
-                          </Button>
-                        </Col>
-                      </Row>
-                    </div>
+                              {dbiEventoBusy ? "Guardando..." : "Agregar hito"}
+                            </Button>
+                          </Col>
+                        </Row>
+                      </div>
                     );
                   })()}
                 </>
@@ -3182,7 +3605,7 @@ export default function Expedientes() {
 
           {/* =========================
               Documentos del expediente
-             ========================= */}
+            ========================= */}
           <Row className="g-3">
             <Col md={12}>
               <h6 className="mb-2">Documentos del expediente</h6>
@@ -3490,7 +3913,7 @@ export default function Expedientes() {
 
       {/* =========================
           MODAL DELETE TOTAL
-         ========================= */}
+        ========================= */}
       <Modal show={showDeleteModal} onHide={() => !deleteBusy && setShowDeleteModal(false)} centered>
         <Modal.Header closeButton={!deleteBusy}>
           <Modal.Title>Eliminar expediente definitivamente</Modal.Title>
@@ -3521,7 +3944,7 @@ export default function Expedientes() {
 
       {/* =========================
           MODAL IMPORT EXCEL
-         ========================= */}
+        ========================= */}
       <Modal show={showImport} onHide={() => setShowImport(false)} size="xl" centered>
         <Modal.Header closeButton>
           <Modal.Title>Importar Expedientes desde Excel</Modal.Title>
@@ -3620,33 +4043,45 @@ export default function Expedientes() {
                 <Form.Group className="mb-2" key={f.key}>
                   <Form.Label className="mb-1">{f.label}</Form.Label>
                   <Form.Select
-                    value={mapCols[f.key] || ""}
-                    onChange={(e) => setMapCols((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                    multiple={f.key === "documentos_urls"}
+                    value={
+                      f.key === "documentos_urls"
+                        ? Array.isArray(mapCols[f.key]) ? mapCols[f.key] : []
+                        : mapCols[f.key] || ""
+                    }
+                    onChange={(e) => {
+                      if (f.key === "documentos_urls") {
+                        const selected = Array.from(e.target.selectedOptions).map((opt) => opt.value);
+                        setMapCols((prev) => ({ ...prev, [f.key]: selected }));
+                      } else {
+                        setMapCols((prev) => ({ ...prev, [f.key]: e.target.value }));
+                      }
+                    }}
                   >
-                    <option value="">— No mapear —</option>
+                    {f.key !== "documentos_urls" && <option value="">— No mapear —</option>}
                     {excelColumns.map((c) => (
-                        <option key={`mapcol-${c.headerOriginal}-${c.index}`} value={c.headerOriginal}>
-                          {c.headerOriginal
-                            ? `${c.headerOriginal} (col ${c.index + 1})`
-                            : `(Sin encabezado) col ${c.index + 1}`}
-                        </option>
-                      ))}
+                      <option key={`mapcol-${c.headerOriginal}-${c.index}`} value={c.headerOriginal}>
+                        {c.headerOriginal
+                          ? `${c.headerOriginal} (col ${c.index + 1})`
+                          : `(Sin encabezado) col ${c.index + 1}`}
+                      </option>
+                    ))}
                   </Form.Select>
                 </Form.Group>
               ))}
 
-                <div className="text-muted small mt-2">
-                  Filas detectadas: <b>{excelRows.length}</b>
-                </div>
-                {excelWarnings.length > 0 && (
-                  <Alert variant="warning" className="mt-2 py-2">
-                    <ul className="mb-0">
-                      {excelWarnings.map((w, i) => (
-                        <li key={`warn-${i}`}>{w}</li>
-                      ))}
-                    </ul>
-                  </Alert>
-                )}
+              <div className="text-muted small mt-2">
+                Filas detectadas: <b>{excelRows.length}</b>
+              </div>
+              {excelWarnings.length > 0 && (
+                <Alert variant="warning" className="mt-2 py-2">
+                  <ul className="mb-0">
+                    {excelWarnings.map((w, i) => (
+                      <li key={`warn-${i}`}>{w}</li>
+                    ))}
+                  </ul>
+                </Alert>
+              )}
               <div className="text-muted small">
                 Tip: asegurá encabezados en la primera fila del Excel.
                 <br />
@@ -3660,25 +4095,25 @@ export default function Expedientes() {
                 <Table bordered size="sm" className="align-middle">
                   <thead>
                     <tr>
-                        {excelColumns.slice(0, 8).map((h) => (
-                          <th key={`prev-${h.headerOriginal}-${h.index}`}>
-                            {h.headerOriginal ? h.headerOriginal : "(Sin encabezado)"}{" "}
-                            <span className="text-muted">[{h.index + 1}]</span>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {excelPreview.map((r, idx) => (
-                        <tr key={idx}>
-                          {excelColumns.slice(0, 8).map((h) => {
-                            const key = h.headerOriginal || `__col_${h.index}`;
-                            return <td key={`prev-cell-${h.index}`}>{String(r[key] ?? "")}</td>;
-                          })}
-                        </tr>
+                      {excelColumns.slice(0, 8).map((h) => (
+                        <th key={`prev-${h.headerOriginal}-${h.index}`}>
+                          {h.headerOriginal ? h.headerOriginal : "(Sin encabezado)"}{" "}
+                          <span className="text-muted">[{h.index + 1}]</span>
+                        </th>
                       ))}
-                    </tbody>
-                  </Table>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {excelPreview.map((r, idx) => (
+                      <tr key={idx}>
+                        {excelColumns.slice(0, 8).map((h) => {
+                          const key = h.headerOriginal || `__col_${h.index}`;
+                          return <td key={`prev-cell-${h.index}`}>{String(r[key] ?? "")}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
               </div>
 
               <div className="mt-2 text-muted small">
@@ -3695,6 +4130,120 @@ export default function Expedientes() {
           <Button variant="primary" onClick={confirmarImport} disabled={importBusy}>
             {importBusy ? "Importando..." : "Confirmar importación"}
           </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* =========================
+          MODAL EXPORT EXCEL
+        ========================= */}
+      <Modal show={showExport} onHide={() => !exportBusy && setShowExport(false)} size="lg" centered>
+        <Modal.Header closeButton={!exportBusy}>
+          <Modal.Title>Exportar Excel con documentación</Modal.Title>
+        </Modal.Header>
+
+        <Modal.Body>
+          <Row className="g-3">
+            <Col md={6}>
+              <div className="border rounded p-3 h-100">
+                <div className="fw-bold mb-2">Columnas base</div>
+                {EXPORT_FIELDS.filter((f) => f.group === "base").map((f) => (
+                  <Form.Check
+                    key={f.key}
+                    type="checkbox"
+                    id={`exp-base-${f.key}`}
+                    label={f.label}
+                    checked={!!exportSelection[f.key]}
+                    onChange={(e) =>
+                      setExportSelection((prev) => ({
+                        ...prev,
+                        [f.key]: e.target.checked,
+                      }))
+                    }
+                    className="mb-2"
+                  />
+                ))}
+              </div>
+            </Col>
+
+            <Col md={6}>
+              <div className="border rounded p-3 h-100">
+                <div className="fw-bold mb-2">Documentación</div>
+                {EXPORT_FIELDS.filter((f) => f.group === "docs").map((f) => (
+                  <Form.Check
+                    key={f.key}
+                    type="checkbox"
+                    id={`exp-doc-${f.key}`}
+                    label={f.label}
+                    checked={!!exportSelection[f.key]}
+                    onChange={(e) =>
+                      setExportSelection((prev) => ({
+                        ...prev,
+                        [f.key]: e.target.checked,
+                      }))
+                    }
+                    className="mb-2"
+                  />
+                ))}
+              </div>
+            </Col>
+          </Row>
+        </Modal.Body>
+
+        <Modal.Footer className="d-flex justify-content-between flex-wrap gap-2">
+          <div className="d-flex gap-2 flex-wrap">
+            <Button
+              variant="outline-secondary"
+              disabled={exportBusy}
+              onClick={() => setExportSelection(DEFAULT_EXPORT_SELECTION)}
+            >
+              Restaurar sugeridas
+            </Button>
+
+            <Button
+              variant="outline-dark"
+              disabled={exportBusy}
+              onClick={() => {
+                const all = {};
+                EXPORT_FIELDS.forEach((f) => {
+                  all[f.key] = true;
+                });
+                setExportSelection(all);
+              }}
+            >
+              Marcar todo
+            </Button>
+
+            <Button
+              variant="outline-danger"
+              disabled={exportBusy}
+              onClick={() => {
+                const none = {};
+                EXPORT_FIELDS.forEach((f) => {
+                  none[f.key] = false;
+                });
+                setExportSelection(none);
+              }}
+            >
+              Limpiar
+            </Button>
+          </div>
+
+          <div className="d-flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={exportBusy}
+              onClick={() => setShowExport(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="success"
+              onClick={exportarExcelConDocumentacion}
+              disabled={exportBusy || !rows.length}
+            >
+              {exportBusy ? "Exportando..." : "Exportar"}
+            </Button>
+          </div>
         </Modal.Footer>
       </Modal>
     </div>

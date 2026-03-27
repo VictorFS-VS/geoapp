@@ -239,9 +239,22 @@ export const canAccessInformesPlantillas = (userArg = null) =>
  * Ya no deberían gobernar el acceso principal
  * ========================================================= */
 export const esAdmin = () => {
+  const user = getUser();
   const tipo = getTipoUsuario();
   const tipoToken = getTipoUsuarioFromToken();
-  return tipo === GROUPS.ADMIN || tipoToken === GROUPS.ADMIN;
+  const groupId = user?.group_id != null ? Number(user.group_id) : null;
+  const roleIds = Array.isArray(user?.role_ids)
+    ? user.role_ids.map((roleId) => Number(roleId))
+    : Array.isArray(user?.roleIds)
+      ? user.roleIds.map((roleId) => Number(roleId))
+      : [];
+
+  return (
+    tipo === GROUPS.ADMIN ||
+    tipoToken === GROUPS.ADMIN ||
+    groupId === GROUPS.ADMIN ||
+    roleIds.includes(GROUPS.ADMIN)
+  );
 };
 
 export const esAdminCliente = () => {
