@@ -1,648 +1,441 @@
-import React, { useEffect, useMemo, useState } from "react";
-import Modal from "@/components/Modal";
-import { Plus } from "lucide-react";
-import { Spinner } from "react-bootstrap";
-import { alerts } from "@/utils/alerts";
+"use strict";
 
-const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
-const API_URL = BASE.endsWith("/api") ? BASE : BASE + "/api";
+const pool = require("../db");
 
-/* =========================
-   Helpers: auth + errores
-   ========================= */
-const authHeaders = () => {
-  const t = localStorage.getItem("token");
-  return t ? { Authorization: `Bearer ${t}` } : {};
+/* ================= helpers ================= */
+
+const toNullableNumber = (value) =>
+  value === "" || value === null || typeof value === "undefined"
+    ? null
+    : Number(value);
+
+// Normalize any date input to "YYYY-MM-DD" or "" if missing
+const normalizeDateInput = (value) => {
+  if (value === "" || value === null || typeof value === "undefined") return "";
+
+  const s = String(value).trim();
+  const base = s.includes("T") ? s.split("T")[0] : s;
+
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(base)) {
+    const [d, m, y] = base.split("/");
+    return `${y}-${m}-${d}`;
+  }
+
+  return base;
 };
 
-async function parseJsonSafe(res) {
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) {
-    return res.json().catch(() => null);
+const toNullableDate = (value) => {
+  const norm = normalizeDateInput(value);
+  return norm === "" ? null : norm;
+};
+
+async function tableExists(fqn) {
+  const { rows } = await pool.query("SELECT to_regclass($1) AS oid", [fqn]);
+  return !!rows?.[0]?.oid;
+}
+
+function hasPerm(user, code) {
+  const perms = user?.perms || [];
+  return Array.isArray(perms) && perms.includes(code);
+}
+
+function isAdmin(user) {
+  const primary = Number(user?.tipo_usuario ?? user?.group_id ?? 0);
+  if (primary === 1) return true;
+  const roleIds = Array.isArray(user?.role_ids)
+    ? user.role_ids
+    : Array.isArray(user?.roleIds)
+      ? user.roleIds
+      : [];
+  return roleIds.some((id) => Number(id) === 1);
+}
+
+async function getClientesPermitidosRBAC(user = {}) {
+  const ids = new Set();
+
+  const idCliente = user.id_cliente ? parseInt(user.id_cliente, 10) : null;
+  const idConsultor = user.id_consultor ? parseInt(user.id_consultor, 10) : null;
+  const userId = user.id ? parseInt(user.id, 10) : null;
+
+  if (idCliente) ids.add(idCliente);
+
+  const tableAdmin = "ema.cliente_admin_miembro";
+  const tableCons = "ema.consultor_cliente_miembro";
+
+  if (hasPerm(user, "cartera.admin.read")) {
+    if (userId && (await tableExists(tableAdmin))) {
+      const rUser = await pool.query(
+        `SELECT miembro_id FROM ${tableAdmin} WHERE admin_id = $1`,
+        [userId]
+      );
+      (rUser.rows || []).forEach((r) => r.miembro_id && ids.add(Number(r.miembro_id)));
+    }
+    if (idCliente && (await tableExists(tableAdmin))) {
+      const rCliente = await pool.query(
+        `SELECT miembro_id FROM ${tableAdmin} WHERE admin_id = $1`,
+        [idCliente]
+      );
+      (rCliente.rows || []).forEach((r) => r.miembro_id && ids.add(Number(r.miembro_id)));
+    }
   }
-  const txt = await res.text().catch(() => "");
+
+  if (hasPerm(user, "cartera.consultor.read") && idConsultor && (await tableExists(tableCons))) {
+    const rCons = await pool.query(
+      `SELECT miembro_id FROM ${tableCons} WHERE consultor_id = $1`,
+      [idConsultor]
+    );
+    (rCons.rows || []).forEach((r) => r.miembro_id && ids.add(Number(r.miembro_id)));
+  }
+
+  return ids.size ? Array.from(ids) : [];
+}
+
+/** Validate proponente input: returns { ok, errores } */
+function validarProponenteInput(body) {
+  const errores = {};
+  const { cedularuc, nombre, apellido, email, fecha_nac, sexo, tipo_persona } = body;
+
+  if (!cedularuc || String(cedularuc).trim() === "") {
+    errores.cedularuc = "La cedula/RUC es obligatoria.";
+  } else if (!/^[0-9]{5,12}$/.test(String(cedularuc))) {
+    errores.cedularuc = "La cedula/RUC debe tener solo numeros (5 a 12 digitos).";
+  }
+
+  if (!nombre || String(nombre).trim() === "") {
+    errores.nombre = "El nombre es obligatorio.";
+  }
+
+  if (tipo_persona === "F" && (!apellido || String(apellido).trim() === "")) {
+    errores.apellido = "El apellido es obligatorio para persona fisica.";
+  }
+
+  if (!tipo_persona || !["F", "J"].includes(tipo_persona)) {
+    errores.tipo_persona = "Debe seleccionar Tipo de Persona (Fisica o Juridica).";
+  }
+
+  if (sexo && !["F", "M"].includes(sexo)) {
+    errores.sexo = "El sexo debe ser F (Femenino) o M (Masculino).";
+  }
+
+  if (fecha_nac && fecha_nac !== "") {
+    const f = normalizeDateInput(fecha_nac);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) {
+      errores.fecha_nac = "La fecha de nacimiento debe tener formato AAAA-MM-DD.";
+    }
+  }
+
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    errores.email = "El email no tiene un formato valido.";
+  }
+
+  return { ok: Object.keys(errores).length === 0, errores };
+}
+
+/* ================= controllers ================= */
+
+const obtenerProponentesDropdown = async (req, res) => {
   try {
-    return JSON.parse(txt);
-  } catch {
-    return txt ? { message: txt } : null;
+    const user = req.user || {};
+    let where = "";
+    let params = [];
+
+    if (!isAdmin(user)) {
+      const ids = await getClientesPermitidosRBAC(user);
+      if (!ids.length) return res.json({ data: [] });
+      where = "WHERE c.id_cliente = ANY($1::int[])";
+      params = [ids];
+    }
+
+    const q = `
+      SELECT
+        c.id_cliente AS id_proponente,
+        TRIM(CONCAT_WS(' ', c.nombre, c.apellido)) AS nombre
+      FROM ema.cliente c
+      ${where}
+      ORDER BY c.id_cliente
+    `;
+    const { rows } = await pool.query(q, params);
+    return res.json({ data: rows });
+  } catch (err) {
+    console.error("Error al obtener proponentes dropdown:", err);
+    return res.status(500).json({ error: "Error al obtener proponentes" });
   }
-}
+};
 
-function extractApiMessage(payload) {
-  if (!payload) return "";
-  if (typeof payload === "string") return payload;
-  return (
-    payload.detail ||
-    payload.message ||
-    payload.error ||
-    payload.msg ||
-    payload?.errors?.[0]?.message ||
-    ""
-  );
-}
+const obtenerProponentes = async (req, res) => {
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+  const offset = (page - 1) * limit;
+  const search = req.query.search || "";
 
-function niceMessageFromStatus(status, payload) {
-  const apiMsg = extractApiMessage(payload);
+  const user = req.user || {};
 
-  if (status === 400) return apiMsg || "Datos inválidos. Verifique los campos obligatorios.";
-  if (status === 401) return "Sesión expirada. Inicie sesión nuevamente.";
-  if (status === 403) return apiMsg || "No tiene permisos para realizar esta acción.";
-  if (status === 404) return apiMsg || "No encontrado.";
-  if (status === 409) {
-    return apiMsg || "Ya existe un registro duplicado.";
-  }
-  if (status === 422) return apiMsg || "Validación fallida. Revise los datos.";
-  if (status >= 500) return "Error del servidor. Intente nuevamente.";
-
-  return apiMsg || "Ocurrió un error inesperado.";
-}
-
-async function apiFetch(url, options = {}) {
-  const res = await fetch(url, options);
-
-  if (res.status === 401) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    window.location.replace("/login");
-    return { ok: false, status: 401, data: null, res };
-  }
-
-  const data = await parseJsonSafe(res);
-
-  return {
-    ok: res.ok,
-    status: res.status,
-    data,
-    res,
-  };
-}
-
-const toArray = (x) => (Array.isArray(x) ? x : x && Array.isArray(x.data) ? x.data : x ? [x] : []);
-
-/* =========================
-   Helpers permisos robustos
-   ========================= */
-function safeJsonParse(value, fallback = null) {
   try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
+    const filtros = [];
+    const valores = [];
 
-function decodeTokenPayload(token) {
+    if (search) {
+      filtros.push(
+        `(c.nombre ILIKE $${valores.length + 1} OR c.apellido ILIKE $${valores.length + 1} OR CAST(c.cedularuc AS TEXT) ILIKE $${valores.length + 1})`
+      );
+      valores.push(`%${search}%`);
+    }
+
+    if (!isAdmin(user)) {
+      const ids = await getClientesPermitidosRBAC(user);
+      if (!ids.length) {
+        return res.json({ data: [], page, totalPages: 1, totalItems: 0 });
+      }
+      filtros.push(`c.id_cliente = ANY($${valores.length + 1}::int[])`);
+      valores.push(ids);
+    }
+
+    const whereClause = filtros.length ? `WHERE ${filtros.join(" AND ")}` : "";
+
+    const totalQuery = `SELECT COUNT(*) FROM ema.cliente c ${whereClause}`;
+    const totalResult = await pool.query(totalQuery, valores);
+    const total = parseInt(totalResult.rows[0].count, 10) || 0;
+
+    const consultaPaginada = `
+      SELECT *
+      FROM ema.cliente c
+      ${whereClause}
+      ORDER BY id_cliente
+      LIMIT $${valores.length + 1} OFFSET $${valores.length + 2}
+    `;
+    const result = await pool.query(consultaPaginada, [...valores, limit, offset]);
+
+    res.json({
+      data: result.rows,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+      totalItems: total,
+    });
+  } catch (error) {
+    console.error("Error al obtener proponentes:", error);
+    res.status(500).json({ error: "Error al obtener proponentes" });
+  }
+};
+
+const obtenerProponentePorId = async (req, res) => {
+  const { id } = req.params;
+  const user = req.user || {};
+
   try {
-    const base64 = token?.split(".")?.[1];
-    if (!base64) return null;
-    return JSON.parse(atob(base64));
-  } catch {
-    return null;
-  }
-}
-
-function flattenPermissions(input) {
-  if (!input) return [];
-
-  // array de strings
-  if (Array.isArray(input)) {
-    return input
-      .flatMap((item) => flattenPermissions(item))
-      .filter(Boolean);
-  }
-
-  // string directo
-  if (typeof input === "string") {
-    return [input];
-  }
-
-  // objeto tipo { permiso: true/false }
-  if (typeof input === "object") {
-    // casos comunes
-    if (Array.isArray(input.permissions)) return flattenPermissions(input.permissions);
-    if (Array.isArray(input.permisos)) return flattenPermissions(input.permisos);
-    if (Array.isArray(input.perms)) return flattenPermissions(input.perms);
-
-    // si viene como mapa
-    return Object.entries(input)
-      .filter(([, val]) => !!val)
-      .map(([key]) => key);
-  }
-
-  return [];
-}
-
-function extractPermissions() {
-  const rawUser = localStorage.getItem("user");
-  const token = localStorage.getItem("token");
-
-  const user = rawUser ? safeJsonParse(rawUser, null) : null;
-  const tokenPayload = token ? decodeTokenPayload(token) : null;
-
-  const collected = [
-    ...(flattenPermissions(user?.permissions) || []),
-    ...(flattenPermissions(user?.permisos) || []),
-    ...(flattenPermissions(user?.perms) || []),
-    ...(flattenPermissions(user?.role_permissions) || []),
-    ...(flattenPermissions(tokenPayload?.permissions) || []),
-    ...(flattenPermissions(tokenPayload?.permisos) || []),
-    ...(flattenPermissions(tokenPayload?.perms) || []),
-  ];
-
-  return [...new Set(collected.filter(Boolean))];
-}
-
-export default function Proponentes() {
-  const [clientes, setClientes] = useState([]);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modo, setModo] = useState("crear");
-
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [search, setSearch] = useState("");
-
-  const [tipoUsuario, setTipoUsuario] = useState(null);
-  const [idCliente, setIdCliente] = useState(null);
-  const [permissions, setPermissions] = useState([]);
-
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-
-  const [formData, setFormData] = useState({
-    id_cliente: "",
-    cedularuc: "",
-    nombre: "",
-    apellido: "",
-    email: "",
-    fecha_nac: "",
-    sexo: "",
-    tipo_persona: "",
-    telefono: "",
-    direccion: "",
-    tipo_empresa: "",
-    nacionalidad: "",
-    rlegal_cedula: "",
-    rlegal_nombre: "",
-    rlegal_apellido: "",
-    rlegal_sexo: "",
-    dvi: "",
-  });
-
-  /* ---------- leer token + permisos ---------- */
-  useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1] || ""));
-        const tu = Number(payload?.tipo_usuario);
-        setTipoUsuario(Number.isFinite(tu) ? tu : null);
-        setIdCliente(payload?.id_cliente != null ? Number(payload.id_cliente) : null);
-      } catch {}
+    if (!isAdmin(user)) {
+      const ids = await getClientesPermitidosRBAC(user);
+      const idNum = parseInt(id, 10);
+      if (!ids.includes(idNum)) {
+        return res.status(403).json({ error: "Sin permiso para ver este proponente" });
+      }
     }
 
-    setPermissions(extractPermissions());
-  }, []);
-
-  const hasPerm = (perm) => {
-    // respaldo: si no hay permisos cargados, admin sigue pudiendo
-    if (permissions.includes(perm)) return true;
-    if (tipoUsuario === 1) return true;
-    return false;
-  };
-
-  const canCreate = hasPerm("proponentes.create");
-  const canEdit = hasPerm("proponentes.update");
-  const canDelete = hasPerm("proponentes.delete");
-  const canRead = hasPerm("proponentes.read");
-
-  /* ---------- cargar lista ---------- */
-  useEffect(() => {
-    if (tipoUsuario == null) return;
-    cargarClientes(page, search);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, tipoUsuario]);
-
-  async function cargarClientes(pagina = 1, filtro = "") {
-    try {
-      setLoading(true);
-
-      let url;
-      if (tipoUsuario === 9 || tipoUsuario === 10) {
-        if (!idCliente) {
-          setClientes([]);
-          setPage(1);
-          setTotalPages(1);
-          return;
-        }
-        url = `${API_URL}/proponentes/${idCliente}`;
-      } else {
-        url = `${API_URL}/proponentes?page=${pagina}&limit=10&search=${encodeURIComponent(filtro)}`;
-      }
-
-      const { ok, status, data } = await apiFetch(url, { headers: authHeaders() });
-      if (!ok) {
-        const msg = niceMessageFromStatus(status, data);
-        setClientes([]);
-        setPage(1);
-        setTotalPages(1);
-        alerts?.toast?.error ? alerts.toast.error(msg) : console.error(msg);
-        return;
-      }
-
-      if (tipoUsuario === 9 || tipoUsuario === 10) {
-        setClientes(toArray(data));
-        setPage(1);
-        setTotalPages(1);
-      } else {
-        setClientes(toArray(data));
-        setPage(data?.page || pagina || 1);
-        setTotalPages(data?.totalPages || 1);
-      }
-    } catch (err) {
-      console.error("Error al cargar clientes:", err);
-      setClientes([]);
-      setPage(1);
-      setTotalPages(1);
-      alerts?.toast?.error
-        ? alerts.toast.error("No se pudieron cargar los clientes (error de red).")
-        : console.error("No se pudieron cargar los clientes (error de red).");
-    } finally {
-      setLoading(false);
+    const result = await pool.query("SELECT * FROM ema.cliente WHERE id_cliente = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Proponente no encontrado" });
     }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error al obtener proponente:", error);
+    res.status(500).json({ error: "Error al obtener proponente" });
+  }
+};
+
+const crearProponente = async (req, res) => {
+  let {
+    cedularuc,
+    nombre,
+    apellido,
+    email,
+    fecha_nac,
+    sexo,
+    tipo_persona,
+    telefono,
+    direccion,
+    tipo_empresa,
+    nacionalidad,
+    rlegal_cedula,
+    rlegal_nombre,
+    rlegal_apellido,
+    rlegal_sexo,
+    dvi,
+  } = req.body;
+
+  const { ok, errores } = validarProponenteInput(req.body);
+  if (!ok) {
+    return res.status(400).json({ error: "Hay errores en el formulario.", fields: errores });
   }
 
-  /* ---------- modal / CRUD ---------- */
-  const abrirModal = (nuevoModo, c = null) => {
-    if (nuevoModo === "crear" && !canCreate) return;
-    if (nuevoModo === "editar" && !canEdit) return;
-    if (nuevoModo === "ver" && !canRead) return;
+  dvi = toNullableNumber(dvi);
+  rlegal_cedula = toNullableNumber(rlegal_cedula);
+  fecha_nac = toNullableDate(fecha_nac);
 
-    if (nuevoModo === "crear") {
-      setFormData({
-        id_cliente: "",
-        cedularuc: "",
-        nombre: "",
-        apellido: "",
-        email: "",
-        fecha_nac: "",
-        sexo: "",
-        tipo_persona: "",
-        telefono: "",
-        direccion: "",
-        tipo_empresa: "",
-        nacionalidad: "",
-        rlegal_cedula: "",
-        rlegal_nombre: "",
-        rlegal_apellido: "",
-        rlegal_sexo: "",
-        dvi: "",
-      });
-    } else if (c) {
-      const normalizado = Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v ?? ""]));
-      setFormData(normalizado);
+  try {
+    const query = `
+      INSERT INTO ema.cliente (
+        cedularuc, nombre, apellido, email, fecha_nac,
+        sexo, tipo_persona, telefono, direccion, tipo_empresa,
+        nacionalidad, rlegal_cedula, rlegal_nombre, rlegal_apellido,
+        rlegal_sexo, dvi
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13, $14,
+        $15, $16
+      )
+      RETURNING id_cliente
+    `;
+
+    const result = await pool.query(query, [
+      cedularuc,
+      nombre,
+      apellido,
+      email,
+      fecha_nac,
+      sexo,
+      tipo_persona,
+      telefono,
+      direccion,
+      tipo_empresa,
+      nacionalidad,
+      rlegal_cedula,
+      rlegal_nombre,
+      rlegal_apellido,
+      rlegal_sexo,
+      dvi,
+    ]);
+
+    const nuevoId = result.rows[0].id_cliente;
+
+    res.status(201).json({
+      success: true,
+      message: "Proponente creado correctamente",
+      id_cliente: nuevoId,
+    });
+  } catch (error) {
+    console.error("Error al crear proponente:", error);
+
+    if (error.code === "23505") {
+      return res.status(400).json({ error: "Ya existe un proponente con esa cedula/RUC." });
+    }
+    if (error.code === "22001") {
+      return res.status(400).json({ error: "Uno de los campos excede el tamano permitido." });
+    }
+    if (error.code === "22007") {
+      return res.status(400).json({ error: "La fecha tiene un formato invalido." });
+    }
+    if (error.code === "23502") {
+      return res.status(400).json({ error: "Un campo obligatorio no puede ser nulo." });
     }
 
-    setModo(nuevoModo);
-    setModalOpen(true);
-  };
+    res.status(500).json({ error: "Error al crear proponente" });
+  }
+};
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
+const actualizarProponente = async (req, res) => {
+  const { id } = req.params;
+  let {
+    cedularuc,
+    nombre,
+    apellido,
+    email,
+    fecha_nac,
+    sexo,
+    tipo_persona,
+    telefono,
+    direccion,
+    tipo_empresa,
+    nacionalidad,
+    rlegal_cedula,
+    rlegal_nombre,
+    rlegal_apellido,
+    rlegal_sexo,
+    dvi,
+  } = req.body;
 
-  const guardar = async () => {
-    const esEdicion = !!(formData.id_cliente && modo === "editar");
+  const { ok, errores } = validarProponenteInput(req.body);
+  if (!ok) {
+    return res.status(400).json({ error: "Hay errores en el formulario.", fields: errores });
+  }
 
-    if (!esEdicion && !canCreate) return;
-    if (esEdicion && !canEdit) return;
+  dvi = toNullableNumber(dvi);
+  rlegal_cedula = toNullableNumber(rlegal_cedula);
+  fecha_nac = toNullableDate(fecha_nac);
 
-    if (!formData.cedularuc || !formData.nombre || !formData.tipo_persona) {
-      alerts?.toast?.warning
-        ? alerts.toast.warning("Complete los obligatorios (Cédula/RUC, Nombre, Tipo Persona).")
-        : console.warn("Complete los obligatorios (Cédula/RUC, Nombre, Tipo Persona).");
-      return;
+  try {
+    const query = `
+      UPDATE ema.cliente SET
+        cedularuc=$1, nombre=$2, apellido=$3, email=$4, fecha_nac=$5,
+        sexo=$6, tipo_persona=$7, telefono=$8, direccion=$9, tipo_empresa=$10,
+        nacionalidad=$11, rlegal_cedula=$12, rlegal_nombre=$13, rlegal_apellido=$14,
+        rlegal_sexo=$15, dvi=$16
+      WHERE id_cliente = $17
+    `;
+
+    const result = await pool.query(query, [
+      cedularuc,
+      nombre,
+      apellido,
+      email,
+      fecha_nac,
+      sexo,
+      tipo_persona,
+      telefono,
+      direccion,
+      tipo_empresa,
+      nacionalidad,
+      rlegal_cedula,
+      rlegal_nombre,
+      rlegal_apellido,
+      rlegal_sexo,
+      dvi,
+      id,
+    ]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Proponente no encontrado" });
     }
 
-    const datosLimpios = {
-      ...formData,
-      id_cliente: formData.id_cliente === "" ? null : parseInt(formData.id_cliente, 10),
-      dvi: formData.dvi === "" ? null : parseInt(formData.dvi, 10),
-      fecha_nac: formData.fecha_nac === "" ? null : formData.fecha_nac,
-      rlegal_cedula: formData.rlegal_cedula === "" ? null : parseInt(formData.rlegal_cedula, 10),
-      telefono: formData.telefono === "" ? null : parseInt(formData.telefono, 10),
-      cedularuc: formData.cedularuc === "" ? null : parseInt(formData.cedularuc, 10),
-    };
+    res.json({ success: true, message: "Proponente actualizado correctamente" });
+  } catch (error) {
+    console.error("Error al actualizar proponente:", error);
 
-    const url = esEdicion ? `${API_URL}/proponentes/${formData.id_cliente}` : `${API_URL}/proponentes`;
-    const method = esEdicion ? "PUT" : "POST";
-
-    try {
-      setSaving(true);
-
-      const { ok, status, data } = await apiFetch(url, {
-        method,
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(datosLimpios),
-      });
-
-      if (!ok) {
-        const msg = niceMessageFromStatus(status, data);
-
-        const detail = extractApiMessage(data);
-        const pareceSecuencia = /id_cliente\)=\(/i.test(detail) || /cliente_pk/i.test(detail);
-        const extra =
-          status === 409 && pareceSecuencia
-            ? " (Si pasa aun sin tocar ID, revisá la SECUENCIA del id_cliente en PostgreSQL)."
-            : "";
-
-        alerts?.toast?.error ? alerts.toast.error(msg + extra) : console.error(msg + extra);
-        return;
-      }
-
-      setModalOpen(false);
-      alerts?.toast?.success
-        ? alerts.toast.success(esEdicion ? "Cliente actualizado correctamente." : "Cliente creado correctamente.")
-        : console.info(esEdicion ? "Cliente actualizado correctamente." : "Cliente creado correctamente.");
-
-      cargarClientes(page, search);
-    } catch (e) {
-      console.error(e);
-      alerts?.toast?.error
-        ? alerts.toast.error("Error de red al guardar cliente.")
-        : console.error("Error de red al guardar cliente.");
-    } finally {
-      setSaving(false);
+    if (error.code === "23505") {
+      return res.status(400).json({ error: "Ya existe un proponente con esa cedula/RUC." });
     }
-  };
-
-  const eliminar = async (id) => {
-    if (!canDelete) return;
-    if (!window.confirm("¿Eliminar este cliente?")) return;
-
-    try {
-      setDeletingId(id);
-
-      const { ok, status, data } = await apiFetch(`${API_URL}/proponentes/${id}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-
-      if (!ok) {
-        const msg = niceMessageFromStatus(status, data);
-        alerts?.toast?.error ? alerts.toast.error(msg) : console.error(msg);
-        return;
-      }
-
-      alerts?.toast?.success
-        ? alerts.toast.success("Cliente eliminado correctamente.")
-        : console.info("Cliente eliminado correctamente.");
-
-      cargarClientes(page, search);
-    } catch (e) {
-      console.error(e);
-      alerts?.toast?.error
-        ? alerts.toast.error("Error de red al eliminar cliente.")
-        : console.error("Error de red al eliminar cliente.");
-    } finally {
-      setDeletingId(null);
+    if (error.code === "22001") {
+      return res.status(400).json({ error: "Uno de los campos excede el tamano permitido." });
     }
-  };
+    if (error.code === "22007") {
+      return res.status(400).json({ error: "La fecha tiene un formato invalido." });
+    }
+    if (error.code === "23502") {
+      return res.status(400).json({ error: "Un campo obligatorio no puede ser nulo." });
+    }
 
-  const handleBuscar = (e) => {
-    setSearch(e.target.value);
-    setPage(1);
-  };
+    res.status(500).json({ error: "Error al actualizar proponente" });
+  }
+};
 
-  const obtenerEtiqueta = (campo, valor) => {
-    if (valor === "") return "Seleccione…";
-    const etiquetas = {
-      sexo: { F: "Femenino", M: "Masculino" },
-      rlegal_sexo: { F: "Femenino", M: "Masculino" },
-      tipo_persona: { F: "Física", J: "Jurídica" },
-      tipo_empresa: { P: "Pública", R: "Privada" },
-    };
-    return etiquetas[campo]?.[valor] || valor;
-  };
+const eliminarProponente = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query("DELETE FROM ema.cliente WHERE id_cliente = $1", [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Proponente no encontrado" });
+    }
+    res.json({ success: true, message: "Proponente eliminado correctamente" });
+  } catch (error) {
+    console.error("Error al eliminar proponente:", error);
+    res.status(500).json({ error: "Error al eliminar proponente" });
+  }
+};
 
-  const esSoloFicha = tipoUsuario === 9 || tipoUsuario === 10;
-
-  const modalTitle = useMemo(() => {
-    if (modo === "crear") return "Nuevo Cliente";
-    if (modo === "editar") return "Editar Cliente";
-    return "Ver Cliente";
-  }, [modo]);
-
-  return (
-    <div className="container py-3">
-      <div className="pc-header">
-        <div>
-          <h2 className="pc-title">Clientes</h2>
-        </div>
-
-        <div className="pc-actions">
-          {canCreate && (
-            <button className="pc-btn pc-btn-blue" onClick={() => abrirModal("crear")}>
-              <Plus className="ico" /> Crear Cliente
-            </button>
-          )}
-        </div>
-      </div>
-
-      {!esSoloFicha && (
-        <div className="mb-3">
-          <input
-            type="text"
-            className="form-control"
-            placeholder="Buscar por nombre, apellido o RUC..."
-            value={search}
-            onChange={handleBuscar}
-          />
-        </div>
-      )}
-
-      <table className="table table-bordered table-hover">
-        <thead className="table-primary">
-          <tr>
-            <th>Nombre</th>
-            <th>Apellido</th>
-            <th>RUC/Cédula</th>
-            <th>Tipo Persona</th>
-            <th style={{ width: 240 }}>Acciones</th>
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr>
-              <td colSpan={5} className="text-center">
-                <Spinner animation="border" size="sm" className="me-2" />
-                Cargando…
-              </td>
-            </tr>
-          ) : clientes.length === 0 ? (
-            <tr>
-              <td colSpan={5} className="text-center">
-                Sin resultados
-              </td>
-            </tr>
-          ) : (
-            clientes.map((c, index) => (
-              <tr key={c.id_cliente ?? `cliente-${index}`}>
-                <td>{c.nombre}</td>
-                <td>{c.apellido}</td>
-                <td>{c.cedularuc}</td>
-                <td>{obtenerEtiqueta("tipo_persona", c.tipo_persona)}</td>
-                <td>
-                  <div className="btn-group btn-group-sm">
-                    {canEdit && (
-                      <button
-                        className="btn btn-warning"
-                        onClick={() => abrirModal("editar", c)}
-                        disabled={deletingId === c.id_cliente}
-                      >
-                        Editar
-                      </button>
-                    )}
-
-                    {canDelete && (
-                      <button
-                        className="btn btn-danger"
-                        onClick={() => eliminar(c.id_cliente)}
-                        disabled={deletingId === c.id_cliente}
-                      >
-                        {deletingId === c.id_cliente ? (
-                          <>
-                            <Spinner animation="border" size="sm" className="me-1" />
-                            Eliminando…
-                          </>
-                        ) : (
-                          "Eliminar"
-                        )}
-                      </button>
-                    )}
-
-                    {canRead && (
-                      <button
-                        className="btn btn-info text-white"
-                        onClick={() => abrirModal("ver", c)}
-                        disabled={deletingId === c.id_cliente}
-                      >
-                        Ver
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      {!esSoloFicha && (
-        <div className="d-flex justify-content-between align-items-center mt-3">
-          <span>
-            Página {page} de {totalPages}
-          </span>
-          <div className="btn-group">
-            <button
-              className="btn btn-outline-primary"
-              disabled={page === 1 || loading}
-              onClick={() => setPage(page - 1)}
-            >
-              ◀ Anterior
-            </button>
-            <button
-              className="btn btn-outline-primary"
-              disabled={page === totalPages || loading}
-              onClick={() => setPage(page + 1)}
-            >
-              Siguiente ▶
-            </button>
-          </div>
-        </div>
-      )}
-
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={modalTitle}>
-        <div className="row g-3">
-          {[
-            { label: "Cédula o RUC", name: "cedularuc" },
-            { label: "Nombre", name: "nombre" },
-            { label: "Apellido", name: "apellido" },
-            { label: "Email", name: "email" },
-            { label: "Fecha de Nacimiento", name: "fecha_nac", type: "date" },
-            { label: "Sexo", name: "sexo", type: "select", options: ["", "F", "M"] },
-            { label: "Tipo Persona", name: "tipo_persona", type: "select", options: ["", "F", "J"] },
-            { label: "Teléfono", name: "telefono" },
-            { label: "Dirección", name: "direccion" },
-            { label: "Tipo Empresa", name: "tipo_empresa", type: "select", options: ["", "P", "R"] },
-            { label: "Nacionalidad", name: "nacionalidad" },
-            { label: "CI R. Legal", name: "rlegal_cedula" },
-            { label: "Nombre R. Legal", name: "rlegal_nombre" },
-            { label: "Apellido R. Legal", name: "rlegal_apellido" },
-            { label: "Sexo R. Legal", name: "rlegal_sexo", type: "select", options: ["", "F", "M"] },
-          ].map((field, i) => (
-            <div className="col-md-6" key={i}>
-              <label className="form-label">{field.label}</label>
-
-              {field.type === "select" ? (
-                <select
-                  name={field.name}
-                  className="form-select"
-                  value={formData[field.name]}
-                  onChange={handleChange}
-                  disabled={
-                    modo === "ver" ||
-                    saving ||
-                    (modo === "crear" && !canCreate) ||
-                    (modo === "editar" && !canEdit)
-                  }
-                >
-                  {field.options.map((opt, j) => (
-                    <option key={j} value={opt}>
-                      {obtenerEtiqueta(field.name, opt)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type={field.type || "text"}
-                  name={field.name}
-                  className="form-control"
-                  value={
-                    field.type === "date"
-                      ? formData[field.name]
-                        ? String(formData[field.name]).split("T")[0]
-                        : ""
-                      : formData[field.name]
-                  }
-                  onChange={handleChange}
-                  disabled={
-                    modo === "ver" ||
-                    saving ||
-                    (modo === "crear" && !canCreate) ||
-                    (modo === "editar" && !canEdit)
-                  }
-                />
-              )}
-            </div>
-          ))}
-
-          {modo !== "ver" && ((modo === "crear" && canCreate) || (modo === "editar" && canEdit)) && (
-            <div className="col-12 text-end">
-              <button className="btn btn-primary" onClick={guardar} disabled={saving}>
-                {saving ? (
-                  <>
-                    <Spinner animation="border" size="sm" className="me-2" />
-                    Guardando…
-                  </>
-                ) : (
-                  "Guardar"
-                )}
-              </button>
-            </div>
-          )}
-        </div>
-      </Modal>
-    </div>
-  );
-}
+module.exports = {
+  obtenerProponentesDropdown,
+  obtenerProponentes,
+  obtenerProponentePorId,
+  crearProponente,
+  actualizarProponente,
+  eliminarProponente,
+};
