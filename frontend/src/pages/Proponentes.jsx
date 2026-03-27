@@ -1,4 +1,3 @@
-// src/pages/Proponentes.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import Modal from "@/components/Modal";
 import { Plus } from "lucide-react";
@@ -22,7 +21,6 @@ async function parseJsonSafe(res) {
     return res.json().catch(() => null);
   }
   const txt = await res.text().catch(() => "");
-  // si el backend devolvió texto con JSON (pasa a veces)
   try {
     return JSON.parse(txt);
   } catch {
@@ -50,11 +48,7 @@ function niceMessageFromStatus(status, payload) {
   if (status === 401) return "Sesión expirada. Inicie sesión nuevamente.";
   if (status === 403) return apiMsg || "No tiene permisos para realizar esta acción.";
   if (status === 404) return apiMsg || "No encontrado.";
-  if (status === 409) {
-    // duplicados: PG 23505 manejado en backend
-    // ejemplo: 'Ya existe la llave (id_cliente)=(29).'
-    return apiMsg || "Ya existe un registro duplicado.";
-  }
+  if (status === 409) return apiMsg || "Ya existe un registro duplicado.";
   if (status === 422) return apiMsg || "Validación fallida. Revise los datos.";
   if (status >= 500) return "Error del servidor. Intente nuevamente.";
 
@@ -64,7 +58,6 @@ function niceMessageFromStatus(status, payload) {
 async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
 
-  // 401: redirigir
   if (res.status === 401) {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
@@ -84,6 +77,60 @@ async function apiFetch(url, options = {}) {
 
 const toArray = (x) => (Array.isArray(x) ? x : x && Array.isArray(x.data) ? x.data : x ? [x] : []);
 
+/* =========================
+   Helpers permisos
+   ========================= */
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function decodeTokenPayload(token) {
+  try {
+    const base64 = token?.split(".")?.[1];
+    if (!base64) return null;
+    return JSON.parse(atob(base64));
+  } catch {
+    return null;
+  }
+}
+
+function extractPerms() {
+  const rawUser = localStorage.getItem("user");
+  const token = localStorage.getItem("token");
+
+  const user = rawUser ? safeJsonParse(rawUser, null) : null;
+  const tokenPayload = token ? decodeTokenPayload(token) : null;
+
+  const permsFromUser = Array.isArray(user?.perms) ? user.perms : [];
+  const permsFromToken = Array.isArray(tokenPayload?.perms) ? tokenPayload.perms : [];
+
+  return [...new Set([...permsFromUser, ...permsFromToken].filter(Boolean))];
+}
+
+const emptyForm = {
+  id_cliente: "",
+  cedularuc: "",
+  nombre: "",
+  apellido: "",
+  email: "",
+  fecha_nac: "",
+  sexo: "",
+  tipo_persona: "",
+  telefono: "",
+  direccion: "",
+  tipo_empresa: "",
+  nacionalidad: "",
+  rlegal_cedula: "",
+  rlegal_nombre: "",
+  rlegal_apellido: "",
+  rlegal_sexo: "",
+  dvi: "",
+};
+
 export default function Proponentes() {
   const [clientes, setClientes] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -95,30 +142,13 @@ export default function Proponentes() {
 
   const [tipoUsuario, setTipoUsuario] = useState(null);
   const [idCliente, setIdCliente] = useState(null);
+  const [perms, setPerms] = useState([]);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
 
-  const [formData, setFormData] = useState({
-    id_cliente: "",
-    cedularuc: "",
-    nombre: "",
-    apellido: "",
-    email: "",
-    fecha_nac: "",
-    sexo: "",
-    tipo_persona: "",
-    telefono: "",
-    direccion: "",
-    tipo_empresa: "",
-    nacionalidad: "",
-    rlegal_cedula: "",
-    rlegal_nombre: "",
-    rlegal_apellido: "",
-    rlegal_sexo: "",
-    dvi: "",
-  });
+  const [formData, setFormData] = useState(emptyForm);
 
   /* ---------- leer token ---------- */
   useEffect(() => {
@@ -131,7 +161,16 @@ export default function Proponentes() {
         setIdCliente(payload?.id_cliente != null ? Number(payload.id_cliente) : null);
       } catch {}
     }
+
+    setPerms(extractPerms());
   }, []);
+
+  const hasPerm = (perm) => perms.includes(perm) || tipoUsuario === 1;
+
+  const canCreate = hasPerm("proponentes.create");
+  const canEdit = hasPerm("proponentes.update");
+  const canDelete = hasPerm("proponentes.delete");
+  const canRead = hasPerm("proponentes.read");
 
   /* ---------- cargar lista ---------- */
   useEffect(() => {
@@ -191,31 +230,15 @@ export default function Proponentes() {
 
   /* ---------- modal / CRUD ---------- */
   const abrirModal = (nuevoModo, c = null) => {
-    if ((nuevoModo === "crear" || nuevoModo === "editar") && tipoUsuario !== 1) return;
+    if (nuevoModo === "crear" && !canCreate) return;
+    if (nuevoModo === "editar" && !canEdit) return;
+    if (nuevoModo === "ver" && !canRead) return;
 
     if (nuevoModo === "crear") {
-      setFormData({
-        id_cliente: "",
-        cedularuc: "",
-        nombre: "",
-        apellido: "",
-        email: "",
-        fecha_nac: "",
-        sexo: "",
-        tipo_persona: "",
-        telefono: "",
-        direccion: "",
-        tipo_empresa: "",
-        nacionalidad: "",
-        rlegal_cedula: "",
-        rlegal_nombre: "",
-        rlegal_apellido: "",
-        rlegal_sexo: "",
-        dvi: "",
-      });
+      setFormData(emptyForm);
     } else if (c) {
       const normalizado = Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v ?? ""]));
-      setFormData(normalizado);
+      setFormData({ ...emptyForm, ...normalizado });
     }
 
     setModo(nuevoModo);
@@ -228,7 +251,10 @@ export default function Proponentes() {
   };
 
   const guardar = async () => {
-    if (tipoUsuario !== 1) return;
+    const esEdicion = !!(formData.id_cliente && modo === "editar");
+
+    if (!esEdicion && !canCreate) return;
+    if (esEdicion && !canEdit) return;
 
     if (!formData.cedularuc || !formData.nombre || !formData.tipo_persona) {
       alerts?.toast?.warning
@@ -247,7 +273,6 @@ export default function Proponentes() {
       cedularuc: formData.cedularuc === "" ? null : parseInt(formData.cedularuc, 10),
     };
 
-    const esEdicion = !!(formData.id_cliente && modo === "editar");
     const url = esEdicion ? `${API_URL}/proponentes/${formData.id_cliente}` : `${API_URL}/proponentes`;
     const method = esEdicion ? "PUT" : "POST";
 
@@ -262,8 +287,6 @@ export default function Proponentes() {
 
       if (!ok) {
         const msg = niceMessageFromStatus(status, data);
-
-        // 🎯 Mensaje extra para el caso típico de secuencia desincronizada
         const detail = extractApiMessage(data);
         const pareceSecuencia = /id_cliente\)=\(/i.test(detail) || /cliente_pk/i.test(detail);
         const extra =
@@ -292,7 +315,7 @@ export default function Proponentes() {
   };
 
   const eliminar = async (id) => {
-    if (tipoUsuario !== 1) return;
+    if (!canDelete) return;
     if (!window.confirm("¿Eliminar este cliente?")) return;
 
     try {
@@ -356,7 +379,7 @@ export default function Proponentes() {
         </div>
 
         <div className="pc-actions">
-          {tipoUsuario === 1 && (
+          {canCreate && (
             <button className="pc-btn pc-btn-blue" onClick={() => abrirModal("crear")}>
               <Plus className="ico" /> Crear Cliente
             </button>
@@ -409,7 +432,7 @@ export default function Proponentes() {
                 <td>{obtenerEtiqueta("tipo_persona", c.tipo_persona)}</td>
                 <td>
                   <div className="btn-group btn-group-sm">
-                    {tipoUsuario === 1 && (
+                    {canEdit && (
                       <button
                         className="btn btn-warning"
                         onClick={() => abrirModal("editar", c)}
@@ -418,7 +441,8 @@ export default function Proponentes() {
                         Editar
                       </button>
                     )}
-                    {tipoUsuario === 1 && (
+
+                    {canDelete && (
                       <button
                         className="btn btn-danger"
                         onClick={() => eliminar(c.id_cliente)}
@@ -434,13 +458,16 @@ export default function Proponentes() {
                         )}
                       </button>
                     )}
-                    <button
-                      className="btn btn-info text-white"
-                      onClick={() => abrirModal("ver", c)}
-                      disabled={deletingId === c.id_cliente}
-                    >
-                      Ver
-                    </button>
+
+                    {canRead && (
+                      <button
+                        className="btn btn-info text-white"
+                        onClick={() => abrirModal("ver", c)}
+                        disabled={deletingId === c.id_cliente}
+                      >
+                        Ver
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -501,7 +528,12 @@ export default function Proponentes() {
                   className="form-select"
                   value={formData[field.name]}
                   onChange={handleChange}
-                  disabled={modo === "ver" || tipoUsuario !== 1 || saving}
+                  disabled={
+                    modo === "ver" ||
+                    saving ||
+                    (modo === "crear" && !canCreate) ||
+                    (modo === "editar" && !canEdit)
+                  }
                 >
                   {field.options.map((opt, j) => (
                     <option key={j} value={opt}>
@@ -522,13 +554,18 @@ export default function Proponentes() {
                       : formData[field.name]
                   }
                   onChange={handleChange}
-                  disabled={modo === "ver" || tipoUsuario !== 1 || saving}
+                  disabled={
+                    modo === "ver" ||
+                    saving ||
+                    (modo === "crear" && !canCreate) ||
+                    (modo === "editar" && !canEdit)
+                  }
                 />
               )}
             </div>
           ))}
 
-          {modo !== "ver" && tipoUsuario === 1 && (
+          {modo !== "ver" && ((modo === "crear" && canCreate) || (modo === "editar" && canEdit)) && (
             <div className="col-12 text-end">
               <button className="btn btn-primary" onClick={guardar} disabled={saving}>
                 {saving ? (
