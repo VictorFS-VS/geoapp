@@ -270,7 +270,7 @@ const ProjectHomePage = () => {
                           className="ph-card-cta ph-card-cta--primary"
                           onClick={() => navigate(`/dashboardinformes?id_proyecto=${effectiveProjectId}`)}
                         >
-                          Explorar analisis y mapas <span aria-hidden="true">-></span>
+                          Explorar analisis y mapas <span aria-hidden="true">&rarr;</span>
                         </button>
                         <span className="ph-card-cta-note">Analiza distribucion y mapas</span>
                       </div>
@@ -291,7 +291,7 @@ const ProjectHomePage = () => {
                           className="ph-card-cta ph-card-cta--primary"
                           onClick={() => navigate(`/proyectos/${effectiveProjectId}/expedientes`)}
                         >
-                          Explorar expedientes y mapa <span aria-hidden="true">-></span>
+                          Explorar expedientes y mapa <span aria-hidden="true">&rarr;</span>
                         </button>
                         <span className="ph-card-cta-note">Visualiza ubicacion y estado</span>
                       </div>
