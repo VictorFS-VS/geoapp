@@ -1880,6 +1880,11 @@ export default function InformeBuilder() {
       return;
     }
 
+    if (!shareForm.id_proyecto) {
+      toastWarn("Debés seleccionar un proyecto antes de crear el link");
+      return;
+    }
+
     if (!shareForm.expira_en_local) {
       toastWarn("Elegí una fecha/hora de expiración");
       return;
@@ -1900,7 +1905,7 @@ export default function InformeBuilder() {
     try {
       const payload = {
         id_plantilla: Number(plantillaSelId),
-        id_proyecto: shareForm.id_proyecto ? Number(shareForm.id_proyecto) : null,
+        id_proyecto: Number(shareForm.id_proyecto), // ← ahora obligatorio
         titulo: shareForm.titulo?.trim() ? shareForm.titulo.trim() : null,
         expira_en: exp.toISOString(),
         max_envios: shareForm.max_envios ? Number(shareForm.max_envios) : null,
@@ -2372,7 +2377,7 @@ export default function InformeBuilder() {
                         value={shareForm.id_proyecto ?? ""}
                         onChange={(e) => setShareForm((s) => ({ ...s, id_proyecto: e.target.value }))}
                       >
-                        <option value="">(Sin proyecto)</option>
+                        <option value="">Seleccione un proyecto</option>
                         {(proyectos || []).map((p) => (
                           <option key={p.id} value={String(p.id)}>
                             {p.codigo ? `${p.codigo} - ` : ""}

@@ -1613,23 +1613,28 @@ exports.importExcel = async (req, res) => {
 
   function isNonSignificant(v) {
     if (v === null || v === undefined) return true;
+    if (Array.isArray(v)) return v.length === 0;
     const s = String(v).trim();
     if (!s) return true;
     return /^0+$/.test(s);
   }
 
   function normalizeSignificant(v) {
+    if (Array.isArray(v)) {
+      return v
+        .map((x) => String(x ?? "").trim())
+        .filter(Boolean);
+    }
     return isNonSignificant(v) ? null : String(v).trim();
   }
 
   function normalizeImportDateDefensive(raw) {
     if (raw === null || raw === undefined || raw === "") return null;
-    
+
     const str = String(raw).trim();
-    // 1. Ya tiene formato YYYY-MM-DD
+
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
 
-    // 2. Serial numérico Excel
     const num = Number(raw);
     if (Number.isFinite(num) && num > 30000 && num < 80000) {
       const ms = Math.round((Math.floor(num) - 25569) * 86400 * 1000);
@@ -1639,17 +1644,14 @@ exports.importExcel = async (req, res) => {
       }
     }
 
-    // 3. String fecha razonable (ISO string o nativo de JS)
     const dStr = new Date(str);
     if (!Number.isNaN(dStr.getTime())) {
-      // evitamos falsos positivos extrayendo UTC year
       const y = dStr.getUTCFullYear();
       if (y > 1900 && y < 2100) {
         return dStr.toISOString().split("T")[0];
       }
     }
 
-    // 4. Texto DD/MM/YYYY o DD-MM-YYYY
     const m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
     if (m) {
       const d = parseInt(m[1], 10);
@@ -1660,8 +1662,23 @@ exports.importExcel = async (req, res) => {
       }
     }
 
-    // Si nada matcheó, retornar null para que el pipeline lo rechace (comportamiento actual)
     return null;
+  }
+
+  function normalizeUrlsField(raw) {
+    if (Array.isArray(raw)) {
+      return raw
+        .map((x) => String(x ?? "").trim())
+        .filter(Boolean);
+    }
+
+    const s = String(raw ?? "").trim();
+    if (!s) return [];
+
+    return s
+      .split(/\r?\n|;|,|\|/g)
+      .map((x) => String(x ?? "").trim())
+      .filter(Boolean);
   }
 
   const normalized = rows.map((r, idx) => ({
@@ -1679,10 +1696,15 @@ exports.importExcel = async (req, res) => {
     id_import: normalizeSignificant(r.id_import ?? r.id_informe),
     tramo: cleanStr(r.tramo),
     subtramo: cleanStr(r.subtramo),
+
     ci_propietario_frente_url: normalizeSignificant(r.ci_propietario_frente_url),
     ci_propietario_dorso_url: normalizeSignificant(r.ci_propietario_dorso_url),
     ci_adicional_frente_url: normalizeSignificant(r.ci_adicional_frente_url),
     ci_adicional_dorso_url: normalizeSignificant(r.ci_adicional_dorso_url),
+
+    // ✅ NUEVO: documentos desde Excel
+    documentos_urls: normalizeUrlsField(r.documentos_urls),
+    documentos_subcarpeta: cleanStr(r.documentos_subcarpeta) || "documentacion",
   }));
 
   const client = await pool.connect();
@@ -1796,7 +1818,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "ambiguous_tramo",
-          message: "Tramo ambiguo (m\u00e1s de una coincidencia)",
+          message: "Tramo ambiguo (más de una coincidencia)",
           value: rawTramo,
         });
       } else if (tramoMatches.length === 1) {
@@ -1805,7 +1827,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "unresolved_tramo",
-          message: "Tramo no resuelto en cat\u00e1logo",
+          message: "Tramo no resuelto en catálogo",
           value: rawTramo,
         });
       }
@@ -1814,7 +1836,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "ambiguous_subtramo",
-          message: "Subtramo ambiguo (m\u00e1s de una coincidencia)",
+          message: "Subtramo ambiguo (más de una coincidencia)",
           value: rawSubtramo,
         });
       } else if (subMatches.length === 1) {
@@ -1823,7 +1845,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "unresolved_subtramo",
-          message: "Subtramo no resuelto en cat\u00e1logo",
+          message: "Subtramo no resuelto en catálogo",
           value: rawSubtramo,
         });
       }
@@ -1834,7 +1856,7 @@ exports.importExcel = async (req, res) => {
           warnings.push({
             row: rowIndex,
             type: "corrected_hierarchy",
-            message: "Subtramo descartado por inconsistencia jer\u00e1rquica. Se conserva solo el tramo.",
+            message: "Subtramo descartado por inconsistencia jerárquica. Se conserva solo el tramo.",
             value: { tramo: rawTramo, subtramo: rawSubtramo },
           });
           subResolved = null;
@@ -1854,7 +1876,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "corrected_hierarchy",
-          message: "Subtramo descartado por inconsistencia jer\u00e1rquica. Se conserva el tramo textual sin ID de subtramo.",
+          message: "Subtramo descartado por inconsistencia jerárquica. Se conserva el tramo textual sin ID de subtramo.",
           value: { tramo: rawTramo, subtramo: rawSubtramo },
         });
         subResolved = null;
@@ -1868,7 +1890,7 @@ exports.importExcel = async (req, res) => {
         warnings.push({
           row: rowIndex,
           type: "unresolved_tramo_subtramo",
-          message: "No se resolvi\u00f3 tramo/subtramo en cat\u00e1logo",
+          message: "No se resolvió tramo/subtramo en catálogo",
           value: { tramo: rawTramo, subtramo: rawSubtramo },
         });
       }
@@ -1913,6 +1935,7 @@ exports.importExcel = async (req, res) => {
 
     const upsertImportDoc = async (idExpediente, subcarpeta, url, fallbackLabel) => {
       if (!url) return;
+
       const { rows: existingDocs } = await client.query(
         `SELECT id_archivo
            FROM ema.tumba
@@ -2031,7 +2054,7 @@ exports.importExcel = async (req, res) => {
           rejected += 1;
           errors.push({
             row: r._rowIndex,
-            reason: "id_import ambiguo (mÃ¡s de un expediente)",
+            reason: "id_import ambiguo (más de un expediente)",
             identity: { id_import: r.id_import },
           });
           continue;
@@ -2066,7 +2089,7 @@ exports.importExcel = async (req, res) => {
           rejected += 1;
           errors.push({
             row: r._rowIndex,
-            reason: "codigo_censo ambiguo (mÃ¡s de un expediente)",
+            reason: "codigo_censo ambiguo (más de un expediente)",
             identity: { codigo_censo: r.codigo_censo },
           });
           continue;
@@ -2099,8 +2122,10 @@ exports.importExcel = async (req, res) => {
         if (q.rowCount > 0) {
           inserted += 1;
           const idExpediente = q.rows[0]?.id_expediente;
+
           if (idExpediente) {
             affectedExpedientes.add(Number(idExpediente));
+
             await upsertImportDoc(
               idExpediente,
               "ci",
@@ -2115,16 +2140,28 @@ exports.importExcel = async (req, res) => {
             );
             await upsertImportDoc(
               idExpediente,
-              "ci_pareja",
+              "ci_adicional",
               r.ci_adicional_frente_url,
               `ci_cotitular_frente_${r._rowIndex}`
             );
             await upsertImportDoc(
               idExpediente,
-              "ci_pareja",
+              "ci_adicional",
               r.ci_adicional_dorso_url,
               `ci_cotitular_dorso_${r._rowIndex}`
             );
+
+            // ✅ NUEVO: documentos generales desde Excel
+            if (Array.isArray(r.documentos_urls) && r.documentos_urls.length > 0) {
+              for (const docUrl of r.documentos_urls) {
+                await upsertImportDoc(
+                  idExpediente,
+                  r.documentos_subcarpeta || "documentacion",
+                  docUrl,
+                  `documento_${r._rowIndex}`
+                );
+              }
+            }
           }
         }
         continue;
@@ -2177,40 +2214,49 @@ exports.importExcel = async (req, res) => {
         params.push(r.pareja_ci);
         idx += 1;
       }
-      if (tramoResolution.resolvedTramo) {
-        sets.push(`id_tramo=$${idx}`);
-        params.push(tramoResolution.id_tramo);
-        idx += 1;
-      }
-      if (tramoResolution.resolvedSubtramo) {
-        sets.push(`id_sub_tramo=$${idx}`);
-        params.push(tramoResolution.id_sub_tramo);
-        idx += 1;
-      } else if (tramoResolution.shouldClearSubtramo) {
-        sets.push(`id_sub_tramo=$${idx}`);
-        params.push(null);
-        idx += 1;
-      }
-      if (r.tramo) {
-        sets.push(`tramo=$${idx}`);
-        params.push(r.tramo);
-        idx += 1;
-      }
-      if (r.subtramo) {
-        sets.push(`subtramo=$${idx}`);
-        params.push(r.subtramo);
-        idx += 1;
-      }
-      if (r.codigo_exp && isNonSignificant(existing.codigo_exp)) {
+      if (r.codigo_exp) {
         sets.push(`codigo_exp=$${idx}`);
         params.push(r.codigo_exp);
         idx += 1;
       }
-      if (r.codigo_censo && isNonSignificant(existing.codigo_censo)) {
+      if (r.codigo_censo) {
         sets.push(`codigo_censo=$${idx}`);
         params.push(r.codigo_censo);
         idx += 1;
       }
+
+      if (tramoResolution.id_tramo) {
+        sets.push(`id_tramo=$${idx}`);
+        params.push(tramoResolution.id_tramo);
+        idx += 1;
+
+        if (r.tramo) {
+          sets.push(`tramo=$${idx}`);
+          params.push(r.tramo);
+          idx += 1;
+        }
+      }
+
+      if (tramoResolution.id_sub_tramo) {
+        sets.push(`id_sub_tramo=$${idx}`);
+        params.push(tramoResolution.id_sub_tramo);
+        idx += 1;
+
+        if (r.subtramo) {
+          sets.push(`subtramo=$${idx}`);
+          params.push(r.subtramo);
+          idx += 1;
+        }
+      } else if (tramoResolution.shouldClearSubtramo) {
+        sets.push(`id_sub_tramo=$${idx}`);
+        params.push(null);
+        idx += 1;
+
+        sets.push(`subtramo=$${idx}`);
+        params.push(null);
+        idx += 1;
+      }
+
       if (r.id_import && isNonSignificant(existing.id_import)) {
         sets.push(`id_import=$${idx}`);
         params.push(r.id_import);
@@ -2218,14 +2264,19 @@ exports.importExcel = async (req, res) => {
       }
 
       const q = await client.query(
-        `UPDATE ema.expedientes SET ${sets.join(", ")} WHERE id_expediente=$${idx} RETURNING id_expediente`,
+        `UPDATE ema.expedientes
+            SET ${sets.join(", ")}
+          WHERE id_expediente=$${idx}
+          RETURNING id_expediente`,
         [...params, existing.id_expediente]
       );
 
       if (q.rowCount > 0) {
         const idExpediente = q.rows[0]?.id_expediente;
+
         if (idExpediente) {
           affectedExpedientes.add(Number(idExpediente));
+
           await upsertImportDoc(
             idExpediente,
             "ci",
@@ -2240,17 +2291,30 @@ exports.importExcel = async (req, res) => {
           );
           await upsertImportDoc(
             idExpediente,
-            "ci_pareja",
+            "ci_adicional",
             r.ci_adicional_frente_url,
             `ci_cotitular_frente_${r._rowIndex}`
           );
           await upsertImportDoc(
             idExpediente,
-            "ci_pareja",
+            "ci_adicional",
             r.ci_adicional_dorso_url,
             `ci_cotitular_dorso_${r._rowIndex}`
           );
+
+          // ✅ NUEVO: documentos generales desde Excel
+          if (Array.isArray(r.documentos_urls) && r.documentos_urls.length > 0) {
+            for (const docUrl of r.documentos_urls) {
+              await upsertImportDoc(
+                idExpediente,
+                r.documentos_subcarpeta || "documentacion",
+                docUrl,
+                `documento_${r._rowIndex}`
+              );
+            }
+          }
         }
+
         if (matchType === "id_import") updated_by_id_import += 1;
         if (matchType === "codigo_exp") updated_by_codigo_exp += 1;
         if (matchType === "codigo_censo") updated_by_codigo_censo += 1;
@@ -2259,8 +2323,6 @@ exports.importExcel = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Corre post-commit para evitar lock cruzado entre el client transaccional
-    // del import y el pool.query interno usado por ensureEtapas().
     for (const idExpediente of affectedExpedientes) {
       try {
         await ensureEtapas(idExpediente);
@@ -2294,7 +2356,9 @@ exports.importExcel = async (req, res) => {
       documentsRecovered,
     });
   } catch (e) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
     return res.status(500).json({
       message: "Error importando",
       detail: String(e?.message || e),
