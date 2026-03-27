@@ -1129,23 +1129,14 @@ async function getInformesResumenBase(req, res) {
         ${absoluteWhereSql}
       `;
 
-      console.info("[TEMPORAL_ABS_DEBUG] request", {
-        id_proyecto,
-        id_plantilla,
-        date_field_id: dateFieldId,
-        time_grouping,
-        dateFieldIsStrict,
-      });
-      console.info("[TEMPORAL_ABS_DEBUG] absDateExpr", String(absDateExpr).slice(0, 300));
-      console.info("[TEMPORAL_ABS_DEBUG] qAbsolute", String(qAbsolute).slice(0, 500));
+     
+      //console.info("[TEMPORAL_ABS_DEBUG] absDateExpr", String(absDateExpr).slice(0, 300));
+      //console.info("[TEMPORAL_ABS_DEBUG] qAbsolute", String(qAbsolute).slice(0, 500));
       const rAbsolute = await pool.query(qAbsolute, absParams);
-      console.info("[TEMPORAL_ABS_DEBUG] qAbsolute row", rAbsolute.rows?.[0] || null);
+      //console.info("[TEMPORAL_ABS_DEBUG] qAbsolute row", rAbsolute.rows?.[0] || null);
       temporal.absolute_min = rAbsolute.rows[0]?.absolute_min ? new Date(rAbsolute.rows[0].absolute_min).toISOString().slice(0, 10) : null;
       temporal.absolute_max = rAbsolute.rows[0]?.absolute_max ? new Date(rAbsolute.rows[0].absolute_max).toISOString().slice(0, 10) : null;
-      console.info("[TEMPORAL_ABS_DEBUG] assigned", {
-        absolute_min: temporal.absolute_min,
-        absolute_max: temporal.absolute_max,
-      });
+     
 
       try {
         const absoluteBase = `

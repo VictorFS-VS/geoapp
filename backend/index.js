@@ -240,6 +240,8 @@ const compartirRoutes = require("./routes/compartir.routes");
 const aiRoutes = require("./routes/ai.routes");
 
 const informesDashboardRoutes = require("./routes/informesDashboard.routes");
+const projectHomeRoutes = require("./routes/projectHome.routes");
+const projectHomeConfigRoutes = require("./routes/projectHomeConfig.routes");
 
 const poiRoutes = require("./routes/poi.routes");
 
@@ -318,6 +320,8 @@ app.use("/api/informes", informesRoutes);
 app.use("/api/compartir", compartirRoutes);
 
 app.use("/api/informes-dashboard", informesDashboardRoutes);
+app.use("/api/project-home", projectHomeRoutes);
+app.use("/api/project-home", projectHomeConfigRoutes);
 
 app.use("/api/ai", aiRoutes);
 

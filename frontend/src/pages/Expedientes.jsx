@@ -15,6 +15,7 @@ import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "re
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
 import { useAuth } from "@/auth/AuthContext";
 import { alerts } from "@/utils/alerts";
+import { useProjectContext } from "@/context/ProjectContext";
 import * as XLSX from "xlsx";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -267,11 +268,31 @@ function matchesTipoRule(nameOrBase, tipoCarpeta) {
 
 export default function Expedientes() {
   const { id } = useParams(); // id_proyecto
-  const idProyecto = Number(id);
+  const { currentProjectId, setCurrentProjectId } = useProjectContext();
   const { can } = useAuth();
 
   const [searchParams, setSearchParams] = useSearchParams();
   const didAutoOpenRef = useRef(false);
+  const paramProjectId = normalizePositiveId(id);
+  const queryProjectId = normalizePositiveId(
+    searchParams.get("id_proyecto") || searchParams.get("idProyecto")
+  );
+  const contextProjectId = normalizePositiveId(currentProjectId);
+  const idProyecto = paramProjectId ?? queryProjectId ?? contextProjectId ?? null;
+
+  useEffect(() => {
+    if (paramProjectId && paramProjectId !== contextProjectId) {
+      setCurrentProjectId(paramProjectId);
+      return;
+    }
+    if (!paramProjectId && queryProjectId && queryProjectId !== contextProjectId) {
+      setCurrentProjectId(queryProjectId);
+    }
+  }, [paramProjectId, queryProjectId, contextProjectId, setCurrentProjectId]);
+
+  if (!idProyecto) {
+    return <div className="container mt-4">Proyecto no definido</div>;
+  }
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);

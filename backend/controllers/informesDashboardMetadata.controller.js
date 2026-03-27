@@ -7,6 +7,7 @@ const {
   collectCreatedAtTemporalStats,
   buildTemporalCapabilities,
 } = require("../helpers/informesDashboardTemporal");
+const { getTemporalBehaviorForFieldId } = require("../services/projectHome/projectHomeTemporalBehavior.service");
 
 function toInt(v, fallback = null) {
   if (v === undefined || v === null) return fallback;
@@ -289,6 +290,7 @@ async function getPlantillaDashboardMetadata(req, res) {
       kind: "created_at",
       dateable: true,
       default: true,
+      temporal_behavior: getTemporalBehaviorForFieldId("__created_at"),
       ...createdAtCapabilities,
     });
     for (const field of dateableFields) {
@@ -299,6 +301,7 @@ async function getPlantillaDashboardMetadata(req, res) {
         kind: "field",
         dateable: true,
         default: false,
+        temporal_behavior: getTemporalBehaviorForFieldId(field.id_pregunta),
         ...buildTemporalCapabilities(stats),
       });
     }

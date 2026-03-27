@@ -3,6 +3,9 @@ import { Modal, Badge } from "react-bootstrap";
 import { useInformesDashboard } from "./hooks/useInformesDashboard";
 import { useGVATramos } from "../gva_tramos/hooks/useGVATramos";
 import GVASubmapa from "../gva_tramos/GVASubmapa";
+import { useSearchParams } from "react-router-dom";
+import { useProjectContext } from "@/context/ProjectContext";
+import { resolveProjectId } from "@/utils/projectResolver";
 
 function traducirTipoCampo(tipo) {
   const t = String(tipo || "").trim().toLowerCase();
@@ -35,6 +38,11 @@ function traducirTipoGrafico(tipo) {
 }
 
 export default function GVADashboardInformes() {
+  const { currentProjectId, setCurrentProjectId } = useProjectContext();
+  const [searchParams] = useSearchParams();
+  const queryProjectId =
+    searchParams.get("id_proyecto") || searchParams.get("idProyecto") || "";
+
   const {
     params,
     data,
@@ -110,6 +118,29 @@ export default function GVADashboardInformes() {
     applyConfig,
     resetDraftFromApplied,
   } = useInformesDashboard();
+
+  const paramProjectId = resolveProjectId({ params: params?.id_proyecto, query: null, context: null });
+  const queryProjectIdNum = resolveProjectId({ params: null, query: queryProjectId, context: null });
+  const contextProjectId = resolveProjectId({ params: null, query: null, context: currentProjectId });
+  const resolvedProjectId = resolveProjectId({
+    params: params?.id_proyecto,
+    query: queryProjectId,
+    context: currentProjectId,
+  });
+
+  useEffect(() => {
+    if (paramProjectId && paramProjectId !== contextProjectId) {
+      setCurrentProjectId(paramProjectId);
+      return;
+    }
+    if (!paramProjectId && queryProjectIdNum && queryProjectIdNum !== contextProjectId) {
+      setCurrentProjectId(queryProjectIdNum);
+    }
+  }, [paramProjectId, queryProjectIdNum, contextProjectId, setCurrentProjectId]);
+
+  if (!resolvedProjectId) {
+    return <div className="container py-3">Proyecto no definido</div>;
+  }
 
   const timelineRangeRef = useRef({ from: "", to: "" });
   

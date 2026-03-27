@@ -459,15 +459,22 @@ export default function ProyectosList() {
                 )}
               </div>
 
-              <div className="proj-actions">
+              <div className="proj-actions proj-actions-tight">
                 {canVerMapa && (
-                  <button className="pc-btn pc-btn-blue pc-btn-map" onClick={() => goMapa(p)}>
+                  <button className="pc-btn pc-btn-blue pc-btn-small" onClick={() => goMapa(p)}>
                     <MapIcon className="ico" /> Ver mapa
                   </button>
                 )}
+                <button
+                  className="pc-btn pc-btn-outline pc-btn-small"
+                  onClick={() => navigate(`/project-home/${p.gid}`)}
+                  title="Ver panel del proyecto"
+                >
+                  Panel
+                </button>
 
                 <ModalComponent proyecto={p}>
-                  <button className="pc-btn pc-btn-light pc-btn-more">
+                  <button className="pc-btn pc-btn-light pc-btn-small pc-btn-more">
                     <MoreHorizontal className="ico" /> Más
                   </button>
                 </ModalComponent>

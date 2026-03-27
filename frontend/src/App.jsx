@@ -55,6 +55,8 @@ import AnalisisNDVI from "./views/AnalisisNDVI/AnalisisNDVI";
 import PoiTramo from "@/pages/PoiTramo";
 import HistorialNDVI from "@/views/HistorialNDVI/HistorialNDVI";
 import UserMaps from "@/components/UserMaps";
+import ProjectHomePage from "./modules/projectHome/ProjectHomePage";
+import { ProjectProvider } from "./context/ProjectContext";
 
 import { getUser } from "@/utils/auth";
 
@@ -391,8 +393,9 @@ function App() {
   };
 
   return (
-    <Router>
-      <Routes>
+    <ProjectProvider>
+      <Router>
+        <Routes>
         {/* ✅ PÚBLICA */}
         <Route path="/public-informe/:token" element={<PublicInforme />} />
 
@@ -942,6 +945,16 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="project-home/:id_proyecto"
+            element={
+              <ProtectedRoute>
+                <RequirePerm anyOf={PERMS.PROYECTOS} redirectTo="/proyectos">
+                  <ProjectHomePage />
+                </RequirePerm>
+              </ProtectedRoute>
+            }
+          />
         </Route>
 
         {/* Catch-all */}
@@ -949,7 +962,7 @@ function App() {
           path="*"
           element={isLogged ? <Navigate to="/" replace /> : <Navigate to="/login" replace />}
         />
-      </Routes>
+        </Routes>
 
       {/* Modal Vencimientos */}
       <Modal show={showReminderModal} onHide={() => setShowModal(false)} centered>
@@ -976,7 +989,8 @@ function App() {
           </Button>
         </Modal.Footer>
       </Modal>
-    </Router>
+      </Router>
+    </ProjectProvider>
   );
 }
 
