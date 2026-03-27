@@ -1748,18 +1748,94 @@ export default function Expedientes() {
     }
   };
 
+  function isExternalUrl(value) {
+    const s = String(value || "").trim();
+    if (!s) return false;
+    return /^https?:\/\//i.test(s);
+  }
+
+  function isImageLikeUrl(value) {
+    const s = String(value || "").trim().toLowerCase();
+    if (!s) return false;
+
+    if (!/^https?:\/\//i.test(s)) return false;
+
+    // imágenes directas
+    if (/\.(jpg|jpeg|png|webp|gif|bmp|svg)(\?|#|$)/i.test(s)) return true;
+
+    // hosts comunes donde el link puede no terminar en .jpg pero igual es imagen
+    if (
+      s.includes("drive.google.com") ||
+      s.includes("docs.google.com") ||
+      s.includes("dropbox.com") ||
+      s.includes("dl.dropboxusercontent.com") ||
+      s.includes("cloudinary.com") ||
+      s.includes("amazonaws.com") ||
+      s.includes("storage.googleapis.com") ||
+      s.includes("supabase.co") ||
+      s.includes("firebase")
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function openExternalUrl(url) {
+    const clean = String(url || "").trim();
+    if (!clean) return;
+    window.open(clean, "_blank", "noopener,noreferrer");
+  }
+
+  function getDocUrl(doc) {
+    return String(
+      doc?.ruta_archivo ||
+      doc?.ruta ||
+      doc?.url ||
+      doc?.link ||
+      ""
+    ).trim();
+  }
+
+  function isExternalDoc(doc) {
+    const url = getDocUrl(doc);
+    return /^https?:\/\//i.test(url);
+  }
+
+  async function handleOpenDoc(doc) {
+    if (!doc) return;
+
+    const externalUrl = getDocUrl(doc);
+
+    if (/^https?:\/\//i.test(externalUrl)) {
+      openExternalUrl(externalUrl);
+      return;
+    }
+
+    if (doc.id_archivo) {
+      await viewDoc(doc.id_archivo);
+      return;
+    }
+
+    alert("El documento no tiene archivo físico ni URL externa.");
+  }
+
   const viewDoc = async (idArchivo) => {
     const resp = await fetch(`${API}/expedientes/documentos/ver/${idArchivo}`, {
       headers: { ...authHeaders() },
     });
+
     if (!resp.ok) throw new Error(await resp.text());
+
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const w = window.open(url, "_blank");
+
     if (!w) {
       URL.revokeObjectURL(url);
       return;
     }
+
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
@@ -1797,40 +1873,87 @@ export default function Expedientes() {
     const cleanUrl = String(url || "").trim();
     if (!cleanUrl) return null;
 
-    const img = isPublicImageUrl(cleanUrl);
+    const looksLikeImage = isImageLikeUrl(cleanUrl);
 
     return (
-      <div className="border rounded p-2 mt-2" style={{ background: "#fff" }}>
+      <div
+        className="border rounded p-2 mt-2"
+        style={{ background: "#fff", width: 220 }}
+      >
         <div className="small fw-semibold mb-2">{title}</div>
 
-        {img ? (
+        {looksLikeImage ? (
           <>
-            <a href={cleanUrl} target="_blank" rel="noreferrer">
+            <div
+              role="button"
+              onClick={() => openExternalUrl(cleanUrl)}
+              style={{
+                cursor: "pointer",
+                border: "1px solid #ddd",
+                borderRadius: 6,
+                overflow: "hidden",
+                background: "#f8f9fa",
+              }}
+            >
               <img
                 src={cleanUrl}
                 alt={title}
                 style={{
                   width: "100%",
-                  maxWidth: 180,
-                  height: 120,
+                  height: 130,
                   objectFit: "cover",
-                  border: "1px solid #ddd",
-                  borderRadius: 6,
                   display: "block",
-                  background: "#f8f9fa",
+                }}
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                  const fallback = e.currentTarget.parentElement?.nextSibling;
+                  if (fallback) fallback.style.display = "block";
                 }}
               />
-            </a>
-            <div className="mt-2">
-              <a href={cleanUrl} target="_blank" rel="noreferrer" className="small">
-                Ver imagen completa
+            </div>
+
+            <div style={{ display: "none" }} className="small text-muted mt-2">
+              No se pudo previsualizar. Abrí el enlace.
+            </div>
+
+            <div className="mt-2 d-flex gap-2 flex-wrap">
+              <Button
+                size="sm"
+                variant="outline-secondary"
+                onClick={() => openExternalUrl(cleanUrl)}
+              >
+                Ver
+              </Button>
+
+              <a
+                href={cleanUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-sm btn-outline-primary"
+              >
+                Abrir link
               </a>
             </div>
           </>
         ) : (
-          <a href={cleanUrl} target="_blank" rel="noreferrer" className="small">
-            Abrir archivo
-          </a>
+          <div className="d-flex gap-2 flex-wrap">
+            <Button
+              size="sm"
+              variant="outline-secondary"
+              onClick={() => openExternalUrl(cleanUrl)}
+            >
+              Ver archivo
+            </Button>
+
+            <a
+              href={cleanUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-sm btn-outline-primary"
+            >
+              Abrir link
+            </a>
+          </div>
         )}
       </div>
     );
@@ -3154,7 +3277,7 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => viewDoc(d.id_archivo)}
+                                            onClick={() => handleOpenDoc(d)}
                                           >
                                             Ver
                                           </Button>
@@ -3245,7 +3368,7 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => viewDoc(d.id_archivo)}
+                                            onClick={() => handleOpenDoc(d)}
                                           >
                                             Ver
                                           </Button>
@@ -3317,7 +3440,7 @@ export default function Expedientes() {
                                 <Button
                                   variant="outline-secondary"
                                   size="sm"
-                                  onClick={() => viewDoc(d.id_archivo)}
+                                  onClick={() => handleOpenDoc(d)}
                                 >
                                   Ver
                                 </Button>

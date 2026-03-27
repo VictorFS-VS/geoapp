@@ -1,6 +1,6 @@
 // controllers/useChange.controller.js
 const Joi = require("joi");
-const pool = require("./db");
+const pool = require("../db");
 const { crearNotificacion } = require("./notificaciones.controller");
 
 /* =========================

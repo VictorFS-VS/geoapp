@@ -20,7 +20,12 @@ async function hasTramos(idProyecto) {
   if (!res.ok) return { ok: false, count: null };
 
   const data = await res.json();
-  const arr = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+  const arr = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.data)
+    ? data.data
+    : [];
+
   return { ok: true, count: arr.length };
 }
 
@@ -54,7 +59,10 @@ export default function ProyectoModal({ proyecto, children }) {
 
     if (proyecto?.gid) {
       localStorage.setItem("proyectoActualId", String(proyecto.gid));
-      localStorage.setItem("proyectoSeleccionado", JSON.stringify({ gid: proyecto.gid }));
+      localStorage.setItem(
+        "proyectoSeleccionado",
+        JSON.stringify({ gid: proyecto.gid })
+      );
     }
 
     const isFullScreen =
@@ -98,8 +106,12 @@ export default function ProyectoModal({ proyecto, children }) {
   const esUsuario10 = tipoUsuario === 10; // CLIENTE_VIAL
   const esUsuario9 = tipoUsuario === 9;   // CLIENTE
   const esUsuario11 = tipoUsuario === 11; // ADMIN_CLIENTE
+
   const soloLectura = esUsuario9 || esUsuario10 || esUsuario11;
+
   const puedeVerInformes = can("informes.read");
+  const puedeCrearInforme = can("informes.create");
+
   const puedeExpedientes =
     can("expedientes.read") ||
     can("expedientes.create") ||
@@ -170,7 +182,6 @@ export default function ProyectoModal({ proyecto, children }) {
               </Button>
             )}
 
-            {/* ✅ Regencia visible para todos por ahora */}
             <Button
               variant="success"
               className="w-100"
@@ -182,7 +193,6 @@ export default function ProyectoModal({ proyecto, children }) {
 
             {tipoUsuario === 10 && (
               <>
-                {/* ✅ Tramos / POI inteligente */}
                 <Button
                   variant="warning"
                   className="w-100"
@@ -203,7 +213,9 @@ export default function ProyectoModal({ proyecto, children }) {
                   variant="success"
                   className="w-100"
                   disabled={busy}
-                  onClick={() => goTo(`/proyectos/${proyecto?.gid}/actas-preconstruccion`)}
+                  onClick={() =>
+                    goTo(`/proyectos/${proyecto?.gid}/actas-preconstruccion`)
+                  }
                 >
                   📝 Actas de Preconstrucción
                 </Button>
@@ -266,20 +278,22 @@ export default function ProyectoModal({ proyecto, children }) {
                 disabled={busy}
                 onClick={() => goTo(`/dashboardinformes?id_proyecto=${proyecto?.gid}`)}
               >
-                Informes - Dashboard
+                📊 Informes - Dashboard
               </Button>
             )}
 
-            <Button
-              variant="secondary"
-              className="w-100"
-              disabled={busy}
-              onClick={() => goTo(`/proyectos/${proyecto?.gid}/informes`)}
-            >
-              📄 Informes por proyecto
-            </Button>
+            {puedeVerInformes && (
+              <Button
+                variant="secondary"
+                className="w-100"
+                disabled={busy}
+                onClick={() => goTo(`/proyectos/${proyecto?.gid}/informes`)}
+              >
+                📄 Informes por proyecto
+              </Button>
+            )}
 
-            {tipoUsuario !== 10 && (
+            {puedeCrearInforme && tipoUsuario !== 10 && (
               <Button
                 variant="outline-secondary"
                 className="w-100"
