@@ -22,6 +22,7 @@ import Pga from "./pages/Pga";
 import EvaluacionProyecto from "./pages/Evaluaciones";
 import ProyectoTabs from "./pages/ProyectoTabs";
 import Consultores from "./pages/Consultores";
+import QuejasReclamos from "./pages/QuejasReclamos";
 import Proponentes from "./pages/Proponentes";
 import Conceptos from "./pages/Conceptos";
 import Usuarios from "./pages/Usuarios";
@@ -133,6 +134,13 @@ const PERMS = {
   DECLARACIONES: ["declaraciones.read", "declaraciones.create", "declaraciones.update", "declaraciones.delete"],
   RESOLUCIONES: ["resoluciones.read", "resoluciones.create", "resoluciones.update", "resoluciones.delete"],
   EVALUACIONES: ["evaluaciones.read", "evaluaciones.create", "evaluaciones.update", "evaluaciones.delete"],
+
+  QUEJAS_RECLAMOS: [
+    "quejas_reclamos.read",
+    "quejas_reclamos.create",
+    "quejas_reclamos.update",
+    "quejas_reclamos.delete",
+  ],
 
   REGENCIA: [
     "regencia.contratos.read",
@@ -690,6 +698,17 @@ function App() {
               <ProtectedRoute>
                 <RequirePerm anyOf={PERMS.EVALUACIONES} redirectTo="/proyectos">
                   <EvaluacionProyecto />
+                </RequirePerm>
+              </ProtectedRoute>
+            }
+          />
+          {/* Quejas y Reclamos */}
+          <Route
+            path="quejas-reclamos"
+            element={
+              <ProtectedRoute>
+                <RequirePerm anyOf={PERMS.QUEJAS_RECLAMOS} redirectTo="/">
+                  <QuejasReclamos />
                 </RequirePerm>
               </ProtectedRoute>
             }
