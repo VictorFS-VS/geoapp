@@ -105,8 +105,13 @@ function extractPerms() {
   const user = rawUser ? safeJsonParse(rawUser, null) : null;
   const tokenPayload = token ? decodeTokenPayload(token) : null;
 
-  const permsFromUser = Array.isArray(user?.perms) ? user.perms : [];
-  const permsFromToken = Array.isArray(tokenPayload?.perms) ? tokenPayload.perms : [];
+  const permsFromUser = Array.isArray(user?.perms)
+    ? user.perms.map((p) => (typeof p === "string" ? p : p?.code)).filter(Boolean)
+    : [];
+
+  const permsFromToken = Array.isArray(tokenPayload?.perms)
+    ? tokenPayload.perms.map((p) => (typeof p === "string" ? p : p?.code)).filter(Boolean)
+    : [];
 
   return [...new Set([...permsFromUser, ...permsFromToken].filter(Boolean))];
 }
@@ -141,7 +146,6 @@ export default function Proponentes() {
   const [search, setSearch] = useState("");
 
   const [tipoUsuario, setTipoUsuario] = useState(null);
-  const [idCliente, setIdCliente] = useState(null);
   const [perms, setPerms] = useState([]);
 
   const [loading, setLoading] = useState(false);
@@ -158,7 +162,6 @@ export default function Proponentes() {
         const payload = JSON.parse(atob(token.split(".")[1] || ""));
         const tu = Number(payload?.tipo_usuario);
         setTipoUsuario(Number.isFinite(tu) ? tu : null);
-        setIdCliente(payload?.id_cliente != null ? Number(payload.id_cliente) : null);
       } catch {}
     }
 
@@ -183,18 +186,7 @@ export default function Proponentes() {
     try {
       setLoading(true);
 
-      let url;
-      if (tipoUsuario === 9 || tipoUsuario === 10) {
-        if (!idCliente) {
-          setClientes([]);
-          setPage(1);
-          setTotalPages(1);
-          return;
-        }
-        url = `${API_URL}/proponentes/${idCliente}`;
-      } else {
-        url = `${API_URL}/proponentes?page=${pagina}&limit=10&search=${encodeURIComponent(filtro)}`;
-      }
+      const url = `${API_URL}/proponentes?page=${pagina}&limit=10&search=${encodeURIComponent(filtro)}`;
 
       const { ok, status, data } = await apiFetch(url, { headers: authHeaders() });
       if (!ok) {
@@ -206,15 +198,9 @@ export default function Proponentes() {
         return;
       }
 
-      if (tipoUsuario === 9 || tipoUsuario === 10) {
-        setClientes(toArray(data));
-        setPage(1);
-        setTotalPages(1);
-      } else {
-        setClientes(toArray(data));
-        setPage(data?.page || pagina || 1);
-        setTotalPages(data?.totalPages || 1);
-      }
+      setClientes(toArray(data));
+      setPage(data?.page || pagina || 1);
+      setTotalPages(data?.totalPages || 1);
     } catch (err) {
       console.error("Error al cargar clientes:", err);
       setClientes([]);
@@ -363,8 +349,6 @@ export default function Proponentes() {
     return etiquetas[campo]?.[valor] || valor;
   };
 
-  const esSoloFicha = tipoUsuario === 9 || tipoUsuario === 10;
-
   const modalTitle = useMemo(() => {
     if (modo === "crear") return "Nuevo Cliente";
     if (modo === "editar") return "Editar Cliente";
@@ -387,17 +371,15 @@ export default function Proponentes() {
         </div>
       </div>
 
-      {!esSoloFicha && (
-        <div className="mb-3">
-          <input
-            type="text"
-            className="form-control"
-            placeholder="Buscar por nombre, apellido o RUC..."
-            value={search}
-            onChange={handleBuscar}
-          />
-        </div>
-      )}
+      <div className="mb-3">
+        <input
+          type="text"
+          className="form-control"
+          placeholder="Buscar por nombre, apellido o RUC..."
+          value={search}
+          onChange={handleBuscar}
+        />
+      </div>
 
       <table className="table table-bordered table-hover">
         <thead className="table-primary">
@@ -476,29 +458,27 @@ export default function Proponentes() {
         </tbody>
       </table>
 
-      {!esSoloFicha && (
-        <div className="d-flex justify-content-between align-items-center mt-3">
-          <span>
-            Página {page} de {totalPages}
-          </span>
-          <div className="btn-group">
-            <button
-              className="btn btn-outline-primary"
-              disabled={page === 1 || loading}
-              onClick={() => setPage(page - 1)}
-            >
-              ◀ Anterior
-            </button>
-            <button
-              className="btn btn-outline-primary"
-              disabled={page === totalPages || loading}
-              onClick={() => setPage(page + 1)}
-            >
-              Siguiente ▶
-            </button>
-          </div>
+      <div className="d-flex justify-content-between align-items-center mt-3">
+        <span>
+          Página {page} de {totalPages}
+        </span>
+        <div className="btn-group">
+          <button
+            className="btn btn-outline-primary"
+            disabled={page === 1 || loading}
+            onClick={() => setPage(page - 1)}
+          >
+            ◀ Anterior
+          </button>
+          <button
+            className="btn btn-outline-primary"
+            disabled={page === totalPages || loading}
+            onClick={() => setPage(page + 1)}
+          >
+            Siguiente ▶
+          </button>
         </div>
-      )}
+      </div>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={modalTitle}>
         <div className="row g-3">

@@ -15,6 +15,7 @@ import { Button, Modal, Form, Table, Row, Col, Badge, Alert, Collapse } from "re
 import ExpedienteGpsField from "@/components/ExpedienteGpsField";
 import { useAuth } from "@/auth/AuthContext";
 import { alerts } from "@/utils/alerts";
+import { parseCoordsString } from "@/utils/coords";
 import { useProjectContext } from "@/context/ProjectContext";
 import * as XLSX from "xlsx";
 
@@ -120,7 +121,7 @@ function todayYMD() {
 }
 
 function normalizePositiveId(value) {
-  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
@@ -144,11 +145,77 @@ function isoToDatetimeLocal(value) {
   )}`;
 }
 
+function isoToDateInput(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function datetimeLocalToIso(value) {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString();
+}
+
+function normalizeSegEstadoValue(value) {
+  return String(value || "").trim();
+}
+
+function mapSegEstadoToCatalogCodigo(catalog, value) {
+  const raw = normalizeSegEstadoValue(value);
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  const list = Array.isArray(catalog) ? catalog : [];
+  const byCodigo = list.find((item) => normalizeSegEstadoValue(item?.codigo).toLowerCase() === lower);
+  if (byCodigo?.codigo) return byCodigo.codigo;
+  const byDescripcion = list.find(
+    (item) => normalizeSegEstadoValue(item?.descripcion).toLowerCase() === lower
+  );
+  return byDescripcion?.codigo || "";
+}
+
+function getSegEstadoDescripcion(catalog, value) {
+  const raw = normalizeSegEstadoValue(value);
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  const list = Array.isArray(catalog) ? catalog : [];
+  const byCodigo = list.find((item) => normalizeSegEstadoValue(item?.codigo).toLowerCase() === lower);
+  if (byCodigo?.descripcion) return byCodigo.descripcion;
+  const byDescripcion = list.find(
+    (item) => normalizeSegEstadoValue(item?.descripcion).toLowerCase() === lower
+  );
+  return byDescripcion?.descripcion || raw;
+}
+
+function cleanSegEstadoDescripcion(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.replace(/^\d+(?:\.\d+)*\.\s*/g, "");
+}
+
+function getDbiEstadoActual(dbiInfo) {
+  const rawEstados = Array.isArray(dbiInfo?.estados) ? dbiInfo.estados : [];
+  if (rawEstados.length) {
+    const ordered = rawEstados
+      .map((item, idx) => ({ item, idx }))
+      .sort((a, b) => {
+        const ta = Date.parse(a.item?.fecha || "");
+        const tb = Date.parse(b.item?.fecha || "");
+        const va = Number.isNaN(ta) ? null : ta;
+        const vb = Number.isNaN(tb) ? null : tb;
+        if (va === null && vb === null) return a.idx - b.idx;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        if (va === vb) return a.idx - b.idx;
+        return va - vb;
+      })
+      .map((x) => x.item);
+    return ordered[ordered.length - 1]?.estado || "";
+  }
+  return dbiInfo?.estado || "";
 }
 
 function nowLocalDateTimeInput() {
@@ -167,6 +234,110 @@ function ymdToIsoStart(ymd) {
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString();
 }
+
+function normalizeJsonInput(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function normalizeDocList(value) {
+  if (Array.isArray(value)) {
+    return value.filter((v) => typeof v === "string" && v.trim());
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((v) => typeof v === "string" && v.trim());
+      }
+    } catch {}
+  }
+  return [];
+}
+
+function parseDesafectadoDetalle(value) {
+  const empty = { fecha: "", motivo: "", tipo: "", observacion: "" };
+  if (value === null || value === undefined) return empty;
+
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return {
+      fecha: String(value.fecha || "").trim(),
+      motivo: String(value.motivo || "").trim(),
+      tipo: String(value.tipo || "").trim(),
+      observacion: String(value.observacion || "").trim(),
+    };
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return empty;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return {
+        fecha: String(parsed.fecha || "").trim(),
+        motivo: String(parsed.motivo || "").trim(),
+        tipo: String(parsed.tipo || "").trim(),
+        observacion: String(parsed.observacion || "").trim(),
+      };
+    }
+  } catch {}
+
+  return { ...empty, observacion: raw };
+}
+
+function buildDesafectadoDetalle(value) {
+  const parsed = parseDesafectadoDetalle(value);
+  const payload = {};
+
+  if (parsed.fecha) payload.fecha = parsed.fecha;
+  if (parsed.motivo) payload.motivo = parsed.motivo;
+  if (parsed.tipo) payload.tipo = parsed.tipo;
+  if (parsed.observacion) payload.observacion = parsed.observacion;
+
+  return Object.keys(payload).length ? payload : null;
+}
+
+const DOCS_CATALOG = [
+  { value: "notificacion_afectacion", label: "Notificación de afectación" },
+  { value: "autorizacion", label: "Autorización" },
+  { value: "titulo_propiedad", label: "Título de propiedad" },
+  { value: "condicion_dominio", label: "Condición de dominio" },
+  { value: "acta_defuncion", label: "Acta de defunción" },
+  { value: "certificado_adjudicacion", label: "Certificado de adjudicación" },
+  { value: "poder_especial", label: "Poder especial" },
+  { value: "vigencia_poder", label: "Vigencia del poder" },
+  { value: "cedula_propietario", label: "Cédula de identidad del propietario" },
+  { value: "cedula_conyugue", label: "Cédula de identidad del cónyuge" },
+  { value: "cedula_sucesor", label: "Cédula de identidad del sucesor" },
+  { value: "cedula_otros_propietarios", label: "Cédula de identidad de otros propietarios" },
+  { value: "cedula_usufructuarios", label: "Cédula de identidad de usufructuarios" },
+  { value: "cedula_apoderado", label: "Cédula de identidad del apoderado" },
+  {
+    value: "cedula_participantes_firma_social",
+    label: "Cédula de identidad participantes firma social",
+  },
+  { value: "escritura_constitucion_sociedad", label: "Escritura pública de constitución de sociedad" },
+  { value: "acta_asamblea", label: "Acta de asamblea" },
+  { value: "cedula_ocupante", label: "Cédula de identidad del ocupante" },
+  { value: "certificado_vida_residencia", label: "Certificado de vida y residencia" },
+  { value: "solicitud_ocupacion", label: "Solicitud de ocupación" },
+  { value: "constancia_ocupacion", label: "Constancia de ocupación" },
+  {
+    value: "constancia_solicitud_compra_terreno",
+    label: "Constancia de solicitud de compra de terreno",
+  },
+  { value: "declaracion_sumaria_testigos", label: "Declaración sumaria de testigos ante el juez local" },
+  { value: "boleta_pago_patente", label: "Boleta de pago de patente" },
+  { value: "contrato_privado_partes", label: "Contrato privado entre partes" },
+];
 
 function hasMeaningfulStageValue(value) {
   if (value == null) return false;
@@ -199,6 +370,10 @@ function hasRealFolderActivity(carpeta) {
 }
 
 function resolveTipoCarpetaFromExpediente(row) {
+  // Si el campo persistido ya existe, usarlo directamente
+  if (row?.tipo_expediente === "T") return { tipo: "terreno", locked: true, legacyBothActive: false };
+  if (row?.tipo_expediente === "M") return { tipo: "mejora", locked: true, legacyBothActive: false };
+
   const mejoraHasActivity = hasRealFolderActivity(row?.carpeta_mejora);
   const terrenoHasActivity = hasRealFolderActivity(row?.carpeta_terreno);
 
@@ -266,6 +441,23 @@ function matchesTipoRule(nameOrBase, tipoCarpeta) {
   return keys.some((k) => N.includes(k));
 }
 
+const POLY_TYPES = [
+  { key: "proyecto", label: "Polígono proyecto" },
+  { key: "afectacion", label: "Polígono afectación" },
+];
+
+function getPolygonGeometry(features) {
+  const list = Array.isArray(features) ? features : [];
+  const found = list.find(
+    (f) => f?.geometry?.type === "Polygon" || f?.geometry?.type === "MultiPolygon"
+  );
+  return found?.geometry || null;
+}
+
+function normalizePlanoFuente(fuente) {
+  return fuente === "mejora" ? "mejoras" : fuente === "terreno" ? "terreno" : fuente;
+}
+
 export default function Expedientes() {
   const { id } = useParams(); // id_proyecto
   const { currentProjectId, setCurrentProjectId } = useProjectContext();
@@ -278,7 +470,7 @@ export default function Expedientes() {
     searchParams.get("id_proyecto") || searchParams.get("idProyecto")
   );
   const contextProjectId = normalizePositiveId(currentProjectId);
-  const idProyecto = paramProjectId ?? queryProjectId ?? contextProjectId ?? null;
+  const idProyecto = paramProjectId || queryProjectId || contextProjectId || null;
 
   useEffect(() => {
     if (paramProjectId && paramProjectId !== contextProjectId) {
@@ -299,6 +491,8 @@ export default function Expedientes() {
   const [filterQ, setFilterQ] = useState("");
   const [filterTramoId, setFilterTramoId] = useState("");
   const [filterSubtramoId, setFilterSubtramoId] = useState("");
+  const [sortKey, setSortKey] = useState("");
+  const [sortDir, setSortDir] = useState("asc");
   const qDebounceRef = useRef(null);
 
   const [show, setShow] = useState(false);
@@ -311,9 +505,26 @@ export default function Expedientes() {
   const [docsCIAdicional, setDocsCIAdicional] = useState([]);
   const ciSubcarpetas = useMemo(() => new Set(["ci", "ci_adicional"]), []);
 
+  const [visitas, setVisitas] = useState([]);
+  const [visitasLoading, setVisitasLoading] = useState(false);
+  const [visitasError, setVisitasError] = useState("");
+  const [showVisitaModal, setShowVisitaModal] = useState(false);
+  const [visitMode, setVisitMode] = useState("crear"); // crear | editar
+  const [visitSaving, setVisitSaving] = useState(false);
+  const [visitDocsOpen, setVisitDocsOpen] = useState(false);
+  const [visitForm, setVisitForm] = useState({
+    id_historial_visita: null,
+    fecha: "",
+    consultor: "",
+    motivo: "",
+    respuesta: "",
+    documentos_recibidos: [],
+  });
+
   const [planoGeoCache, setPlanoGeoCache] = useState({});
   const [planoGeoLoading, setPlanoGeoLoading] = useState(false);
   const [planoGeoError, setPlanoGeoError] = useState("");
+  const [planoViewTipo, setPlanoViewTipo] = useState("proyecto");
 
   const [catastroFeatures, setCatastroFeatures] = useState(null);
   const [catastroLoadedFor, setCatastroLoadedFor] = useState(null);
@@ -342,13 +553,17 @@ export default function Expedientes() {
     gps: "",
     tecnico: "",
     codigo_exp: "",
+    codigo_unico: "",
     propietario_nombre: "",
     propietario_ci: "",
     pareja_nombre: "",
     pareja_ci: "",
+    telefono: "",
     id_tramo: null,
     id_sub_tramo: null,
     codigo_censo: "",
+    padron: "",
+    cta_cte_catastral: "",
     ci_propietario_frente_url: "",
     ci_propietario_dorso_url: "",
     ci_adicional_frente_url: "",
@@ -356,6 +571,17 @@ export default function Expedientes() {
     parte_a: "",
     parte_b: "",
     premio_aplica: false,
+    superficie: "",
+    superficie_afectada: "",
+    progresiva_ini: "",
+    progresiva_fin: "",
+    margen: "",
+    porcentaje_afectacion: "",
+    desafectado: false,
+    desafectado_detalle: "",
+    percepcion_notificador: "",
+    observacion_notificador: "",
+    documentacion_presentada: [],
   });
 
   // Catálogos Censales
@@ -373,6 +599,7 @@ export default function Expedientes() {
   // carpeta activa (mejora | terreno)
   const [tipoCarpeta, setTipoCarpeta] = useState("mejora");
   const [avaluoOpen, setAvaluoOpen] = useState(true);
+  const [docsChecklistOpen, setDocsChecklistOpen] = useState(false);
 
   const readonly =
     mode === "ver" ||
@@ -384,6 +611,14 @@ export default function Expedientes() {
   const planoGeoReqSeqRef = useRef(0);
   const planoGeoReqKeyRef = useRef({});
   const planoGeoLoadingRef = useRef(0);
+  const gpsCoords = useMemo(() => parseCoordsString(form.gps), [form.gps]);
+  const hasGpsCoords = Array.isArray(gpsCoords);
+
+  const formatGpsDecimal = (val) => {
+    const n = Number(String(val).replace(",", "."));
+    if (Number.isFinite(n)) return n.toFixed(6);
+    return val;
+  };
 
   const loadCatastroFeatures = async (force = false) => {
     if (!idProyecto) return;
@@ -402,27 +637,121 @@ export default function Expedientes() {
     }
   };
 
-  const loadPlanoGeo = async (idExpediente, tipo, force = false) => {
+  const loadVisitas = async (idExpediente, force = false) => {
     if (!idExpediente) return;
-    const cached = planoGeoCache?.[idExpediente] || { mejora: null, terreno: null };
-    if (!force && cached?.[tipo] !== null) return;
+    if (visitasLoading && !force) return;
+    setVisitasLoading(true);
+    setVisitasError("");
+    try {
+      const data = await apiGet(`${API}/expedientes/${idExpediente}/visitas`);
+      const rows = Array.isArray(data) ? data : [];
+      setVisitas(
+        rows.map((r) => ({
+          ...r,
+          documentos_recibidos: normalizeDocList(r.documentos_recibidos),
+        }))
+      );
+    } catch (e) {
+      setVisitasError(String(e?.message || e));
+    } finally {
+      setVisitasLoading(false);
+    }
+  };
+
+  const openCrearVisita = () => {
+    setVisitMode("crear");
+    setVisitDocsOpen(false);
+    setVisitForm({
+      id_historial_visita: null,
+      fecha: todayYMD(),
+      consultor: "",
+      motivo: "",
+      respuesta: "",
+      documentos_recibidos: [],
+    });
+    setShowVisitaModal(true);
+  };
+
+  const openEditarVisita = (visita) => {
+    setVisitMode("editar");
+    setVisitDocsOpen(false);
+    setVisitForm({
+      id_historial_visita: visita?.id_historial_visita ?? null,
+      fecha: visita?.fecha ? String(visita.fecha).slice(0, 10) : "",
+      consultor: visita?.consultor || "",
+      motivo: visita?.motivo || "",
+      respuesta: visita?.respuesta || "",
+      documentos_recibidos: normalizeDocList(visita?.documentos_recibidos),
+    });
+    setShowVisitaModal(true);
+  };
+
+  const saveVisita = async () => {
+    if (!current?.id_expediente || visitSaving) return;
+    setVisitSaving(true);
+    try {
+      const payload = {
+        fecha: visitForm.fecha || null,
+        consultor: visitForm.consultor || "",
+        motivo: visitForm.motivo || "",
+        respuesta: visitForm.respuesta || "",
+        documentos_recibidos: Array.isArray(visitForm.documentos_recibidos)
+          ? visitForm.documentos_recibidos
+          : [],
+      };
+
+      if (visitMode === "crear") {
+        await apiJson(`${API}/expedientes/${current.id_expediente}/visitas`, "POST", payload);
+      } else if (visitForm.id_historial_visita) {
+        await apiJson(
+          `${API}/expedientes/${current.id_expediente}/visitas/${visitForm.id_historial_visita}`,
+          "PUT",
+          payload
+        );
+      }
+
+      await loadVisitas(current.id_expediente, true);
+      setShowVisitaModal(false);
+    } catch (e) {
+      alert(String(e?.message || e));
+    } finally {
+      setVisitSaving(false);
+    }
+  };
+
+  const loadPlanoGeo = async (idExpediente, fuente, tipoPoligono, force = false) => {
+    if (!idExpediente) return;
+    const normalizedFuente = normalizePlanoFuente(fuente);
+    const normalizedTipoPoligono =
+      tipoPoligono === "afectacion" ? "afectacion" : "proyecto";
+    const cached = planoGeoCache?.[idExpediente]?.[normalizedFuente]?.[normalizedTipoPoligono];
+    if (!force && cached !== null && cached !== undefined) return cached;
     planoGeoLoadingRef.current += 1;
     setPlanoGeoLoading(true);
-    const key = `${idExpediente}:${tipo}`;
+    const key = `${idExpediente}:${normalizedFuente}:${normalizedTipoPoligono}`;
     const seq = ++planoGeoReqSeqRef.current;
     planoGeoReqKeyRef.current[key] = seq;
     try {
-      const path = tipo === "mejora" ? "mejoras" : "terreno";
-      const data = await apiGet(`${API}/expedientes/${idExpediente}/${path}`);
+      const data = await apiGet(
+        `${API}/expedientes/${idExpediente}/${normalizedFuente}?tipo_poligono=${encodeURIComponent(normalizedTipoPoligono)}`
+      );
       const feats = Array.isArray(data?.features) ? data.features : [];
       if (planoGeoReqKeyRef.current[key] !== seq) return;
       setPlanoGeoCache((prev) => ({
         ...prev,
-        [idExpediente]: { ...(prev[idExpediente] || { mejora: null, terreno: null }), [tipo]: feats },
+        [idExpediente]: {
+          ...(prev[idExpediente] || {}),
+          [normalizedFuente]: {
+            ...((prev[idExpediente] || {})[normalizedFuente] || { proyecto: null, afectacion: null }),
+            [normalizedTipoPoligono]: feats,
+          },
+        },
       }));
       setPlanoGeoError("");
+      return feats;
     } catch (e) {
       setPlanoGeoError(String(e?.message || e));
+      return null;
     } finally {
       planoGeoLoadingRef.current -= 1;
       if (planoGeoLoadingRef.current <= 0) {
@@ -434,28 +763,47 @@ export default function Expedientes() {
 
   useEffect(() => {
     if (!current?.id_expediente) return;
-    loadPlanoGeo(current.id_expediente, tipoCarpeta);
-  }, [current?.id_expediente, tipoCarpeta]); // eslint-disable-line react-hooks/exhaustive-deps
+    loadPlanoGeo(current.id_expediente, "mejoras", "proyecto");
+    loadPlanoGeo(current.id_expediente, "mejoras", "afectacion");
+    loadPlanoGeo(current.id_expediente, "terreno", "proyecto");
+    loadPlanoGeo(current.id_expediente, "terreno", "afectacion");
+  }, [current?.id_expediente]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setLastPlanoGeometry(null);
-  }, [current?.id_expediente, tipoCarpeta]);
+  }, [current?.id_expediente]);
 
-  const planoFeatures = planoGeoCache?.[current?.id_expediente]?.[tipoCarpeta];
-  const planoHasGeom = Array.isArray(planoFeatures) && planoFeatures.length > 0;
-  const planoFeatureCount = Array.isArray(planoFeatures) ? planoFeatures.length : 0;
+  const planoFeaturesProyectoMejoras =
+    planoGeoCache?.[current?.id_expediente]?.mejoras?.proyecto;
+  const planoFeaturesAfectacionMejoras =
+    planoGeoCache?.[current?.id_expediente]?.mejoras?.afectacion;
+  const planoFeaturesProyectoTerreno =
+    planoGeoCache?.[current?.id_expediente]?.terreno?.proyecto;
+  const planoFeaturesAfectacionTerreno =
+    planoGeoCache?.[current?.id_expediente]?.terreno?.afectacion;
+
+  const planoFeaturesProyecto = [
+    ...(Array.isArray(planoFeaturesProyectoMejoras) ? planoFeaturesProyectoMejoras : []),
+    ...(Array.isArray(planoFeaturesProyectoTerreno) ? planoFeaturesProyectoTerreno : []),
+  ];
+  const planoFeaturesAfectacion = [
+    ...(Array.isArray(planoFeaturesAfectacionMejoras) ? planoFeaturesAfectacionMejoras : []),
+    ...(Array.isArray(planoFeaturesAfectacionTerreno) ? planoFeaturesAfectacionTerreno : []),
+  ];
+
+  const planoHasGeomProyecto = planoFeaturesProyecto.length > 0;
+  const planoHasGeomAfectacion = planoFeaturesAfectacion.length > 0;
+  const planoFeatureCountProyecto = planoFeaturesProyecto.length;
+  const planoFeatureCountAfectacion = planoFeaturesAfectacion.length;
 
   const [lastPlanoGeometry, setLastPlanoGeometry] = useState(null);
 
   const planoGeometry = useMemo(() => {
-    if (planoHasGeom) {
-      const found = (planoFeatures || []).find(
-        (f) => f?.geometry?.type === "Polygon" || f?.geometry?.type === "MultiPolygon"
-      );
-      if (found?.geometry) return found.geometry;
+    if (planoHasGeomProyecto) {
+      return getPolygonGeometry(planoFeaturesProyecto);
     }
     return null;
-  }, [planoHasGeom, planoFeatures]);
+  }, [planoHasGeomProyecto, planoFeaturesProyecto]);
 
   useEffect(() => {
     if (planoGeometry) {
@@ -466,7 +814,9 @@ export default function Expedientes() {
   const readOnlyGeometry = useMemo(() => {
     const expId = current?.id_expediente;
     if (!expId) return null;
-    if (planoGeometry) return planoGeometry;
+    const preferFeatures = planoViewTipo === "afectacion" ? planoFeaturesAfectacion : planoFeaturesProyecto;
+    const preferGeometry = getPolygonGeometry(preferFeatures);
+    if (preferGeometry) return preferGeometry;
     if (lastPlanoGeometry) return lastPlanoGeometry;
     if (!Array.isArray(catastroFeatures)) return null;
     const feature = catastroFeatures.find(
@@ -476,25 +826,52 @@ export default function Expedientes() {
     if (!geom) return null;
     if (geom.type === "Polygon" || geom.type === "MultiPolygon") return geom;
     return null;
-  }, [current?.id_expediente, planoGeometry, lastPlanoGeometry, catastroFeatures]);
+  }, [
+    current?.id_expediente,
+    planoViewTipo,
+    planoFeaturesProyecto,
+    planoFeaturesAfectacion,
+    lastPlanoGeometry,
+    catastroFeatures,
+  ]);
 
-  const handleVerPlanoEnMapa = async () => {
+  const handleVerPlanoEnMapa = async (tipoPoligono) => {
     if (!current?.id_expediente) return;
-    await loadPlanoGeo(current.id_expediente, tipoCarpeta);
+    setPlanoViewTipo(tipoPoligono);
+    const featsMejoras = await loadPlanoGeo(current.id_expediente, "mejoras", tipoPoligono);
+    const featsTerreno = await loadPlanoGeo(current.id_expediente, "terreno", tipoPoligono);
+    const combined = [
+      ...(Array.isArray(featsMejoras) ? featsMejoras : []),
+      ...(Array.isArray(featsTerreno) ? featsTerreno : []),
+    ];
+    const geom = getPolygonGeometry(combined);
+    if (geom) setLastPlanoGeometry(geom);
     gpsFieldRef.current?.openMap?.();
   };
 
-  const handleEliminarPlano = async () => {
+  const handleEliminarPlano = async (tipoPoligono) => {
     if (!current?.id_expediente) return;
     if (!geometryEditable || currentGroupBlocked) return;
-    const ok = window.confirm("¿Eliminar el polígono del tipo activo?");
+    const label = tipoPoligono === "afectacion" ? "afectación" : "proyecto";
+    const ok = window.confirm(`¿Eliminar el polígono de ${label}?`);
     if (!ok) return;
     try {
-      await apiDelete(`${API}/expedientes/${current.id_expediente}/poligono/${tipoCarpeta}`);
-      setPlanoGeoCache((prev) => ({
-        ...prev,
-        [current.id_expediente]: { ...(prev[current.id_expediente] || { mejora: null, terreno: null }), [tipoCarpeta]: [] },
-      }));
+      await apiDelete(
+        `${API}/expedientes/${current.id_expediente}/poligono/${tipoCarpeta}?tipo_poligono=${encodeURIComponent(tipoPoligono)}`
+      );
+      setPlanoGeoCache((prev) => {
+        const cacheFuente = normalizePlanoFuente(tipoCarpeta);
+        return {
+          ...prev,
+          [current.id_expediente]: {
+            ...(prev[current.id_expediente] || {}),
+            [cacheFuente]: {
+              ...((prev[current.id_expediente] || {})[cacheFuente] || { proyecto: null, afectacion: null }),
+              [tipoPoligono]: [],
+            },
+          },
+        };
+      });
       await loadEtapas(current.id_expediente, tipoCarpeta);
       await loadCatastroFeatures(true);
     } catch (e) {
@@ -508,13 +885,17 @@ export default function Expedientes() {
     gps: row.gps || "",
     tecnico: row.tecnico || "",
     codigo_exp: row.codigo_exp || "",
+    codigo_unico: row.codigo_unico || "",
     propietario_nombre: row.propietario_nombre || "",
     propietario_ci: row.propietario_ci || "",
     pareja_nombre: row.pareja_nombre || "",
     pareja_ci: row.pareja_ci || "",
+    telefono: row.telefono || "",
     id_tramo: normalizePositiveId(row.id_tramo),
     id_sub_tramo: normalizePositiveId(row.id_sub_tramo),
     codigo_censo: row.codigo_censo || "",
+    padron: row.padron || "",
+    cta_cte_catastral: row.cta_cte_catastral || "",
     ci_propietario_frente_url: row.ci_propietario_frente_url || "",
     ci_propietario_dorso_url: row.ci_propietario_dorso_url || "",
     ci_adicional_frente_url: row.ci_adicional_frente_url || "",
@@ -522,6 +903,32 @@ export default function Expedientes() {
     parte_a: row.parte_a === null || row.parte_a === undefined ? "" : String(row.parte_a),
     parte_b: row.parte_b === null || row.parte_b === undefined ? "" : String(row.parte_b),
     premio_aplica: Boolean(row.premio_aplica),
+    superficie: row.superficie === null || row.superficie === undefined ? "" : String(row.superficie),
+    superficie_afectada:
+      row.superficie_afectada === null || row.superficie_afectada === undefined
+        ? ""
+        : String(row.superficie_afectada),
+    progresiva_ini: row.progresiva_ini || "",
+    progresiva_fin: row.progresiva_fin || "",
+    margen: row.margen || "",
+    porcentaje_afectacion:
+      row.porcentaje_afectacion === null || row.porcentaje_afectacion === undefined
+        ? ""
+        : String(row.porcentaje_afectacion),
+    desafectado: Boolean(row.desafectado),
+    desafectado_detalle: parseDesafectadoDetalle(row.desafectado_detalle),
+    percepcion_notificador: row.percepcion_notificador || "",
+    observacion_notificador: row.observacion_notificador || "",
+    documentacion_presentada: normalizeDocList(row.documentacion_presentada),
+    // tipo_expediente: campo persistido tiene prioridad.
+    // Si es null (legacy), derivar desde la inferencia de carpetas para mantener
+    // UI y form alineados desde la apertura.
+    tipo_expediente:
+      row.tipo_expediente ||
+      (() => {
+        const resolved = resolveTipoCarpetaFromExpediente(row);
+        return resolved.tipo === "terreno" ? "T" : "M";
+      })(),
   });
 
   const mergeRow = (nextRow) => {
@@ -540,7 +947,7 @@ export default function Expedientes() {
   // =========================
   const ETAPAS_MEJORA = [
     { key: "documentacion", label: "Documentación" },
-    { key: "plano_georef", label: "Plano georreferenciado (polígono)" },
+    { key: "plano_georef", label: "Plano ref. / inf. pericial" },
     { key: "avaluo", label: "Avalúo" },
     { key: "notif_conformidad", label: "Notificación y conformidad" },
     { key: "documentacion_final", label: "Documentación final" },
@@ -548,37 +955,131 @@ export default function Expedientes() {
 
   const ETAPAS_TERRENO = [
     { key: "documentacion", label: "Documentación" },
-    { key: "plano_georef", label: "Plano georreferenciado (polígono)" },
+    { key: "plano_georef", label: "Plano ref. / inf. pericial" },
     { key: "informe_pericial", label: "Informe pericial" },
-    { key: "plantilla", label: "Plantilla" },
+    { key: "plantilla", label: "Planilla de calculo" },
     { key: "avaluo", label: "Avalúo" },
     { key: "notif_conformidad", label: "Notificación y conformidad" },
     { key: "documentacion_final", label: "Documentación final" },
   ];
+
+  const getEtapaLabel = (key, label) => {
+    if (key === "plano_georef") return "Plano ref. / inf. pericial";
+    if (key === "plantilla") return "Planilla de calculo";
+    return label;
+  };
 
   const [etapas, setEtapas] = useState({});
   const [etapasErr, setEtapasErr] = useState("");
   const [savingEtapa, setSavingEtapa] = useState(false);
 
   // ✅ subir polígono (multi)
-  const [polyFiles, setPolyFiles] = useState([]);
+  const [polyFilesByTipo, setPolyFilesByTipo] = useState({ proyecto: [], afectacion: [] });
   const [polyBusy, setPolyBusy] = useState(false);
-  const [polyUploadNotice, setPolyUploadNotice] = useState(null);
+  const [polyUploadNoticeByTipo, setPolyUploadNoticeByTipo] = useState({ proyecto: null, afectacion: null });
 
   // DBI
   const [dbiCodigo, setDbiCodigo] = useState("");
+  const [dbiCodigoMeu, setDbiCodigoMeu] = useState("");
+  const [dbiSegEstado, setDbiSegEstado] = useState("");
+  const [dbiResolNumero, setDbiResolNumero] = useState("");
+  const [dbiResolFecha, setDbiResolFecha] = useState("");
+  const [dbiDecretoNumero, setDbiDecretoNumero] = useState("");
+  const [dbiDecretoFecha, setDbiDecretoFecha] = useState("");
+  const [dbiHeaderOpen, setDbiHeaderOpen] = useState(false);
+  const [dbiHeaderBusy, setDbiHeaderBusy] = useState(false);
+  const [dbiHeaderError, setDbiHeaderError] = useState("");
+  const [dbiEstadosCatalog, setDbiEstadosCatalog] = useState([]);
+  const [dbiEstadosLoading, setDbiEstadosLoading] = useState(false);
+  const [dbiEstadosError, setDbiEstadosError] = useState("");
   const [dbiFile, setDbiFile] = useState(null);
   const [dbiBusy, setDbiBusy] = useState(false);
   const [dbiEventoEstado, setDbiEventoEstado] = useState("");
-  const [dbiEventoEstadoPreset, setDbiEventoEstadoPreset] = useState("");
   const [dbiEventoFecha, setDbiEventoFecha] = useState("");
   const [dbiEventoObs, setDbiEventoObs] = useState("");
   const [dbiEventoBusy, setDbiEventoBusy] = useState(false);
   const [dbiEventoError, setDbiEventoError] = useState("");
+  const [dbiExpandedRows, setDbiExpandedRows] = useState({});
   const [dbiInicioFecha, setDbiInicioFecha] = useState("");
   const [dbiInicioObs, setDbiInicioObs] = useState("");
   const [dbiInicioBusy, setDbiInicioBusy] = useState(false);
   const [dbiInicioError, setDbiInicioError] = useState("");
+
+  const [dbiEditUuid, setDbiEditUuid] = useState(null);
+  const [dbiEditForm, setDbiEditForm] = useState({
+    estado: "",
+    fecha: "",
+    obs: "",
+  });
+
+  async function guardarEdicionDbi() {
+    if (!current?.id_expediente || !dbiEditUuid) return;
+    if (!dbiEditForm.estado || !dbiEditForm.fecha) {
+      setDbiEstadosError("Estado y fecha son requeridos para editar");
+      return;
+    }
+
+    setDbiEventoBusy(true);
+    setDbiEstadosError("");
+    try {
+      const data = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/dbi/eventos/${dbiEditUuid}`,
+        "PUT",
+        dbiEditForm
+      );
+      if (data && typeof data === "object") {
+        setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+        const updated = { ...current, carpeta_dbi: data };
+        mergeRow(updated);
+        setDbiEditUuid(null);
+      }
+    } catch (e) {
+      console.error("Error editando hito DBI:", e);
+      setDbiEstadosError(e.message || "Error al guardar edición");
+    } finally {
+      setDbiEventoBusy(false);
+    }
+  }
+
+  async function eliminarDbiEvento(ev) {
+    if (!current?.id_expediente || !ev) return;
+    if (
+      !window.confirm(
+        "¿Eliminar este hito DBI? Esta acción no se puede deshacer y el estado actual se recalculará."
+      )
+    ) {
+      return;
+    }
+
+    const { uuid, estado, fecha, obs } = ev;
+    const target = uuid || "legacy";
+    const payload = uuid ? undefined : { estado, fecha, obs };
+
+    console.log("Eliminando hito DBI:", { target, payload });
+
+    setDbiEventoBusy(true);
+    setDbiEventoError("");
+    try {
+      const data = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/dbi/eventos/${target}`,
+        "DELETE",
+        payload
+      );
+      if (data && typeof data === "object") {
+        setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+        mergeRow({ ...current, carpeta_dbi: data });
+      } else {
+        const fresh = await apiGet(`${API}/expedientes/${current.id_expediente}`);
+        setCurrent(fresh);
+        mergeRow(fresh);
+      }
+    } catch (e) {
+      console.error("Error eliminando hito DBI:", e);
+      setDbiEventoError(String(e?.message || e));
+    } finally {
+      setDbiEventoBusy(false);
+    }
+  }
 
   // delete total
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -586,11 +1087,45 @@ export default function Expedientes() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  const [showCloneModal, setShowCloneModal] = useState(false);
+  const [cloneTipo, setCloneTipo] = useState("");
+  const [cloneBusy, setCloneBusy] = useState(false);
+  const [cloneError, setCloneError] = useState("");
+  const [tipoLockedLocal, setTipoLockedLocal] = useState(false);
+  const [tipoLockedValue, setTipoLockedValue] = useState(null);
+
   const deleteToken = (current?.codigo_exp || "").trim() || "ELIMINAR";
   const deleteTokenLabel = (current?.codigo_exp || "").trim()
-    ? `Escriba el codigo del expediente (${deleteToken}) para confirmar.`
+    ? `Escriba el código del expediente (${deleteToken}) para confirmar.`
     : `Escriba ELIMINAR para confirmar.`;
   const deleteConfirmOk = deleteConfirm.trim() === deleteToken;
+
+  const openCloneModal = () => {
+    if (!current?.id_expediente) return;
+    setCloneTipo("");
+    setCloneError("");
+    setShowCloneModal(true);
+  };
+
+  const confirmClone = async () => {
+    if (!current?.id_expediente || cloneBusy) return;
+    if (!cloneTipo) return;
+    setCloneBusy(true);
+    setCloneError("");
+    try {
+      const created = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/clonar`,
+        "POST",
+        { tipo_destino: cloneTipo }
+      );
+      setShowCloneModal(false);
+      await openEditar(created);
+    } catch (e) {
+      setCloneError(String(e?.message || e));
+    } finally {
+      setCloneBusy(false);
+    }
+  };
 
   const etapasList = tipoCarpeta === "mejora" ? ETAPAS_MEJORA : ETAPAS_TERRENO;
 
@@ -609,7 +1144,36 @@ export default function Expedientes() {
   const onlyTerrenoActive = terrenoHasActivity && !mejoraHasActivity;
   const legacyBothActive = mejoraHasActivity && terrenoHasActivity;
   const isTipoCarpetaLocked = Boolean(current?.id_expediente) && (mejoraHasActivity || terrenoHasActivity);
-  const currentGroupBlocked = tipoCarpeta === "mejora" ? onlyTerrenoActive : onlyMejoraActive;
+  const persistedTipo =
+    current?.tipo_expediente === "T" ? "terreno" : current?.tipo_expediente === "M" ? "mejora" : null;
+  const isTipoLocked = Boolean(persistedTipo || tipoLockedLocal);
+  const lockedTipo = persistedTipo || tipoLockedValue;
+  const currentGroupBlocked = Boolean(lockedTipo) && tipoCarpeta !== lockedTipo;
+
+  useEffect(() => {
+    let alive = true;
+    setDbiEstadosLoading(true);
+    setDbiEstadosError("");
+    apiGet(`${API}/expedientes/dbi/estados`)
+      .then((data) => {
+        if (!alive) return;
+        const list = Array.isArray(data) ? data : [];
+        const ordered = [...list].sort((a, b) => (a?.orden || 0) - (b?.orden || 0));
+        setDbiEstadosCatalog(ordered);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setDbiEstadosCatalog([]);
+        setDbiEstadosError(String(e?.message || e));
+      })
+      .finally(() => {
+        if (!alive) return;
+        setDbiEstadosLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function firstPendingKey() {
     for (const e of etapasList) {
@@ -639,7 +1203,7 @@ export default function Expedientes() {
 
   async function setEtapa(key, ok, obs, date) {
     if (!current) return;
-    if ((tipoCarpeta === "mejora" && onlyTerrenoActive) || (tipoCarpeta === "terreno" && onlyMejoraActive)) {
+    if (currentGroupBlocked) {
       return;
     }
     setSavingEtapa(true);
@@ -652,6 +1216,15 @@ export default function Expedientes() {
         payload
       );
       setEtapas(data || {});
+      if (ok && !current?.tipo_expediente && !tipoLockedLocal) {
+        const nextTipoCode = tipoCarpeta === "terreno" ? "T" : "M";
+        setTipoLockedLocal(true);
+        setTipoLockedValue(tipoCarpeta);
+        setForm((prev) => ({ ...prev, tipo_expediente: nextTipoCode }));
+        alerts.toast.info(
+          `Se fijó la carpeta como ${tipoCarpeta === "terreno" ? "Terreno" : "Mejora"} para esta edición. Guardá los cambios para confirmarlo.`
+        );
+      }
       if (ok && data && !data?.[key]?.date) {
         await loadEtapas(current.id_expediente, tipoCarpeta);
       }
@@ -665,11 +1238,12 @@ export default function Expedientes() {
   /* =========================
      ✅ Sets detectados (como Mantenimiento)
      ========================= */
-  const polySets = useMemo(() => {
+  const buildPolySets = (files) => {
     const byBase = new Map();
     const singles = [];
+    const list = Array.isArray(files) ? files : [];
 
-    for (const f of polyFiles) {
+    for (const f of list) {
       const ext = extLower(f.name);
 
       if (isArchiveExt(ext) || isConvertibleExt(ext)) {
@@ -707,16 +1281,11 @@ export default function Expedientes() {
 
     triads.sort((a, b) => Number(a.validTriad) - Number(b.validTriad));
     return [...triads, ...singles];
-  }, [polyFiles]);
+  };
 
-  const polyInvalidTriads = useMemo(
-    () => polySets.some((s) => s.kind === "triad" && !s.validTriad),
-    [polySets]
-  );
-
-  const polyRuleViolations = useMemo(() => {
+  const buildPolyRuleViolations = (sets) => {
     const bad = [];
-    for (const s of polySets) {
+    for (const s of sets) {
       if (s.kind === "triad") {
         if (!matchesTipoRule(s.base, tipoCarpeta)) bad.push({ kind: "triad", name: s.base });
       } else {
@@ -726,44 +1295,82 @@ export default function Expedientes() {
       }
     }
     return bad;
-  }, [polySets, tipoCarpeta]);
+  };
 
-  async function subirPoligono() {
+  const polySetsByTipo = useMemo(
+    () => ({
+      proyecto: buildPolySets(polyFilesByTipo.proyecto),
+      afectacion: buildPolySets(polyFilesByTipo.afectacion),
+    }),
+    [polyFilesByTipo]
+  );
+
+  const polyInvalidTriadsByTipo = useMemo(
+    () => ({
+      proyecto: polySetsByTipo.proyecto.some((s) => s.kind === "triad" && !s.validTriad),
+      afectacion: polySetsByTipo.afectacion.some((s) => s.kind === "triad" && !s.validTriad),
+    }),
+    [polySetsByTipo]
+  );
+
+  const polyRuleViolationsByTipo = useMemo(
+    () => ({
+      proyecto: buildPolyRuleViolations(polySetsByTipo.proyecto),
+      afectacion: buildPolyRuleViolations(polySetsByTipo.afectacion),
+    }),
+    [polySetsByTipo, tipoCarpeta]
+  );
+
+  async function subirPoligono(tipoPoligono) {
     if (!current) return;
+    const polyFiles = polyFilesByTipo?.[tipoPoligono] || [];
+    const polySets = polySetsByTipo?.[tipoPoligono] || [];
+    const polyInvalidTriads = Boolean(polyInvalidTriadsByTipo?.[tipoPoligono]);
+    const polyRuleViolations = polyRuleViolationsByTipo?.[tipoPoligono] || [];
 
     if (!polyFiles.length) {
-      setPolyUploadNotice({
-        tone: "warning",
-        message: "Seleccioná archivos: SHP+DBF+SHX (juntos) o ZIP/KML/KMZ (y opcional GeoJSON).",
-      });
+      setPolyUploadNoticeByTipo((prev) => ({
+        ...prev,
+        [tipoPoligono]: {
+          tone: "warning",
+          message: "Seleccioná archivos: SHP+DBF+SHX (juntos) o ZIP/KML/KMZ (y opcional GeoJSON).",
+        },
+      }));
       return;
     }
 
     if (polyInvalidTriads) {
-      setPolyUploadNotice({
-        tone: "warning",
-        message: "Tenés sets SHP incompletos. Completá .shp + .dbf + .shx o subí un ZIP/KMZ.",
-      });
+      setPolyUploadNoticeByTipo((prev) => ({
+        ...prev,
+        [tipoPoligono]: {
+          tone: "warning",
+          message: "Tenés sets SHP incompletos. Completá .shp + .dbf + .shx o subí un ZIP/KMZ.",
+        },
+      }));
       return;
     }
 
     if (polyRuleViolations.length) {
       const need = tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA o MEJORAS";
-      setPolyUploadNotice({
-        tone: "warning",
-        message:
-          `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.`,
-        details: polyRuleViolations.map((x) => x.name).filter(Boolean),
-      });
+      setPolyUploadNoticeByTipo((prev) => ({
+        ...prev,
+        [tipoPoligono]: {
+          tone: "warning",
+          message:
+            `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.`,
+          details: polyRuleViolations.map((x) => x.name).filter(Boolean),
+        },
+      }));
       return;
     }
 
     setPolyBusy(true);
-    setPolyUploadNotice(null);
+    setPolyUploadNoticeByTipo((prev) => ({ ...prev, [tipoPoligono]: null }));
     try {
       const fd = new FormData();
       polyFiles.forEach((f) => fd.append("files", f));
       fd.append("id_expediente", String(current.id_expediente));
+      fd.append("tipo_poligono", tipoPoligono);
 
       const tablaDestino = tipoCarpeta === "mejora" ? "ema.bloque_mejoras" : "ema.bloque_terreno";
       const singles = polySets.filter((s) => s.kind === "single");
@@ -794,36 +1401,48 @@ export default function Expedientes() {
       await setEtapa("plano_georef", true, etapas?.plano_georef?.obs || "");
       await loadEtapas(current.id_expediente, tipoCarpeta);
 
-      setPlanoGeoCache((prev) => ({
+      setPlanoGeoCache((prev) => {
+        const cacheFuente = normalizePlanoFuente(tipoCarpeta);
+        return {
+          ...prev,
+          [current.id_expediente]: {
+            ...(prev[current.id_expediente] || {}),
+            [cacheFuente]: {
+              ...((prev[current.id_expediente] || {})[cacheFuente] || { proyecto: null, afectacion: null }),
+              [tipoPoligono]: null,
+            },
+          },
+        };
+      });
+
+      await loadPlanoGeo(current.id_expediente, tipoCarpeta, tipoPoligono, true);
+      setPolyFilesByTipo((prev) => ({ ...prev, [tipoPoligono]: [] }));
+      setPolyUploadNoticeByTipo((prev) => ({
         ...prev,
-        [current.id_expediente]: {
-          ...(prev[current.id_expediente] || { mejora: null, terreno: null }),
-          [tipoCarpeta]: null,
+        [tipoPoligono]: {
+          tone: "success",
+          message: "Plano ref. / inf. pericial cargado OK. Se marcó la etapa.",
+          ok: true,
+          inserted,
+          byTable: resp?.byTable || {},
         },
       }));
-
-      await loadPlanoGeo(current.id_expediente, tipoCarpeta, true);
-      setPolyFiles([]);
-      setPolyUploadNotice({
-        tone: "success",
-        message: "Plano georreferenciado cargado OK. Se marcó la etapa.",
-        ok: true,
-        inserted,
-        byTable: resp?.byTable || {},
-      });
     } catch (e) {
-      setPolyUploadNotice({
-        tone: "warning",
-        ok: false,
-        message: String(e?.message || e),
-        inserted: Number(e?.payload?.inserted || e?.payload?.total_inserted || e?.payload?.count || 0) || 0,
-        byTable: e?.payload?.byTable || {},
-        details: Array.isArray(e?.payload?.debug)
-          ? e.payload.debug
-              .map((item) => item?.baseUnique || item?.base || item?.logicalBase || "")
-              .filter(Boolean)
-          : [],
-      });
+      setPolyUploadNoticeByTipo((prev) => ({
+        ...prev,
+        [tipoPoligono]: {
+          tone: "warning",
+          ok: false,
+          message: String(e?.message || e),
+          inserted: Number(e?.payload?.inserted || e?.payload?.total_inserted || e?.payload?.count || 0) || 0,
+          byTable: e?.payload?.byTable || {},
+          details: Array.isArray(e?.payload?.debug)
+            ? e.payload.debug
+                .map((item) => item?.baseUnique || item?.base || item?.logicalBase || "")
+                .filter(Boolean)
+            : [],
+        },
+      }));
     } finally {
       setPolyBusy(false);
     }
@@ -857,11 +1476,7 @@ export default function Expedientes() {
 
   async function agregarDbiEvento() {
     if (!current) return;
-    const estado = String(
-      dbiEventoEstadoPreset === "otro" ? dbiEventoEstado : dbiEventoEstadoPreset || dbiEventoEstado
-    )
-      .trim()
-      .toLowerCase();
+    const estado = String(dbiEventoEstado || "").trim();
     if (!estado) {
       setDbiEventoError("Estado es requerido.");
       return;
@@ -896,7 +1511,6 @@ export default function Expedientes() {
       }
 
       setDbiEventoEstado("");
-      setDbiEventoEstadoPreset("");
       setDbiEventoFecha("");
       setDbiEventoObs("");
     } catch (e) {
@@ -927,11 +1541,32 @@ export default function Expedientes() {
     setDbiInicioBusy(true);
     setDbiInicioError("");
     try {
+      const codigoMeu = String(dbiCodigoMeu || "").trim();
+      const segEstado = String(dbiSegEstado || "").trim();
+      const resolucionNumero = String(dbiResolNumero || "").trim();
+      const resolucionFecha = String(dbiResolFecha || "").trim();
+      const decretoNumero = String(dbiDecretoNumero || "").trim();
+      const decretoFecha = String(dbiDecretoFecha || "").trim();
+
       const payload = {
         codigo,
         fecha_ingreso: fecha.toISOString(),
         obs: dbiInicioObs ? String(dbiInicioObs) : undefined,
       };
+      if (codigoMeu) payload.codigo_meu = codigoMeu;
+      if (segEstado) payload.seg_estado = segEstado;
+      if (resolucionNumero || resolucionFecha) {
+        payload.resolucion = {
+          numero: resolucionNumero || undefined,
+          fecha: ymdToIsoStart(resolucionFecha) || undefined,
+        };
+      }
+      if (decretoNumero || decretoFecha) {
+        payload.decreto = {
+          numero: decretoNumero || undefined,
+          fecha: ymdToIsoStart(decretoFecha) || undefined,
+        };
+      }
       const data = await apiJson(
         `${API}/expedientes/${current.id_expediente}/dbi/iniciar`,
         "POST",
@@ -939,12 +1574,20 @@ export default function Expedientes() {
       );
       if (data && typeof data === "object") {
         setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+        setDbiCodigo(data?.codigo || "");
+        setDbiCodigoMeu(data?.codigo_meu || "");
+        setDbiSegEstado(mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, data?.seg_estado) || data?.seg_estado || "");
+        setDbiResolNumero(data?.resolucion?.numero || "");
+        setDbiResolFecha(data?.resolucion?.fecha ? isoToDateInput(data.resolucion.fecha) : "");
+        setDbiDecretoNumero(data?.decreto?.numero || "");
+        setDbiDecretoFecha(data?.decreto?.fecha ? isoToDateInput(data.decreto.fecha) : "");
+        setDbiInicioFecha(data?.fecha_ingreso ? isoToDatetimeLocal(data.fecha_ingreso) : fechaRaw);
+        setDbiInicioObs(data?.obs || "");
       } else {
         const fresh = await apiGet(`${API}/expedientes/${current.id_expediente}`);
         setCurrent(fresh);
         mergeRow(fresh);
       }
-      setDbiInicioObs("");
       setDbiInicioError("");
     } catch (e) {
       setDbiInicioError(String(e?.message || e));
@@ -953,11 +1596,60 @@ export default function Expedientes() {
     }
   }
 
+  async function guardarDbiHeader() {
+    if (!current?.id_expediente) return;
+    setDbiHeaderBusy(true);
+    setDbiHeaderError("");
+    try {
+      const normalizeDbiDate = (value) => {
+        const raw = String(value || "").trim();
+        if (!raw) return null;
+        const iso = ymdToIsoStart(raw);
+        return iso || null;
+      };
+      const payload = {
+        seg_estado: String(dbiSegEstado || "").trim(),
+        obs: String(dbiInicioObs || ""),
+        resolucion: {
+          numero: String(dbiResolNumero || "").trim() || null,
+          fecha: normalizeDbiDate(dbiResolFecha),
+        },
+        decreto: {
+          numero: String(dbiDecretoNumero || "").trim() || null,
+          fecha: normalizeDbiDate(dbiDecretoFecha),
+        },
+      };
+
+      const data = await apiJson(
+        `${API}/expedientes/${current.id_expediente}/dbi/header`,
+        "PUT",
+        payload
+      );
+
+      if (data && typeof data === "object") {
+        setCurrent((prev) => (prev ? { ...prev, carpeta_dbi: data } : prev));
+        setDbiSegEstado(mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, data?.seg_estado) || data?.seg_estado || "");
+        setDbiResolNumero(data?.resolucion?.numero || "");
+        setDbiResolFecha(data?.resolucion?.fecha ? isoToDateInput(data.resolucion.fecha) : "");
+        setDbiDecretoNumero(data?.decreto?.numero || "");
+        setDbiDecretoFecha(data?.decreto?.fecha ? isoToDateInput(data.decreto.fecha) : "");
+        setDbiInicioObs(data?.obs || "");
+        setDbiHeaderOpen(false);
+      } else {
+        setDbiHeaderError("No se pudo actualizar la cabecera DBI.");
+      }
+    } catch (e) {
+      setDbiHeaderError(String(e?.message || e));
+    } finally {
+      setDbiHeaderBusy(false);
+    }
+  }
+
   // =========================
   // IMPORT EXCEL
   // =========================
   const EXP_FIELDS = [
-    { key: "id_import", label: "Codigo importacion", type: "text" },
+    { key: "id_import", label: "Código importación", type: "text" },
     { key: "fecha_relevamiento", label: "Fecha relevamiento", type: "date" },
     { key: "gps", label: "GPS", type: "text" },
     { key: "tecnico", label: "Técnico", type: "text" },
@@ -967,11 +1659,22 @@ export default function Expedientes() {
     { key: "propietario_ci", label: "Propietario CI", type: "text" },
     { key: "tramo", label: "Tramo", type: "text" },
     { key: "subtramo", label: "Subtramo", type: "text" },
+    { key: "telefono", label: "Teléfono", type: "text" },
+    { key: "pareja_nombre", label: "Nombre del co-titular", type: "text" },
+    { key: "pareja_ci", label: "C.I. del co-titular", type: "text" },
 
     { key: "ci_propietario_frente_url", label: "CI Propietario Frente URL", type: "text" },
     { key: "ci_propietario_dorso_url", label: "CI Propietario Dorso URL", type: "text" },
     { key: "ci_adicional_frente_url", label: "CI Adicional Frente URL", type: "text" },
     { key: "ci_adicional_dorso_url", label: "CI Adicional Dorso URL", type: "text" },
+
+    { key: "superficie", label: "Superficie", type: "number" },
+    { key: "superficie_afectada", label: "Superficie afectada", type: "number" },
+    { key: "progresiva_ini", label: "Progresiva inicio", type: "text" },
+    { key: "progresiva_fin", label: "Progresiva fin", type: "text" },
+    { key: "margen", label: "Margen", type: "text" },
+    { key: "percepcion_notificador", label: "Percepción notificador", type: "text" },
+    { key: "observacion_notificador", label: "Observación notificador", type: "text" },
 
     // ✅ NUEVOS: documentos generales desde Excel
     { key: "documentos_urls", label: "Documentos URL(s)", type: "text" },
@@ -1038,8 +1741,8 @@ export default function Expedientes() {
     { key: "docs_informe_pericial_nombres", label: "Informe pericial - nombres", group: "docs" },
     { key: "docs_informe_pericial_urls", label: "Informe pericial - links/rutas", group: "docs" },
 
-    { key: "docs_plantilla_nombres", label: "Plantilla - nombres", group: "docs" },
-    { key: "docs_plantilla_urls", label: "Plantilla - links/rutas", group: "docs" },
+    { key: "docs_plantilla_nombres", label: "Planilla de calculo - nombres", group: "docs" },
+    { key: "docs_plantilla_urls", label: "Planilla de calculo - links/rutas", group: "docs" },
 
     { key: "docs_notif_conformidad_nombres", label: "Notif. conformidad - nombres", group: "docs" },
     { key: "docs_notif_conformidad_urls", label: "Notif. conformidad - links/rutas", group: "docs" },
@@ -1096,6 +1799,23 @@ export default function Expedientes() {
 
   function guessMapping(headers) {
     const H = headers.map((h) => ({ raw: h, n: norm(h) }));
+
+    const pickMulti = (...cands) => {
+      const found = [];
+      for (const c of cands) {
+        const cn = norm(c);
+        const exact = H.find((x) => x.n === cn);
+        if (exact) {
+          if (!found.includes(exact.raw)) found.push(exact.raw);
+          continue;
+        }
+        const partial = H.filter((x) => x.n.includes(cn));
+        partial.forEach((p) => {
+          if (!found.includes(p.raw)) found.push(p.raw);
+        });
+      }
+      return found;
+    };
 
     const pick = (...cands) => {
       for (const c of cands) {
@@ -1188,8 +1908,62 @@ export default function Expedientes() {
         "tramo"
       ),
 
-      subtramo: pick(
+      telefono: pick(
+        "Datos_del_Expediente_Número_de_teléfono",
+        "telefono",
+        "n de telefono",
+        "nro de telefono"
+      ),
+
+      pareja_ci: pick(
+        "Datos_del_Expediente_Número_C.I._Adicional",
+        "pareja ci",
+        "co-titular ci",
+        "ci adicional"
+      ),
+
+      superficie: pick(
+        "superficie"
+      ),
+
+      superficie_afectada: pick(
+        "superficie afectada",
+        "superficie_afectada"
+      ),
+
+      progresiva_ini: pick(
+        "progresiva inicio",
+        "progresiva inicial",
+        "progresiva_inicio",
+        "progresiva_ini"
+      ),
+
+      progresiva_fin: pick(
+        "progresiva fin",
+        "progresiva_fin"
+      ),
+
+      margen: pick(
+        "margen"
+      ),
+
+      percepcion_notificador: pick(
+        "Datos_del_Expediente_Percepcion_del_Notificador",
+        "percepcion notificador",
+        "percepcion del notificador"
+      ),
+
+      observacion_notificador: pick(
+        "observacion notificador",
+        "observaciones del notificador",
+        "observaciones generales",
+        "observacion"
+      ),
+
+      subtramo: pickMulti(
         "Datos_del_Expediente_Subtramo_1",
+        "Datos_del_Expediente_Subtramo_2",
+        "Datos_del_Expediente_Subtramo_3",
         "subtramo 1",
         "subtramo"
       ),
@@ -1226,7 +2000,11 @@ export default function Expedientes() {
         "cedula adicional dorso"
       ),
 
-      documentos_urls: pick(
+      documentos_urls: pickMulti(
+        "Fotos:Datos_Relevamiento_Foto_3",
+        "Fotos:Datos_Relevamiento_Foto1",
+        "Fotos:Datos_Relevamiento_Foto2",
+
         "documentos",
         "documentos url",
         "documentos urls",
@@ -1411,6 +2189,30 @@ export default function Expedientes() {
           continue;
         }
 
+        if (f.key === "subtramo") {
+          const cols = getMultiSelectedColumns(mapCols[f.key]);
+          let val = "";
+          for (const c of cols) {
+            const v = String(r[c] ?? "").trim();
+            if (v && !/^0+$/.test(v)) {
+              val = v;
+              break;
+            }
+          }
+          obj[f.key] = val || null;
+          continue;
+        }
+
+        if (f.type === "number") {
+          const col = mapCols[f.key];
+          const raw = String(col ? (r[col] ?? "") : "")
+            .trim()
+            .replace(",", ".");
+          const n = raw === "" ? NaN : parseFloat(raw);
+          obj[f.key] = Number.isFinite(n) ? n : null;
+          continue;
+        }
+
         const col = mapCols[f.key];
         const val = col ? r[col] : "";
 
@@ -1521,7 +2323,7 @@ export default function Expedientes() {
                 break;
 
               case "premio_aplica":
-                value = r?.premio_aplica ? "Sí" : "No";
+                value = r?.premio_aplica ? "Si" : "No";
                 break;
 
               case "doc_total":
@@ -1914,10 +2716,16 @@ export default function Expedientes() {
   const openCrear = () => {
     setMode("crear");
     setCurrent(null);
+    setTipoLockedLocal(false);
+    setTipoLockedValue(null);
     setDocs([]);
     setDocsCI([]);
     setDocsCIAdicional([]);
+    setVisitas([]);
+    setVisitasError("");
     setSubcarpeta("");
+    setDocsChecklistOpen(false);
+    setPlanoViewTipo("proyecto");
 
     setTipoCarpeta("mejora");
     setEtapas({});
@@ -1929,6 +2737,7 @@ export default function Expedientes() {
       gps: "",
       tecnico: "",
       codigo_exp: "",
+      codigo_unico: "",
       propietario_nombre: "",
       propietario_ci: "",
       pareja_nombre: "",
@@ -1943,6 +2752,18 @@ export default function Expedientes() {
       parte_a: "",
       parte_b: "",
       premio_aplica: false,
+      superficie: "",
+      superficie_afectada: "",
+      progresiva_ini: "",
+      progresiva_fin: "",
+      margen: "",
+      porcentaje_afectacion: "",
+      desafectado: false,
+      desafectado_detalle: "",
+      percepcion_notificador: "",
+      observacion_notificador: "",
+      documentacion_presentada: [],
+      tipo_expediente: null,
     });
 
     setUploadFiles([]);
@@ -1951,8 +2772,18 @@ export default function Expedientes() {
     setCiAdicionalFrente(null);
     setCiAdicionalDorso(null);
 
-    setPolyFiles([]);
+    setPolyFilesByTipo({ proyecto: [], afectacion: [] });
+    setPolyUploadNoticeByTipo({ proyecto: null, afectacion: null });
     setDbiCodigo("");
+    setDbiCodigoMeu("");
+    setDbiSegEstado("");
+    setDbiResolNumero("");
+    setDbiResolFecha("");
+    setDbiDecretoNumero("");
+    setDbiDecretoFecha("");
+    setDbiHeaderOpen(false);
+    setDbiHeaderBusy(false);
+    setDbiHeaderError("");
     setDbiFile(null);
     setDbiInicioObs("");
     setDbiInicioError("");
@@ -1968,8 +2799,11 @@ export default function Expedientes() {
     const resolvedTipo = resolveTipoCarpetaFromExpediente(freshRow).tipo;
     setMode("ver");
     setCurrent(freshRow);
+    setTipoLockedLocal(false);
+    setTipoLockedValue(null);
     setSubcarpeta("");
-    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
+    setDocsChecklistOpen(false);
+    setPlanoViewTipo("proyecto");
     setTipoCarpeta(resolvedTipo);
     setEtapas({});
     setEtapasErr("");
@@ -1982,18 +2816,45 @@ export default function Expedientes() {
     setCiAdicionalFrente(null);
     setCiAdicionalDorso(null);
 
-    setPolyFiles([]);
-    setDbiCodigo("");
+    setPolyFilesByTipo({ proyecto: [], afectacion: [] });
+    setPolyUploadNoticeByTipo({ proyecto: null, afectacion: null });
+    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
+    setDbiCodigoMeu(freshRow?.carpeta_dbi?.codigo_meu || "");
+    setDbiSegEstado(
+      mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, freshRow?.carpeta_dbi?.seg_estado) ||
+        freshRow?.carpeta_dbi?.seg_estado ||
+        ""
+    );
+    setDbiResolNumero(freshRow?.carpeta_dbi?.resolucion?.numero || "");
+    setDbiResolFecha(
+      freshRow?.carpeta_dbi?.resolucion?.fecha
+        ? isoToDateInput(freshRow.carpeta_dbi.resolucion.fecha)
+        : ""
+    );
+    setDbiDecretoNumero(freshRow?.carpeta_dbi?.decreto?.numero || "");
+    setDbiDecretoFecha(
+      freshRow?.carpeta_dbi?.decreto?.fecha
+        ? isoToDateInput(freshRow.carpeta_dbi.decreto.fecha)
+        : ""
+    );
+    setDbiHeaderOpen(false);
+    setDbiHeaderBusy(false);
+    setDbiHeaderError("");
     setDbiFile(null);
-    setDbiInicioObs("");
+    setDbiInicioObs(freshRow?.carpeta_dbi?.obs || "");
     setDbiInicioError("");
-    setDbiInicioFecha(nowLocalDateTimeInput());
+    setDbiInicioFecha(
+      freshRow?.carpeta_dbi?.fecha_ingreso
+        ? isoToDatetimeLocal(freshRow.carpeta_dbi.fecha_ingreso)
+        : nowLocalDateTimeInput()
+    );
     setDbiEventoFecha(nowLocalDateTimeInput());
     setAvaluoOpen(true);
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
     await loadEtapas(freshRow.id_expediente, resolvedTipo);
+    await loadVisitas(freshRow.id_expediente, true);
     setShow(true);
   };
 
@@ -2002,8 +2863,11 @@ export default function Expedientes() {
     const resolvedTipo = resolveTipoCarpetaFromExpediente(freshRow).tipo;
     setMode("editar");
     setCurrent(freshRow);
+    setTipoLockedLocal(false);
+    setTipoLockedValue(null);
     setSubcarpeta("");
-    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
+    setDocsChecklistOpen(false);
+    setPlanoViewTipo("proyecto");
     setTipoCarpeta(resolvedTipo);
     setEtapas({});
     setEtapasErr("");
@@ -2016,19 +2880,62 @@ export default function Expedientes() {
     setCiAdicionalFrente(null);
     setCiAdicionalDorso(null);
 
-    setPolyFiles([]);
-    setDbiCodigo("");
+    setPolyFilesByTipo({ proyecto: [], afectacion: [] });
+    setPolyUploadNoticeByTipo({ proyecto: null, afectacion: null });
+    setDbiCodigo(freshRow?.carpeta_dbi?.codigo || "");
+    setDbiCodigoMeu(freshRow?.carpeta_dbi?.codigo_meu || "");
+    setDbiSegEstado(
+      mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, freshRow?.carpeta_dbi?.seg_estado) ||
+        freshRow?.carpeta_dbi?.seg_estado ||
+        ""
+    );
+    setDbiResolNumero(freshRow?.carpeta_dbi?.resolucion?.numero || "");
+    setDbiResolFecha(
+      freshRow?.carpeta_dbi?.resolucion?.fecha
+        ? isoToDateInput(freshRow.carpeta_dbi.resolucion.fecha)
+        : ""
+    );
+    setDbiDecretoNumero(freshRow?.carpeta_dbi?.decreto?.numero || "");
+    setDbiDecretoFecha(
+      freshRow?.carpeta_dbi?.decreto?.fecha
+        ? isoToDateInput(freshRow.carpeta_dbi.decreto.fecha)
+        : ""
+    );
+    setDbiHeaderOpen(false);
+    setDbiHeaderBusy(false);
+    setDbiHeaderError("");
     setDbiFile(null);
-    setDbiInicioObs("");
+    setDbiInicioObs(freshRow?.carpeta_dbi?.obs || "");
     setDbiInicioError("");
-    setDbiInicioFecha(nowLocalDateTimeInput());
+    setDbiInicioFecha(
+      freshRow?.carpeta_dbi?.fecha_ingreso
+        ? isoToDatetimeLocal(freshRow.carpeta_dbi.fecha_ingreso)
+        : nowLocalDateTimeInput()
+    );
     setDbiEventoFecha(nowLocalDateTimeInput());
     setAvaluoOpen(true);
 
     await loadDocs(freshRow.id_expediente);
     await loadCIDocs(freshRow.id_expediente);
     await loadEtapas(freshRow.id_expediente, resolvedTipo);
+    await loadVisitas(freshRow.id_expediente, true);
     setShow(true);
+  };
+
+  const buildExpedientePayload = (nextForm = form, nextTipoCarpeta = tipoCarpeta) => {
+    const resolvedTipoCode =
+      nextForm.tipo_expediente ||
+      (nextTipoCarpeta === "terreno" ? "T" : "M");
+
+    return {
+      ...nextForm,
+      tipo_expediente: resolvedTipoCode,
+      documentacion_presentada: normalizeDocList(nextForm.documentacion_presentada),
+      porcentaje_afectacion: porcentajeAfectacionCalc || "",
+      desafectado_detalle: nextForm.desafectado
+        ? buildDesafectadoDetalle(nextForm.desafectado_detalle)
+        : null,
+    };
   };
 
   const save = async () => {
@@ -2036,8 +2943,18 @@ export default function Expedientes() {
       alert("Fecha relevamiento es obligatoria.");
       return;
     }
+    const sup = Number(String(form?.superficie ?? "").trim());
+    const supA = Number(String(form?.superficie_afectada ?? "").trim());
+    if (Number.isFinite(sup) && Number.isFinite(supA) && supA > sup) {
+      alert("La superficie afectada no puede ser mayor que la superficie.");
+      return;
+    }
+  // tipo_expediente: form ya tiene el valor resuelto desde hydrate.
+  // El fallback a tipoCarpeta cubre el caso de expedientes recién creados en la
+  // misma sesión (mode === "crear") donde hydrateFormFromRow aún no corrió.
+    const payload = buildExpedientePayload(form, tipoCarpeta);
     if (mode === "crear") {
-      const created = await apiJson(`${API}/expedientes`, "POST", form);
+      const created = await apiJson(`${API}/expedientes`, "POST", payload);
       setCurrent(created);
       mergeRow(created);
       setMode("editar");
@@ -2049,7 +2966,7 @@ export default function Expedientes() {
       return;
     }
     if (mode === "editar" && current) {
-      const upd = await apiJson(`${API}/expedientes/${current.id_expediente}`, "PUT", form);
+      const upd = await apiJson(`${API}/expedientes/${current.id_expediente}`, "PUT", payload);
       setCurrent(upd);
       mergeRow(upd);
       await load();
@@ -2325,7 +3242,7 @@ export default function Expedientes() {
             </div>
 
             <div style={{ display: "none" }} className="small text-muted mt-2">
-              No se pudo previsualizar. Abrí el enlace.
+              No se pudo previsualizar. Abr? el enlace.
             </div>
 
             <div className="mt-2 d-flex gap-2 flex-wrap">
@@ -2398,6 +3315,57 @@ export default function Expedientes() {
     String(filterQ || "").trim() || filterTramoId || filterSubtramoId
   );
 
+  const sortedRows = useMemo(() => {
+    if (!sortKey) return rows;
+
+    const dir = sortDir === "desc" ? -1 : 1;
+    const getValue = (r) => {
+      switch (sortKey) {
+        case "id_expediente":
+          return Number(r.id_expediente) || 0;
+        case "codigo_exp":
+          return String(r.codigo_unico || r.codigo_exp || "").toLowerCase();
+        case "propietario_nombre":
+          return String(r.propietario_nombre || "").toLowerCase();
+        case "propietario_ci":
+          return String(r.propietario_ci || "").toLowerCase();
+        case "codigo_dbi":
+          return String(r?.carpeta_dbi?.codigo || "").toLowerCase();
+        case "tramo":
+          return String(r.tramo || "").toLowerCase();
+        case "fecha_relevamiento": {
+          const d = new Date(r.fecha_relevamiento);
+          return Number.isNaN(d.getTime()) ? 0 : d.getTime();
+        }
+        default:
+          return "";
+      }
+    };
+
+    return [...rows].sort((a, b) => {
+      const va = getValue(a);
+      const vb = getValue(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  }, [rows, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    if (!key) return;
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir("asc");
+      return;
+    }
+    setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+  };
+
+  const sortIndicator = (key) => {
+    if (sortKey !== key) return "";
+    return sortDir === "asc" ? " ▲" : " ▼";
+  };
+
   const avaluoLabels = useMemo(() => {
     if (tipoCarpeta === "terreno") {
       return { a: "Fracción afectada", b: "Gastos de transferencia" };
@@ -2425,6 +3393,38 @@ export default function Expedientes() {
 
     return { parteA, parteB, subtotal, premio, total, fmt };
   }, [form?.parte_a, form?.parte_b, form?.premio_aplica]);
+
+  const porcentajeAfectacionCalc = useMemo(() => {
+    const rawSup = String(form?.superficie ?? "").trim();
+    const rawSupA = String(form?.superficie_afectada ?? "").trim();
+    if (!rawSup || !rawSupA) return "";
+
+    const sup = Number(rawSup);
+    const supA = Number(rawSupA);
+    if (!Number.isFinite(sup) || sup <= 0) return "";
+    if (!Number.isFinite(supA) || supA < 0) return "";
+
+    const raw = (supA / sup) * 100;
+    if (!Number.isFinite(raw)) return "";
+    const rounded = Math.round(raw * 100) / 100;
+    return String(rounded);
+  }, [form?.superficie, form?.superficie_afectada]);
+
+  const desafectadoDetalleFields = useMemo(
+    () => parseDesafectadoDetalle(form?.desafectado_detalle),
+    [form?.desafectado_detalle]
+  );
+
+  const updateDesafectadoDetalleField = (key, nextValue) => {
+    const nextDetail = {
+      ...desafectadoDetalleFields,
+      [key]: nextValue,
+    };
+    setForm({
+      ...form,
+      desafectado_detalle: buildDesafectadoDetalle(nextDetail),
+    });
+  };
 
   return (
     <div className="container mt-3">
@@ -2470,7 +3470,7 @@ export default function Expedientes() {
             className="btn btn-outline-success btn-sm ms-2"
             to={`/proyectos/${id}/gv-catastro`}
           >
-            🗺 Dashboard Catastro
+            🗺️ Dashboard Catastro
           </Link>
         </Col>
       </Row>
@@ -2600,8 +3600,8 @@ export default function Expedientes() {
         </Col>
       </Row>
 
-      <div className="table-responsive">
-        <Table bordered hover size="sm" className="align-middle">
+      <div className="table-responsive" style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
+        <Table bordered hover size="sm" className="align-middle" style={{ minWidth: 980 }}>
           <thead>
             <tr>
               <th style={{ width: 36 }}>
@@ -2614,13 +3614,25 @@ export default function Expedientes() {
                   aria-label="Seleccionar todos"
                 />
               </th>
-              <th>ID</th>
-              <th>Código Exp.</th>
-              <th>Propietario</th>
-              <th>C.I.</th>
-              <th>Tramo</th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("codigo_exp")}>
+                Código expediente{sortIndicator("codigo_exp")}
+              </th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("codigo_dbi")}>
+                Código DBI{sortIndicator("codigo_dbi")}
+              </th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("propietario_nombre")}>
+                Propietario{sortIndicator("propietario_nombre")}
+              </th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("propietario_ci")}>
+                C.I.{sortIndicator("propietario_ci")}
+              </th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("tramo")}>
+                Tramo{sortIndicator("tramo")}
+              </th>
               <th>Tipo de carpeta</th>
-              <th>Fecha</th>
+              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("fecha_relevamiento")}>
+                Fecha{sortIndicator("fecha_relevamiento")}
+              </th>
               <th style={{ width: 160 }}>Acciones</th>
             </tr>
           </thead>
@@ -2636,7 +3648,7 @@ export default function Expedientes() {
                 </td>
               </tr>
             )}
-            {rows.map((r) => (
+            {sortedRows.map((r) => (
               <tr key={r.id_expediente}>
                 <td>
                   <Form.Check
@@ -2649,8 +3661,8 @@ export default function Expedientes() {
                     aria-label={`Seleccionar expediente ${r.id_expediente}`}
                   />
                 </td>
-                <td>{r.id_expediente}</td>
-                <td>{r.codigo_exp}</td>
+                <td>{r.codigo_unico || r.codigo_exp || "—"}</td>
+                <td>{r?.carpeta_dbi?.codigo || "—"}</td>
                 <td>{r.propietario_nombre}</td>
                 <td>{r.propietario_ci}</td>
                 <td>{r.tramo}</td>
@@ -2686,7 +3698,16 @@ export default function Expedientes() {
       {/* =========================
           MODAL CRUD
         ========================= */}
-      <Modal show={show} onHide={() => setShow(false)} size="xl" centered>
+      <Modal
+        show={show}
+        onHide={() => {
+          setShow(false);
+          setDocsChecklistOpen(false);
+          setShowVisitaModal(false);
+        }}
+        size="xl"
+        centered
+      >
         <Modal.Header closeButton>
           <Modal.Title>
             {mode === "crear" ? "Nuevo Expediente" : mode === "editar" ? "Editar Expediente" : "Ver Expediente"}
@@ -2714,25 +3735,6 @@ export default function Expedientes() {
             </Col>
             <Col md={3}>
               <Form.Group>
-                <Form.Label>GPS</Form.Label>
-                <ExpedienteGpsField
-                  ref={gpsFieldRef}
-                  value={form.gps}
-                  onChange={(gps) => setForm({ ...form, gps })}
-                  onOpenMap={() => {
-                    if (!geometryEditable) return;
-                    if (current?.id_expediente) {
-                      loadPlanoGeo(current.id_expediente, tipoCarpeta);
-                      loadCatastroFeatures();
-                    }
-                  }}
-                  readOnlyGeometry={readOnlyGeometry}
-                  disabled={!geometryEditable}
-                />
-              </Form.Group>
-            </Col>
-            <Col md={3}>
-              <Form.Group>
                 <Form.Label>Técnico</Form.Label>
                 <Form.Control
                   value={form.tecnico}
@@ -2743,7 +3745,7 @@ export default function Expedientes() {
             </Col>
             <Col md={3}>
               <Form.Group>
-                <Form.Label>Nro. Notificacion</Form.Label>
+                <Form.Label>Nro. Notificación</Form.Label>
                 <Form.Control
                   value={form.codigo_exp}
                   disabled={readonly}
@@ -2751,8 +3753,73 @@ export default function Expedientes() {
                 />
               </Form.Group>
             </Col>
+            <Col md={3}>
+              <Form.Group>
+                <Form.Label>Código único</Form.Label>
+                <Form.Control
+                  value={form.codigo_unico || ""}
+                  placeholder="Se genera al guardar"
+                  readOnly
+                  disabled={readonly}
+                />
+              </Form.Group>
+            </Col>
 
-            <Col md={8}>
+            <Col md={12}>
+              <Form.Group>
+                <Form.Label>GPS</Form.Label>
+                <div className="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+                  <div className="text-muted small">
+                    {Array.isArray(gpsCoords) ? (
+                      <>
+                        Lat: {formatGpsDecimal(gpsCoords[0])} · Lng: {formatGpsDecimal(gpsCoords[1])}
+                      </>
+                    ) : (
+                      <>Lat: — · Lng: —</>
+                    )}
+                  </div>
+                  <div className="d-flex align-items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={readonly ? "outline-secondary" : "outline-primary"}
+                      disabled={!geometryEditable && !hasGpsCoords}
+                      onClick={() => gpsFieldRef.current?.openMap?.()}
+                    >
+                      {readonly ? "Ver en mapa" : hasGpsCoords ? "Editar en mapa" : "Seleccionar en mapa"}
+                    </Button>
+                    {hasGpsCoords && geometryEditable && (
+                      <Button
+                        size="sm"
+                        variant="link"
+                        className="p-0 text-muted"
+                        onClick={() => setForm({ ...form, gps: "" })}
+                      >
+                        Limpiar
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <div className="d-none">
+                  <ExpedienteGpsField
+                    ref={gpsFieldRef}
+                    value={form.gps}
+                    onChange={(gps) => setForm({ ...form, gps })}
+                    onOpenMap={() => {
+                      if (!geometryEditable) return;
+                      if (current?.id_expediente) {
+                        loadPlanoGeo(current.id_expediente, tipoCarpeta, "proyecto");
+                        loadCatastroFeatures();
+                      }
+                    }}
+                    readOnlyGeometry={readOnlyGeometry}
+                    readOnly={readonly}
+                    disabled={readonly ? false : !geometryEditable}
+                  />
+                </div>
+              </Form.Group>
+            </Col>
+
+            <Col md={6}>
               <Form.Group>
                 <Form.Label>Nombre del Propietario</Form.Label>
                 <Form.Control
@@ -2762,9 +3829,19 @@ export default function Expedientes() {
                 />
               </Form.Group>
             </Col>
-            <Col md={4}>
+            <Col md={3}>
               <Form.Group>
-                <Form.Label>C.I</Form.Label>
+                <Form.Label>Teléfono</Form.Label>
+                <Form.Control
+                  value={form.telefono || ""}
+                  disabled={readonly}
+                  onChange={(e) => setForm({ ...form, telefono: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={3}>
+              <Form.Group>
+                <Form.Label>C.I.</Form.Label>
                 <Form.Control
                   value={form.propietario_ci}
                   disabled={readonly}
@@ -2864,6 +3941,29 @@ export default function Expedientes() {
                     />
                   </Form.Group>
                 </Col>
+                <Col md={6}>
+                  <Form.Group>
+                    <Form.Label>Padrón</Form.Label>
+                    <Form.Control
+                      value={form.padron || ""}
+                      disabled={readonly}
+                      onChange={(e) => setForm({ ...form, padron: e.target.value })}
+                      placeholder="Ej: 12345"
+                    />
+                  </Form.Group>
+                </Col>
+
+                <Col md={6}>
+                  <Form.Group>
+                    <Form.Label>CTA Cte Catastral</Form.Label>
+                    <Form.Control
+                      value={form.cta_cte_catastral || ""}
+                      disabled={readonly}
+                      onChange={(e) => setForm({ ...form, cta_cte_catastral: e.target.value })}
+                      placeholder="Ej: 00-0000-0000"
+                    />
+                  </Form.Group>
+                </Col>
 
                 <div className="text-muted small mt-2">
                   * La descripción de tramo se resolverá dinámicamente al guardar; el input libre fue depreciado.
@@ -2885,6 +3985,512 @@ export default function Expedientes() {
                   </div>
                 )}
               </Row>
+            </Col>
+          </Row>
+
+          {/* --- datos operativos / afectación --- */}
+          <Row className="g-3">
+            <Col md={12}>
+              <div className="border rounded p-3">
+                <h5 className="mb-3">Datos operativos / afectación</h5>
+                <Row className="g-3">
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Superficie</Form.Label>
+                      <Form.Control
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={form.superficie}
+                        disabled={readonly}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (String(v).startsWith("-")) return;
+                          let nextSuperficieAfectada = form.superficie_afectada;
+                          const sup = Number(String(v || "").trim());
+                          const supA = Number(String(form.superficie_afectada || "").trim());
+                          if (
+                            Number.isFinite(sup) &&
+                            sup > 0 &&
+                            Number.isFinite(supA) &&
+                            supA > sup
+                          ) {
+                            nextSuperficieAfectada = String(sup);
+                          }
+                          setForm({
+                            ...form,
+                            superficie: v,
+                            superficie_afectada: nextSuperficieAfectada,
+                          });
+                        }}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Superficie afectada</Form.Label>
+                      <Form.Control
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        max={form.superficie || undefined}
+                        value={form.superficie_afectada}
+                        disabled={readonly}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (String(v).startsWith("-")) return;
+                          const sup = Number(String(form.superficie || "").trim());
+                          const supA = Number(String(v || "").trim());
+                          const nextValue =
+                            Number.isFinite(sup) && sup > 0 && Number.isFinite(supA) && supA > sup
+                              ? String(sup)
+                              : v;
+                          setForm({ ...form, superficie_afectada: nextValue });
+                        }}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Progresiva inicio</Form.Label>
+                      <Form.Control
+                        value={form.progresiva_ini}
+                        disabled={readonly}
+                        onChange={(e) => setForm({ ...form, progresiva_ini: e.target.value })}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Progresiva fin</Form.Label>
+                      <Form.Control
+                        value={form.progresiva_fin}
+                        disabled={readonly}
+                        onChange={(e) => setForm({ ...form, progresiva_fin: e.target.value })}
+                      />
+                    </Form.Group>
+                  </Col>
+
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Margen</Form.Label>
+                      <Form.Select
+                        value={form.margen || ""}
+                        disabled={readonly}
+                        onChange={(e) => setForm({ ...form, margen: e.target.value })}
+                      >
+                        <option value="">— Seleccionar —</option>
+                        <option value="izquierda">izquierda</option>
+                        <option value="derecha">derecha</option>
+                        <option value="centro">centro</option>
+                      </Form.Select>
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>% afectación</Form.Label>
+                      <Form.Control
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={porcentajeAfectacionCalc}
+                        readOnly
+                        disabled={readonly}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3} className="d-flex align-items-end">
+                    <Form.Check
+                      type="checkbox"
+                      id="exp-desafectado"
+                      label="Desafectado"
+                      checked={!!form.desafectado}
+                      disabled={readonly}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          desafectado: e.target.checked,
+                          desafectado_detalle: e.target.checked
+                            ? buildDesafectadoDetalle(form.desafectado_detalle)
+                            : null,
+                        })
+                      }
+                    />
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label>Percepción notificador</Form.Label>
+                      <Form.Select
+                        value={form.percepcion_notificador || ""}
+                        disabled={readonly}
+                        onChange={(e) => setForm({ ...form, percepcion_notificador: e.target.value })}
+                      >
+                        <option value="">— Seleccionar —</option>
+                        <option value="buena">buena</option>
+                        <option value="neutra">neutra</option>
+                        <option value="mala">mala</option>
+                      </Form.Select>
+                    </Form.Group>
+                  </Col>
+
+                  <Col md={12}>
+                    <Form.Group>
+                      <Form.Label>Observación notificador</Form.Label>
+                      <Form.Control
+                        as="textarea"
+                        rows={2}
+                        value={form.observacion_notificador}
+                        disabled={readonly}
+                        onChange={(e) =>
+                          setForm({ ...form, observacion_notificador: e.target.value })
+                        }
+                      />
+                    </Form.Group>
+                  </Col>
+                  {form.desafectado && (
+                    <>
+                      <Col md={3}>
+                        <Form.Group>
+                          <Form.Label>Fecha desafectación</Form.Label>
+                          <Form.Control
+                            type="date"
+                            value={desafectadoDetalleFields.fecha}
+                            disabled={readonly}
+                            onChange={(e) => updateDesafectadoDetalleField("fecha", e.target.value)}
+                          />
+                        </Form.Group>
+                      </Col>
+                      <Col md={5}>
+                        <Form.Group>
+                          <Form.Label>Motivo desafectación</Form.Label>
+                          <Form.Control
+                            value={desafectadoDetalleFields.motivo}
+                            disabled={readonly}
+                            onChange={(e) => updateDesafectadoDetalleField("motivo", e.target.value)}
+                            placeholder="Ej: Cambio de trazado"
+                          />
+                        </Form.Group>
+                      </Col>
+                      <Col md={4}>
+                        <Form.Group>
+                          <Form.Label>Tipo desafectación</Form.Label>
+                          <Form.Select
+                            value={desafectadoDetalleFields.tipo}
+                            disabled={readonly}
+                            onChange={(e) => updateDesafectadoDetalleField("tipo", e.target.value)}
+                          >
+                            <option value="">— Seleccionar —</option>
+                            <option value="total">total</option>
+                            <option value="parcial">parcial</option>
+                          </Form.Select>
+                        </Form.Group>
+                      </Col>
+                      <Col md={12}>
+                        <Form.Group>
+                          <Form.Label>Observación</Form.Label>
+                          <Form.Control
+                            as="textarea"
+                            rows={3}
+                            value={desafectadoDetalleFields.observacion}
+                            disabled={readonly}
+                            onChange={(e) => updateDesafectadoDetalleField("observacion", e.target.value)}
+                            placeholder="Detalle de la desafectación"
+                          />
+                        </Form.Group>
+                      </Col>
+                    </>
+                  )}
+                </Row>
+              </div>
+            </Col>
+          </Row>
+
+          {/* --- documentación presentada --- */}
+          <Row className="g-3">
+            <Col md={12}>
+              <div className="border rounded p-3">
+                <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                  <h5 className="mb-0">Documentación presentada</h5>
+                  <Button
+                    size="sm"
+                    variant="outline-secondary"
+                    onClick={() => setDocsChecklistOpen(true)}
+                  >
+                    {readonly ? "Ver documentación" : "Editar documentación"}
+                  </Button>
+                </div>
+                <div className="text-muted small mt-1">
+                  Checklist operativo (no son archivos físicos).
+                </div>
+                <div className="d-flex flex-wrap gap-2 mt-2">
+                  {(form.documentacion_presentada || []).length === 0 && (
+                    <span className="text-muted small">Sin documentos marcados</span>
+                  )}
+                  {(form.documentacion_presentada || []).map((key) => {
+                    const item = DOCS_CATALOG.find((d) => d.value === key);
+                    return (
+                      <Badge bg="secondary" key={`doc-presentada-${key}`}>
+                        {item?.label || key}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </div>
+            </Col>
+          </Row>
+
+          {/* --- historial de visitas --- */}
+          <Row className="g-3">
+            <Col md={12}>
+              <div className="border rounded p-3">
+                <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                  <h5 className="mb-0">Historial de visitas</h5>
+                  <Button
+                    size="sm"
+                    variant="outline-primary"
+                    onClick={openCrearVisita}
+                    disabled={!current?.id_expediente || !canUpdate}
+                  >
+                    Agregar visita
+                  </Button>
+                </div>
+
+                {!current?.id_expediente && (
+                  <div className="text-muted small mt-2">
+                    Guardá el expediente para habilitar el historial de visitas.
+                  </div>
+                )}
+
+                {!!current?.id_expediente && (
+                  <>
+                    {visitasLoading && (
+                      <div className="text-muted small mt-2">Cargando visitas…</div>
+                    )}
+                    {visitasError && (
+                      <div className="text-danger small mt-2">{visitasError}</div>
+                    )}
+
+                    {!visitasLoading && !visitasError && (
+                      <>
+                        {(!visitas || visitas.length === 0) ? (
+                          <div className="text-muted small mt-2">Sin visitas registradas</div>
+                        ) : (
+                          <div className="table-responsive mt-2">
+                            <Table bordered size="sm" className="align-middle">
+                              <thead>
+                                <tr>
+                                  <th style={{ width: 120 }}>Fecha</th>
+                                  <th style={{ width: 180 }}>Consultor</th>
+                                  <th>Motivo</th>
+                                  <th>Respuesta</th>
+                                  <th style={{ width: 220 }}>Documentos recibidos</th>
+                                  <th style={{ width: 110 }}>Acciones</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {visitas.map((v) => (
+                                  <tr key={`visita-${v.id_historial_visita || v.fecha || Math.random()}`}>
+                                    <td>{v.fecha ? String(v.fecha).slice(0, 10) : "—"}</td>
+                                    <td>{v.consultor || "—"}</td>
+                                    <td>{v.motivo || "—"}</td>
+                                    <td>{v.respuesta || "—"}</td>
+                                    <td>
+                                      {(v.documentos_recibidos || []).length === 0 && (
+                                        <span className="text-muted small">Sin documentos</span>
+                                      )}
+                                      <div className="d-flex flex-wrap gap-1">
+                                        {(v.documentos_recibidos || []).map((key) => {
+                                          const item = DOCS_CATALOG.find((d) => d.value === key);
+                                          return (
+                                            <Badge bg="secondary" key={`visita-doc-${v.id_historial_visita}-${key}`}>
+                                              {item?.label || key}
+                                            </Badge>
+                                          );
+                                        })}
+                                      </div>
+                                    </td>
+                                    <td>
+                                      <Button
+                                        size="sm"
+                                        variant="outline-secondary"
+                                        onClick={() => openEditarVisita(v)}
+                                        disabled={!canUpdate}
+                                      >
+                                        Editar
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </Table>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </Col>
+          </Row>
+
+          {/* --- geografía (polígonos) --- */}
+          <Row className="g-3">
+            <Col md={12}>
+              <div className="border rounded p-3">
+                <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                  <h5 className="mb-0">Geografía</h5>
+                  {!current?.id_expediente && (
+                    <span className="text-muted small">
+                      Guardá el expediente para habilitar polígonos.
+                    </span>
+                  )}
+                </div>
+
+                <div className="row g-3 mt-1">
+                  {[
+                    { key: "proyecto", label: "Polígono proyecto" },
+                    { key: "afectacion", label: "Polígono afectación" },
+                  ].map((item) => {
+                    const tipoPoligono = item.key;
+                    const polyFiles = polyFilesByTipo?.[tipoPoligono] || [];
+                    const polySets = polySetsByTipo?.[tipoPoligono] || [];
+                    const polyInvalidTriads = Boolean(polyInvalidTriadsByTipo?.[tipoPoligono]);
+                    const polyRuleViolations = polyRuleViolationsByTipo?.[tipoPoligono] || [];
+                    const planoHasGeom =
+                      tipoPoligono === "proyecto" ? planoHasGeomProyecto : planoHasGeomAfectacion;
+                    const planoFeatureCount =
+                      tipoPoligono === "proyecto" ? planoFeatureCountProyecto : planoFeatureCountAfectacion;
+                    const canAct = Boolean(current?.id_expediente) && geometryEditable && !currentGroupBlocked;
+
+                    return (
+                      <div className="col-md-6" key={`geo-${tipoPoligono}`}>
+                        <div className="border rounded p-3 h-100">
+                          <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                            <h6 className="mb-0">{item.label}</h6>
+                            <Badge bg={planoHasGeom ? "success" : "secondary"}>
+                              {planoHasGeom ? "Polígono cargado" : "Sin polígono"}
+                            </Badge>
+                          </div>
+
+                          <div className="text-muted small mt-1">
+                            {planoHasGeom
+                              ? `Features: ${planoFeatureCount}`
+                              : "No hay geometría cargada"}
+                          </div>
+
+                          <div className="d-flex gap-2 align-items-center mt-2">
+                            <Form.Control
+                              type="file"
+                              multiple
+                              accept=".shp,.dbf,.shx,.zip,.kml,.kmz,.rar,.geojson,.json,.gpkg,.gpx,.gml,.dxf"
+                              disabled={!canAct || polyBusy}
+                              onChange={(ev) =>
+                                setPolyFilesByTipo((prev) => ({
+                                  ...prev,
+                                  [tipoPoligono]: Array.from(ev.target.files || []),
+                                }))
+                              }
+                            />
+                            <Button
+                              variant="success"
+                              disabled={!canAct || polyBusy || !polyFiles.length}
+                              onClick={() => subirPoligono(tipoPoligono)}
+                            >
+                              {polyBusy ? "Subiendo..." : `Agregar / reemplazar`}
+                            </Button>
+                          </div>
+
+                          {polyFiles.length > 0 && (
+                            <div className="small mt-2">
+                              {polyInvalidTriads && (
+                                <div className="text-danger">
+                                  ⚠️ Hay SHP incompletos: debe venir <b>.shp + .dbf + .shx</b> (mismo nombre base), o
+                                  subí un ZIP/KMZ.
+                                </div>
+                              )}
+
+                              {polyRuleViolations.length > 0 && (
+                                <div className="text-danger mt-1">
+                                  ⚠️ Regla nombre: en <b>{tipoCarpeta.toUpperCase()}</b> el nombre debe contener{" "}
+                                  <b>{tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA/MEJORAS"}</b>.
+                                  <div className="mt-1">
+                                    No cumplen:
+                                    <ul className="mb-0">
+                                      {polyRuleViolations.map((x) => (
+                                        <li key={`${tipoPoligono}-${x.name}`}>{x.name}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="text-muted mt-1">
+                                Seleccionados: <b>{polyFiles.length}</b>
+                              </div>
+
+                              <div className="mt-1">
+                                {polySets.map((s) => {
+                                  const okName =
+                                    s.kind === "triad"
+                                      ? matchesTipoRule(s.base, tipoCarpeta)
+                                      : matchesTipoRule(s.file?.name, tipoCarpeta);
+
+                                  if (s.kind === "triad") {
+                                    return (
+                                      <div key={`${tipoPoligono}-${s.baseNorm}`} className="d-flex align-items-center gap-2">
+                                        <span className={`badge ${s.validTriad ? "bg-success" : "bg-danger"}`}>
+                                          {s.validTriad ? "SHP OK" : "SHP incompleto"}
+                                        </span>
+                                        <span className={`badge ${okName ? "bg-success" : "bg-danger"}`}>
+                                          {okName ? "Nombre OK" : "Nombre inválido"}
+                                        </span>
+                                        <span className="text-muted">{s.base}</span>
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div key={`${tipoPoligono}-${s.id}`} className="d-flex align-items-center gap-2">
+                                      <span className="badge bg-secondary">{s.ext}</span>
+                                      <span className={`badge ${okName ? "bg-success" : "bg-danger"}`}>
+                                        {okName ? "Nombre OK" : "Nombre inválido"}
+                                      </span>
+                                      <span className="text-muted">{s.file?.name}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {planoGeoError && (
+                            <div className="text-danger small mt-2">{planoGeoError}</div>
+                          )}
+
+                          <div className="d-flex gap-2 mt-2 flex-wrap">
+                            <Button
+                              size="sm"
+                              variant="outline-primary"
+                              onClick={() => handleVerPlanoEnMapa(tipoPoligono)}
+                              disabled={!planoHasGeom}
+                            >
+                              Ver en mapa
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline-danger"
+                              onClick={() => handleEliminarPlano(tipoPoligono)}
+                              disabled={!planoHasGeom || !canAct}
+                            >
+                              Eliminar
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </Col>
           </Row>
 
@@ -2958,13 +4564,13 @@ export default function Expedientes() {
 
                       <Col md={4}>
                         <Form.Group>
-                          <Form.Label>Premio</Form.Label>
+                          <Form.Label>Conformidad 10%</Form.Label>
                           {readonly ? (
                             <div className="fw-semibold">{form.premio_aplica ? "Aplica 10%" : "No aplica"}</div>
                           ) : (
                             <Form.Check
                               type="checkbox"
-                              label="Aplicar premio 10%"
+                              label="Aplicar conformidad 10%"
                               checked={!!form.premio_aplica}
                               onChange={(e) => setForm({ ...form, premio_aplica: e.target.checked })}
                             />
@@ -2980,7 +4586,7 @@ export default function Expedientes() {
                               <td className="text-end">{avaluoCalc.fmt(avaluoCalc.subtotal)}</td>
                             </tr>
                             <tr>
-                              <td className="fw-semibold">Premio</td>
+                              <td className="fw-semibold">Conformidad 10%</td>
                               <td className="text-end">{avaluoCalc.fmt(avaluoCalc.premio)}</td>
                             </tr>
                             <tr>
@@ -3001,12 +4607,12 @@ export default function Expedientes() {
 
           {/* =========================
               ✅ PARTE 2: Elaboración de carpetas
-            ========================= */}
+             ========================= */}
           <Row className="g-3">
             <div className="text-muted small">
               * El check es secuencial: no te deja marcar el siguiente si el anterior no está OK.
               <br />
-              * El “Plano georreferenciado” se completa al <b>subir el polígono</b>.
+              * El "Plano ref. / inf. pericial" se completa al <b>subir el polígono</b>.
               <br />
               * Formatos aceptados: <b>SHP+DBF+SHX</b> (juntos) / <b>ZIP</b> / <b>KML</b> / <b>KMZ</b> (y opcional GeoJSON).
               <br />
@@ -3020,10 +4626,10 @@ export default function Expedientes() {
                 <div className="btn-group">
                   <Button
                     variant={tipoCarpeta === "mejora" ? "primary" : "outline-primary"}
-                    disabled={!geometryEditable || !current || isTipoCarpetaLocked}
+                    disabled={!geometryEditable || !current || isTipoLocked}
                     onClick={async () => {
                       setTipoCarpeta("mejora");
-                      setPolyFiles([]);
+                      setPolyFilesByTipo({ proyecto: [], afectacion: [] });
                       if (current) await loadEtapas(current.id_expediente, "mejora");
                     }}
                   >
@@ -3031,10 +4637,10 @@ export default function Expedientes() {
                   </Button>
                   <Button
                     variant={tipoCarpeta === "terreno" ? "primary" : "outline-primary"}
-                    disabled={!geometryEditable || !current || isTipoCarpetaLocked}
+                    disabled={!geometryEditable || !current || isTipoLocked}
                     onClick={async () => {
                       setTipoCarpeta("terreno");
-                      setPolyFiles([]);
+                      setPolyFilesByTipo({ proyecto: [], afectacion: [] });
                       if (current) await loadEtapas(current.id_expediente, "terreno");
                     }}
                   >
@@ -3048,12 +4654,6 @@ export default function Expedientes() {
                   Primero guardá el expediente para habilitar la elaboración de carpetas.
                 </Alert>
               )}
-
-              {current && isTipoCarpetaLocked ? (
-                <Alert variant="warning" className="mt-2 mb-0 py-2">
-                  El tipo de expediente está bloqueado porque ya existen datos guardados.
-                </Alert>
-              ) : null}
 
               {etapasErr && (
                 <Alert variant="danger" className="mt-2">
@@ -3081,6 +4681,15 @@ export default function Expedientes() {
                         const stageDateLocal = isoToDatetimeLocal(st?.date);
 
                         const isPlano = e.key === "plano_georef";
+                        const tipoPoligono = "proyecto";
+                        const polyFiles = polyFilesByTipo?.[tipoPoligono] || [];
+                        const polySets = polySetsByTipo?.[tipoPoligono] || [];
+                        const polyInvalidTriads = Boolean(polyInvalidTriadsByTipo?.[tipoPoligono]);
+                        const polyRuleViolations = polyRuleViolationsByTipo?.[tipoPoligono] || [];
+                        const planoHasGeom =
+                          tipoPoligono === "proyecto" ? planoHasGeomProyecto : planoHasGeomAfectacion;
+                        const planoFeatureCount =
+                          tipoPoligono === "proyecto" ? planoFeatureCountProyecto : planoFeatureCountAfectacion;
                         const disableCheck =
                           readonly || savingEtapa || !editable || isPlano || currentGroupBlocked;
                         const disableObs =
@@ -3118,7 +4727,7 @@ export default function Expedientes() {
                               />
                             </td>
                             <td>
-                              <b>{e.label}</b>
+                              <b>{getEtapaLabel(e.key, e.label)}</b>
                               {!st.ok && editable && <div className="text-muted small">Pendiente (debe completarse para seguir)</div>}
                               {!st.ok && !editable && <div className="text-muted small">Bloqueado (completá el paso anterior)</div>}
                             </td>
@@ -3176,197 +4785,13 @@ export default function Expedientes() {
                                 <div className="text-danger small mt-1">Fecha requerida para etapa OK.</div>
                               )}
                             </td>
-                            <td>
+                                                                                    <td>
                               {isPlano ? (
-                                <div className="d-flex flex-column gap-2">
-                                  <div className="d-flex gap-2 align-items-center">
-                                    <Form.Control
-                                      type="file"
-                                      multiple
-                                      accept=".shp,.dbf,.shx,.zip,.kml,.kmz,.rar,.geojson,.json,.gpkg,.gpx,.gml,.dxf"
-                                      disabled={!geometryEditable || !editable || polyBusy}
-                                      onChange={(ev) => {
-                                        setPolyFiles(Array.from(ev.target.files || []));
-                                        setPolyUploadNotice(null);
-                                      }}
-                                    />
-                                    <Button
-                                      variant="success"
-                                      disabled={!geometryEditable || !editable || polyBusy || !polyFiles.length}
-                                      onClick={subirPoligono}
-                                    >
-                                      {polyBusy ? "Subiendo..." : "Cargar polígono"}
-                                    </Button>
-                                  </div>
-
-                                  {polyUploadNotice && (
-                                    <div
-                                      className="mt-2"
-                                      style={{
-                                        background: polyUploadNotice.tone === "success" ? "#eef8e8" : "#fff8db",
-                                        border: `1px solid ${polyUploadNotice.tone === "success" ? "#b7d7a8" : "#f3d36a"}`,
-                                        borderRadius: 10,
-                                        padding: "10px 12px",
-                                      }}
-                                    >
-                                      <div className="d-flex align-items-start justify-content-between gap-2 flex-wrap">
-                                        <div className="d-flex align-items-center gap-2">
-                                          <span
-                                            aria-hidden="true"
-                                            style={{
-                                              width: 20,
-                                              height: 20,
-                                              borderRadius: "50%",
-                                              display: "inline-flex",
-                                              alignItems: "center",
-                                              justifyContent: "center",
-                                              background: polyUploadNotice.tone === "success" ? "#d9ead3" : "#fce5a3",
-                                              color: "#6b5200",
-                                              fontWeight: 700,
-                                              fontSize: 12,
-                                            }}
-                                          >
-                                            !
-                                          </span>
-                                          <div className="fw-semibold" style={{ color: "#6b5200" }}>
-                                            {polyUploadNotice.tone === "success" ? "Carga procesada" : "Atención de carga"}
-                                          </div>
-                                        </div>
-                                        <div className="d-flex gap-2 flex-wrap">
-                                          <Badge bg={polyUploadNotice.ok ? "success" : "warning"} text={polyUploadNotice.ok ? undefined : "dark"}>
-                                            {polyUploadNotice.ok ? "OK" : "Aviso"}
-                                          </Badge>
-                                          {Number.isFinite(Number(polyUploadNotice.inserted)) &&
-                                            Number(polyUploadNotice.inserted) > 0 && (
-                                              <Badge bg="warning" text="dark">
-                                                Insertadas: {Number(polyUploadNotice.inserted)}
-                                              </Badge>
-                                            )}
-                                          {Object.keys(polyUploadNotice.byTable || {}).map((table) => (
-                                            <Badge key={table} bg="light" text="dark" pill>
-                                              {table.split(".").pop()}: {polyUploadNotice.byTable[table]}
-                                            </Badge>
-                                          ))}
-                                        </div>
-                                      </div>
-                                      <div className="mt-1" style={{ color: "#5c4a00" }}>
-                                        {polyUploadNotice.message}
-                                      </div>
-                                      {Array.isArray(polyUploadNotice.details) && polyUploadNotice.details.length > 0 && (
-                                        <details className="mt-2">
-                                          <summary style={{ cursor: "pointer", color: "#6b5200" }}>Ver detalle técnico</summary>
-                                          <div className="d-flex gap-2 flex-wrap mt-2">
-                                            {polyUploadNotice.details.slice(0, 8).map((detail) => (
-                                              <Badge key={detail} bg="warning" text="dark" pill>
-                                                {detail}
-                                              </Badge>
-                                            ))}
-                                          </div>
-                                        </details>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {polyFiles.length > 0 && (
-                                    <div className="small">
-                                      {polyInvalidTriads && (
-                                        <div className="text-danger">
-                                          ⚠️ Hay SHP incompletos: debe venir <b>.shp + .dbf + .shx</b> (mismo nombre base), o subí un ZIP/KMZ.
-                                        </div>
-                                      )}
-
-                                      {polyRuleViolations.length > 0 && (
-                                        <div className="text-danger mt-1">
-                                          ⚠️ Regla nombre: en <b>{tipoCarpeta.toUpperCase()}</b> el nombre debe contener{" "}
-                                          <b>{tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA/MEJORAS"}</b>.
-                                          <div className="mt-1">
-                                            No cumplen:
-                                            <ul className="mb-0">
-                                              {polyRuleViolations.map((x) => (
-                                                <li key={x.name}>{x.name}</li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        </div>
-                                      )}
-
-                                      <div className="text-muted mt-1">
-                                        Seleccionados: <b>{polyFiles.length}</b>
-                                      </div>
-
-                                      <div className="mt-1">
-                                        {polySets.map((s) => {
-                                          const okName =
-                                            s.kind === "triad"
-                                              ? matchesTipoRule(s.base, tipoCarpeta)
-                                              : matchesTipoRule(s.file?.name, tipoCarpeta);
-
-                                          if (s.kind === "triad") {
-                                            return (
-                                              <div key={s.baseNorm} className="d-flex align-items-center gap-2">
-                                                <span className={`badge ${s.validTriad ? "bg-success" : "bg-danger"}`}>
-                                                  {s.validTriad ? "SHP OK" : "SHP incompleto"}
-                                                </span>
-                                                <span className={`badge ${okName ? "bg-success" : "bg-danger"}`}>
-                                                  {okName ? "Nombre OK" : "Nombre inválido"}
-                                                </span>
-                                                <span className="text-muted">{s.base}</span>
-                                              </div>
-                                            );
-                                          }
-
-                                          return (
-                                            <div key={s.id} className="d-flex align-items-center gap-2">
-                                              <span className="badge bg-secondary">{s.ext}</span>
-                                              <span className={`badge ${okName ? "bg-success" : "bg-danger"}`}>
-                                                {okName ? "Nombre OK" : "Nombre inválido"}
-                                              </span>
-                                              <span className="text-muted">{s.file?.name}</span>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  <div className="d-flex align-items-center gap-2 mt-2">
-                                    {planoGeoLoading ? (
-                                      <span className="text-muted small">Cargando polígono…</span>
-                                    ) : (
-                                      <Badge bg={planoHasGeom ? "success" : "secondary"}>
-                                        {planoHasGeom ? "Polígono cargado" : "Sin polígono"}
-                                      </Badge>
-                                    )}
-                                    {planoHasGeom && (
-                                      <span className="text-muted small">Features: {planoFeatureCount}</span>
-                                    )}
-                                  </div>
-                                  {planoGeoError && (
-                                    <div className="text-danger small mt-1">{planoGeoError}</div>
-                                  )}
-                                  <div className="d-flex gap-2 mt-2">
-                                    <Button
-                                      size="sm"
-                                      variant="outline-primary"
-                                      onClick={handleVerPlanoEnMapa}
-                                      disabled={!planoHasGeom}
-                                    >
-                                      Ver en mapa
-                                    </Button>
-                                    {geometryEditable && (
-                                      <Button
-                                        size="sm"
-                                        variant="outline-danger"
-                                        onClick={handleEliminarPlano}
-                                        disabled={!planoHasGeom || !geometryEditable || currentGroupBlocked}
-                                      >
-                                        Eliminar
-                                      </Button>
-                                    )}
-                                  </div>
+                                <div className="text-muted small">
+                                  El polígono se gestiona en la sección Geografía.
                                 </div>
                               ) : (
-                                <div className="text-muted small">—</div>
+                                <div className="text-muted small">Sin acciones</div>
                               )}
                             </td>
                           </tr>
@@ -3383,7 +4808,7 @@ export default function Expedientes() {
 
           {/* =========================
               ✅ Carpeta DBI
-            ========================= */}
+             ========================= */}
           <Row className="g-3">
             <Col md={12}>
               <h5 className="mb-2">Carpeta DBI</h5>
@@ -3393,209 +4818,607 @@ export default function Expedientes() {
                 <>
                   {(() => {
                     const dbiInfo = current?.carpeta_dbi || {};
-                    const dbiFecha = formatLocalDateTime(dbiInfo.fecha_ingreso);
-                    const hasCodigo = Boolean(dbiInfo.codigo);
-                    const hasEstado = Boolean(dbiInfo.estado);
-                    const hasFecha = Boolean(dbiFecha);
-                    if (!hasCodigo && !hasEstado && !hasFecha) return null;
-                    return (
-                      <div className="text-muted small mb-2">
-                        {hasCodigo && <span className="me-3">Código: {dbiInfo.codigo}</span>}
-                        {hasFecha && <span className="me-3">Fecha ingreso: {dbiFecha}</span>}
-                        {hasEstado && <span>Estado: {dbiInfo.estado}</span>}
-                      </div>
-                    );
-                  })()}
-                  {!readonly && canUpdate && (() => {
-                    const dbiInfo = current?.carpeta_dbi || {};
                     const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
                     if (dbiIniciado) return null;
                     return (
-                      <div className="mt-2">
-                        <h6 className="mb-2">Registrar ingreso DBI</h6>
-                        {dbiInicioError && (
-                          <div className="text-danger small mb-2">{dbiInicioError}</div>
-                        )}
-                        <Row className="g-2 align-items-end">
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Código DBI</Form.Label>
-                              <Form.Control
-                                value={dbiCodigo}
-                                disabled={dbiInicioBusy}
-                                onChange={(e) => setDbiCodigo(e.target.value)}
-                                placeholder="Ej: DBI-2026-001"
-                              />
-                            </Form.Group>
+                      <Col md={12}>
+                        <div className="mt-1">
+                          <h6 className="mb-2">Registrar ingreso DBI</h6>
+                          {dbiInicioError && (
+                            <div className="text-danger small mb-2">{dbiInicioError}</div>
+                          )}
+                          <Row className="g-2 align-items-end">
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Código DBI</Form.Label>
+                                <Form.Control
+                                  value={dbiCodigo}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiCodigo(e.target.value)}
+                                  placeholder="Ej: DBI-2026-001"
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Código MEU</Form.Label>
+                                <Form.Control
+                                  value={dbiCodigoMeu}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiCodigoMeu(e.target.value)}
+                                  placeholder="Ej: MEU-001"
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Fecha ingreso</Form.Label>
+                                <Form.Control
+                                  type="datetime-local"
+                                  value={dbiInicioFecha}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiInicioFecha(e.target.value)}
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Estado inicial del trámite (opcional)</Form.Label>
+                                <Form.Select
+                                  value={mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, dbiSegEstado) || ""}
+                                  disabled={dbiInicioBusy || dbiEstadosLoading}
+                                  onChange={(e) => setDbiSegEstado(e.target.value)}
+                                >
+                                  <option value="">Sin seleccionar</option>
+                                  {dbiEstadosCatalog.map((item) => (
+                                    <option key={item.codigo} value={item.codigo}>
+                                      {cleanSegEstadoDescripcion(item.descripcion)}
+                                    </option>
+                                  ))}
+                                </Form.Select>
+                                <div className="text-muted small mt-1">
+                                  Define el estado del primer hito. Si no selecciona uno, se usará Mesa de entrada.
+                                </div>
+                                {!mapSegEstadoToCatalogCodigo(dbiEstadosCatalog, dbiSegEstado) &&
+                                  normalizeSegEstadoValue(dbiSegEstado) && (
+                                    <div className="text-muted small mt-1">
+                                      Valor actual: {dbiSegEstado}
+                                    </div>
+                                  )}
+                              </Form.Group>
                           </Col>
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Fecha ingreso</Form.Label>
-                              <Form.Control
-                                type="datetime-local"
-                                value={dbiInicioFecha}
-                                disabled={dbiInicioBusy}
-                                onChange={(e) => setDbiInicioFecha(e.target.value)}
-                              />
-                            </Form.Group>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Observación (opcional)</Form.Label>
-                              <Form.Control
-                                value={dbiInicioObs}
-                                disabled={dbiInicioBusy}
-                                onChange={(e) => setDbiInicioObs(e.target.value)}
-                                placeholder="detalle..."
-                              />
-                            </Form.Group>
-                          </Col>
-                          <Col md={12} className="text-end">
-                            <Button
-                              variant="primary"
-                              disabled={dbiInicioBusy || !dbiCodigo.trim() || !dbiInicioFecha}
-                              onClick={iniciarDbi}
-                            >
-                              {dbiInicioBusy ? "Registrando..." : "Registrar ingreso DBI"}
-                            </Button>
-                          </Col>
-                        </Row>
-                        <div className="text-muted small mt-1">
-                          Primero registrá el ingreso inicial de DBI para habilitar hitos posteriores.
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Resolución número</Form.Label>
+                                <Form.Control
+                                  value={dbiResolNumero}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiResolNumero(e.target.value)}
+                                  placeholder="Ej: 123/2026"
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Resolución fecha</Form.Label>
+                                <Form.Control
+                                  type="date"
+                                  value={dbiResolFecha}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiResolFecha(e.target.value)}
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Decreto número</Form.Label>
+                                <Form.Control
+                                  value={dbiDecretoNumero}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiDecretoNumero(e.target.value)}
+                                  placeholder="Ej: 456/2026"
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={4}>
+                              <Form.Group>
+                                <Form.Label>Decreto fecha</Form.Label>
+                                <Form.Control
+                                  type="date"
+                                  value={dbiDecretoFecha}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiDecretoFecha(e.target.value)}
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={12}>
+                              <Form.Group>
+                                <Form.Label>Observación general (opcional)</Form.Label>
+                                <Form.Control
+                                  value={dbiInicioObs}
+                                  disabled={dbiInicioBusy}
+                                  onChange={(e) => setDbiInicioObs(e.target.value)}
+                                  placeholder="detalle..."
+                                />
+                              </Form.Group>
+                            </Col>
+                            <Col md={12} className="text-end">
+                              <Button
+                                variant="primary"
+                                disabled={dbiInicioBusy || !dbiCodigo.trim() || !dbiInicioFecha}
+                                onClick={iniciarDbi}
+                              >
+                                {dbiInicioBusy ? "Registrando..." : "Registrar ingreso DBI"}
+                              </Button>
+                            </Col>
+                          </Row>
+                          <div className="text-muted small mt-1">
+                            Registrá el ingreso DBI para habilitar cabecera y seguimiento.
+                          </div>
                         </div>
-                      </div>
+                      </Col>
                     );
                   })()}
-                  <div className="mt-3">
-                    <h6 className="mb-2">Hitos DBI</h6>
+                  <Row className="g-3">
                     {(() => {
                       const dbiInfo = current?.carpeta_dbi || {};
-                      const raw = Array.isArray(dbiInfo.estados) ? dbiInfo.estados : [];
-                      if (!raw.length) {
-                        return <div className="text-muted small">Sin hitos DBI registrados</div>;
-                      }
-                      const ordered = raw
-                        .map((item, idx) => ({ item, idx }))
-                        .sort((a, b) => {
-                          const ta = Date.parse(a.item?.fecha || "");
-                          const tb = Date.parse(b.item?.fecha || "");
-                          const va = Number.isNaN(ta) ? null : ta;
-                          const vb = Number.isNaN(tb) ? null : tb;
-                          if (va === null && vb === null) return a.idx - b.idx;
-                          if (va === null) return 1;
-                          if (vb === null) return -1;
-                          if (va === vb) return a.idx - b.idx;
-                          return va - vb;
-                        })
-                        .map((x) => x.item);
-
+                      const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
+                      if (!dbiIniciado) return null;
                       return (
-                        <Table bordered size="sm" className="mt-2">
-                          <thead>
-                            <tr>
-                              <th>Estado</th>
-                              <th>Fecha</th>
-                              <th>Observación</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {ordered.map((ev, i) => {
-                              const fecha = formatLocalDateTime(ev?.fecha);
-                              return (
-                                <tr key={`dbi-evt-${i}`}>
-                                  <td>{ev?.estado || "—"}</td>
-                                  <td>{fecha || "—"}</td>
-                                  <td>{ev?.obs || "—"}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </Table>
+                    <Col md={12}>
+                      <div className="border rounded p-3">
+                        <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                          <h5 className="mb-0">Cabecera DBI</h5>
+                          {!readonly && canUpdate && (
+                            <Button
+                              size="sm"
+                              variant="outline-secondary"
+                              onClick={() => setDbiHeaderOpen((v) => !v)}
+                            >
+                              {dbiHeaderOpen ? "Cerrar edición" : "Editar cabecera"}
+                            </Button>
+                          )}
+                        </div>
+                        {(() => {
+                          const dbiInfo = current?.carpeta_dbi || {};
+                          const dbiFecha = formatLocalDateTime(dbiInfo.fecha_ingreso);
+                          const resolucion = dbiInfo.resolucion || {};
+                          const decreto = dbiInfo.decreto || {};
+                          const estadoActualRaw = getDbiEstadoActual(dbiInfo);
+                          const estadoActualLabel = getSegEstadoDescripcion(
+                            dbiEstadosCatalog,
+                            estadoActualRaw
+                          );
+                          const estadoActualCodigo = mapSegEstadoToCatalogCodigo(
+                            dbiEstadosCatalog,
+                            estadoActualRaw
+                          );
+                          const resolucionFecha =
+                            formatLocalDateTime(resolucion.fecha) ||
+                            formatLocalDateTime(dbiResolFecha);
+                          const decretoFecha =
+                            formatLocalDateTime(decreto.fecha) ||
+                            formatLocalDateTime(dbiDecretoFecha);
+                          return (
+                            <>
+                              <Row className="g-2">
+                                <Col md={3}>
+                                  <div className="text-muted small">Código DBI</div>
+                                  <div className="fw-semibold">{dbiInfo.codigo || "—"}</div>
+                                </Col>
+                                <Col md={3}>
+                                  <div className="text-muted small">Código MEU</div>
+                                  <div className="fw-semibold">{dbiInfo.codigo_meu || "—"}</div>
+                                </Col>
+                                <Col md={3}>
+                                  <div className="text-muted small">Fecha ingreso</div>
+                                  <div className="fw-semibold">{dbiFecha || "—"}</div>
+                                </Col>
+                                <Col md={3}>
+                                  <div className="text-muted small">Estado actual</div>
+                                  <div className="fw-semibold">
+                                    {cleanSegEstadoDescripcion(estadoActualLabel) || "—"}
+                                  </div>
+                                  {!estadoActualRaw && dbiInfo.seg_estado && (
+                                    <div className="text-muted" style={{ fontSize: "0.75rem" }}>
+                                      Referencia administrativa: {dbiInfo.seg_estado}
+                                    </div>
+                                  )}
+                                </Col>
+                                <Col md={6}>
+                                  <div className="border rounded p-2 h-100">
+                                    <div className="text-muted small">Resolución</div>
+                                    <div className="d-flex flex-wrap gap-3">
+                                      <div>
+                                        <div className="text-muted small">Número</div>
+                                        <div className="fw-semibold">{resolucion.numero || "—"}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-muted small">Fecha</div>
+                                        <div className="fw-semibold">
+                                          {resolucionFecha || "—"}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </Col>
+                                <Col md={6}>
+                                  <div className="border rounded p-2 h-100">
+                                    <div className="text-muted small">Decreto</div>
+                                    <div className="d-flex flex-wrap gap-3">
+                                      <div>
+                                        <div className="text-muted small">Número</div>
+                                        <div className="fw-semibold">{decreto.numero || "—"}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-muted small">Fecha</div>
+                                        <div className="fw-semibold">
+                                          {decretoFecha || "—"}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </Col>
+                                <Col md={12}>
+                                  <div className="text-muted small">Observación general</div>
+                                  <div>{dbiInfo.obs || "—"}</div>
+                                </Col>
+                              </Row>
+                            </>
+                          );
+                        })()}
+                        {!readonly && canUpdate && (
+                          <Collapse in={dbiHeaderOpen}>
+                            <div>
+                              <div className="mt-3">
+                                <h6 className="mb-2">Edición administrativa</h6>
+                                {dbiHeaderError && (
+                                  <div className="text-danger small mb-2">{dbiHeaderError}</div>
+                                )}
+                                <Row className="g-2 align-items-end">
+                                  <Col md={4}>
+                                    <Form.Group>
+                                      <Form.Label>Resolución número</Form.Label>
+                                      <Form.Control
+                                        value={dbiResolNumero}
+                                        disabled={dbiHeaderBusy}
+                                        onChange={(e) => setDbiResolNumero(e.target.value)}
+                                        placeholder="Ej: 123/2026"
+                                      />
+                                    </Form.Group>
+                                  </Col>
+                                  <Col md={4}>
+                                    <Form.Group>
+                                      <Form.Label>Resolución fecha</Form.Label>
+                                      <Form.Control
+                                        type="date"
+                                        value={dbiResolFecha}
+                                        disabled={dbiHeaderBusy}
+                                        onChange={(e) => setDbiResolFecha(e.target.value)}
+                                      />
+                                    </Form.Group>
+                                  </Col>
+                                  <Col md={4}>
+                                    <Form.Group>
+                                      <Form.Label>Decreto número</Form.Label>
+                                      <Form.Control
+                                        value={dbiDecretoNumero}
+                                        disabled={dbiHeaderBusy}
+                                        onChange={(e) => setDbiDecretoNumero(e.target.value)}
+                                        placeholder="Ej: 456/2026"
+                                      />
+                                    </Form.Group>
+                                  </Col>
+                                  <Col md={4}>
+                                    <Form.Group>
+                                      <Form.Label>Decreto fecha</Form.Label>
+                                      <Form.Control
+                                        type="date"
+                                        value={dbiDecretoFecha}
+                                        disabled={dbiHeaderBusy}
+                                        onChange={(e) => setDbiDecretoFecha(e.target.value)}
+                                      />
+                                    </Form.Group>
+                                  </Col>
+                                  <Col md={12}>
+                                    <Form.Group>
+                                      <Form.Label>Observación general</Form.Label>
+                                      <Form.Control
+                                        value={dbiInicioObs}
+                                        disabled={dbiHeaderBusy}
+                                        onChange={(e) => setDbiInicioObs(e.target.value)}
+                                        placeholder="detalle..."
+                                      />
+                                    </Form.Group>
+                                  </Col>
+                                  <Col md={12} className="text-end">
+                                    <Button
+                                      variant="primary"
+                                      disabled={dbiHeaderBusy}
+                                      onClick={guardarDbiHeader}
+                                    >
+                                      {dbiHeaderBusy ? "Guardando..." : "Guardar cabecera"}
+                                    </Button>
+                                  </Col>
+                                </Row>
+                              </div>
+                            </div>
+                          </Collapse>
+                        )}
+                      </div>
+                    </Col>
                       );
                     })()}
-                  </div>
-                  {!readonly && canUpdate && (() => {
-                    const dbiInfo = current?.carpeta_dbi || {};
-                    const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
-                    if (!dbiIniciado) return null;
-                    return (
-                      <div className="mt-3">
-                        <h6 className="mb-2">Agregar hito DBI</h6>
-                        {dbiEventoError && (
-                          <div className="text-danger small mb-2">{dbiEventoError}</div>
-                        )}
-                        <Row className="g-2 align-items-end">
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Estado</Form.Label>
-                              <Form.Select
-                                value={dbiEventoEstadoPreset}
-                                disabled={dbiEventoBusy}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setDbiEventoEstadoPreset(val);
-                                  if (val !== "otro") setDbiEventoEstado("");
-                                }}
-                              >
-                                <option value="">Seleccioná un estado</option>
-                                <option value="ingresado">ingresado</option>
-                                <option value="devuelto">devuelto</option>
-                                <option value="reingresado">reingresado</option>
-                                <option value="aprobado">aprobado</option>
-                                <option value="observado">observado</option>
-                                <option value="rechazado">rechazado</option>
-                                <option value="otro">Otro / personalizado</option>
-                              </Form.Select>
-                            </Form.Group>
-                            {dbiEventoEstadoPreset === "otro" && (
-                              <Form.Control
-                                className="mt-2"
-                                value={dbiEventoEstado}
-                                disabled={dbiEventoBusy}
-                                onChange={(e) => setDbiEventoEstado(e.target.value)}
-                                placeholder="estado personalizado"
-                              />
-                            )}
-                          </Col>
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Fecha (opcional)</Form.Label>
-                              <Form.Control
-                                type="datetime-local"
-                                value={dbiEventoFecha}
-                                disabled={dbiEventoBusy}
-                                onChange={(e) => setDbiEventoFecha(e.target.value)}
-                              />
-                            </Form.Group>
-                          </Col>
-                          <Col md={4}>
-                            <Form.Group>
-                              <Form.Label>Observación (opcional)</Form.Label>
-                              <Form.Control
-                                value={dbiEventoObs}
-                                disabled={dbiEventoBusy}
-                                onChange={(e) => setDbiEventoObs(e.target.value)}
-                                placeholder="detalle..."
-                              />
-                            </Form.Group>
-                          </Col>
-                          <Col md={12} className="text-end">
-                            <Button
-                              variant="outline-success"
-                              disabled={
-                                dbiEventoBusy ||
-                                (!dbiEventoEstadoPreset &&
-                                  !dbiEventoEstado.trim())
-                              }
-                              onClick={agregarDbiEvento}
-                            >
-                              {dbiEventoBusy ? "Guardando..." : "Agregar hito"}
-                            </Button>
-                          </Col>
-                        </Row>
+
+                    {(() => {
+                      const dbiInfo = current?.carpeta_dbi || {};
+                      const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
+                      if (!dbiIniciado) return null;
+                      return (
+                    <Col md={12}>
+                      <div className="border rounded p-3">
+                        {(() => {
+                          const dbiInfo = current?.carpeta_dbi || {};
+                          const estadoActualRaw = getDbiEstadoActual(dbiInfo);
+                          const estadoActualLabel = getSegEstadoDescripcion(
+                            dbiEstadosCatalog,
+                            estadoActualRaw
+                          );
+                          const estadoActualCodigo = mapSegEstadoToCatalogCodigo(
+                            dbiEstadosCatalog,
+                            estadoActualRaw
+                          );
+                          return (
+                            <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                              <h5 className="mb-0">Seguimiento DBI</h5>
+                            </div>
+                          );
+                        })()}
+                        <div className="mt-3">
+                          <h6 className="mb-2">Historial de estados</h6>
+                          {(() => {
+                            const dbiInfo = current?.carpeta_dbi || {};
+                            const raw = Array.isArray(dbiInfo.estados) ? dbiInfo.estados : [];
+                            if (!raw.length) {
+                              return <div className="text-muted small">Sin hitos DBI registrados</div>;
+                            }
+                            const ordered = raw
+                              .map((item, idx) => ({ item, idx }))
+                              .sort((a, b) => {
+                                const ta = Date.parse(a.item?.fecha || "");
+                                const tb = Date.parse(b.item?.fecha || "");
+                                const va = Number.isNaN(ta) ? null : ta;
+                                const vb = Number.isNaN(tb) ? null : tb;
+                                if (va === null && vb === null) return a.idx - b.idx;
+                                if (va === null) return 1;
+                                if (vb === null) return -1;
+                                if (va === vb) return a.idx - b.idx;
+                                return va - vb;
+                              })
+                              .map((x) => x.item);
+
+                            return (
+                              <Table bordered size="sm" className="mt-2">
+                                <thead>
+                                  <tr>
+                                    <th style={{ width: "25%" }}>Estado</th>
+                                    <th style={{ width: "20%" }}>Fecha</th>
+                                    <th>Observación</th>
+                                    {!readonly && canUpdate && <th style={{ width: "80px" }} className="text-center">Acciones</th>}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ordered.map((ev, i) => {
+                                    const isEditing = dbiEditUuid !== null && dbiEditUuid === ev.uuid;
+                                    const fecha = formatLocalDateTime(ev?.fecha);
+                                    const estadoLabel = getSegEstadoDescripcion(
+                                      dbiEstadosCatalog,
+                                      ev?.estado
+                                    );
+                                    return (
+                                      <tr key={`dbi-evt-${i}`}>
+                                        {isEditing ? (
+                                          <>
+                                            <td>
+                                              <Form.Select
+                                                size="sm"
+                                                value={dbiEditForm.estado}
+                                                onChange={(e) =>
+                                                  setDbiEditForm((p) => ({ ...p, estado: e.target.value }))
+                                                }
+                                              >
+                                                <option value="">Selección...</option>
+                                                {dbiEstadosCatalog.map((c) => (
+                                                  <option key={c.codigo} value={c.codigo}>
+                                                    {c.descripcion}
+                                                  </option>
+                                                ))}
+                                              </Form.Select>
+                                            </td>
+                                            <td>
+                                              <Form.Control
+                                                size="sm"
+                                                type="datetime-local"
+                                                value={dbiEditForm.fecha}
+                                                onChange={(e) =>
+                                                  setDbiEditForm((p) => ({ ...p, fecha: e.target.value }))
+                                                }
+                                              />
+                                            </td>
+                                            <td>
+                                              <Form.Control
+                                                size="sm"
+                                                as="textarea"
+                                                rows={1}
+                                                value={dbiEditForm.obs}
+                                                onChange={(e) =>
+                                                  setDbiEditForm((p) => ({ ...p, obs: e.target.value }))
+                                                }
+                                              />
+                                            </td>
+                                            <td className="text-center align-middle border-start">
+                                              <div className="d-flex gap-2 justify-content-center mt-1">
+                                                <Button
+                                                  variant="success"
+                                                  size="sm"
+                                                  className="px-2"
+                                                  title="Guardar"
+                                                  disabled={dbiEventoBusy}
+                                                  onClick={guardarEdicionDbi}
+                                                >
+                                                  Guardar
+                                                </Button>
+                                                <Button
+                                                  variant="outline-secondary"
+                                                  size="sm"
+                                                  className="px-2"
+                                                  title="Cancelar"
+                                                  onClick={() => setDbiEditUuid(null)}
+                                                >
+                                                  Cancelar
+                                                </Button>
+                                              </div>
+                                            </td>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <td>{cleanSegEstadoDescripcion(estadoLabel) || "—"}</td>
+                                            <td>{fecha || "—"}</td>
+                                            <td>
+                                              <div
+                                                className={!dbiExpandedRows[i] && ev?.obs?.length > 80 ? "text-truncate" : ""}
+                                                style={!dbiExpandedRows[i] && ev?.obs?.length > 80 ? { maxWidth: "400px" } : {}}
+                                              >
+                                                {ev?.obs || "—"}
+                                              </div>
+                                              {ev?.obs?.length > 80 && (
+                                                <button
+                                                  className="btn btn-link btn-sm p-0 mt-1 d-block text-decoration-none"
+                                                  onClick={() =>
+                                                    setDbiExpandedRows((prev) => ({
+                                                      ...prev,
+                                                      [i]: !prev[i],
+                                                    }))
+                                                  }
+                                                >
+                                                  {dbiExpandedRows[i] ? "Ver menos" : "Ver más..."}
+                                                </button>
+                                              )}
+                                            </td>
+                                            {!readonly && canUpdate && (
+                                              <td className="text-center align-middle">
+                                                <div className="d-flex gap-2 justify-content-center">
+                                                  {ev.uuid && (
+                                                    <Button
+                                                      variant="link"
+                                                      className="text-primary text-decoration-none p-0 fw-semibold"
+                                                      title="Editar hito"
+                                                      onClick={() => {
+                                                        setDbiEditUuid(ev.uuid);
+                                                        setDbiEditForm({
+                                                          estado: ev.estado || "",
+                                                          fecha: ev.fecha ? ev.fecha.substring(0, 16) : "",
+                                                          obs: ev.obs || "",
+                                                        });
+                                                      }}
+                                                    >
+                                                      Editar
+                                                    </Button>
+                                                  )}
+                                                  <Button
+                                                    variant="link"
+                                                    className="text-danger text-decoration-none p-0 fw-semibold"
+                                                    title="Eliminar hito"
+                                                    disabled={dbiEventoBusy}
+                                                    onClick={() => eliminarDbiEvento(ev)}
+                                                  >
+                                                      Eliminar
+                                                  </Button>
+                                                </div>
+                                              </td>
+                                            )}
+                                          </>
+                                        )}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </Table>
+                            );
+                          })()}
+                        </div>
+                        {!readonly && canUpdate && (() => {
+                          const dbiInfo = current?.carpeta_dbi || {};
+                          const dbiIniciado = Boolean(dbiInfo.codigo || dbiInfo.fecha_ingreso);
+                          if (!dbiIniciado) return null;
+                          return (
+                            <div className="mt-3">
+                              <h6 className="mb-2">Agregar hito DBI</h6>
+                              {dbiEventoError && (
+                                <div className="text-danger small mb-2">{dbiEventoError}</div>
+                              )}
+                              <Row className="g-2 align-items-end">
+                                <Col md={4}>
+                                  <Form.Group>
+                                    <Form.Label>Estado</Form.Label>
+                                    <Form.Select
+                                      value={dbiEventoEstado}
+                                      disabled={dbiEventoBusy || dbiEstadosLoading}
+                                      onChange={(e) => setDbiEventoEstado(e.target.value)}
+                                    >
+                                      <option value="">Seleccioná un estado</option>
+                                      {dbiEstadosCatalog.map((item) => (
+                                        <option key={item.codigo} value={item.codigo}>
+                                          {cleanSegEstadoDescripcion(item.descripcion)}
+                                        </option>
+                                      ))}
+                                    </Form.Select>
+                                  </Form.Group>
+                                </Col>
+                                <Col md={4}>
+                                  <Form.Group>
+                                    <Form.Label>Fecha (opcional)</Form.Label>
+                                    <Form.Control
+                                      type="datetime-local"
+                                      value={dbiEventoFecha}
+                                      disabled={dbiEventoBusy}
+                                      onChange={(e) => setDbiEventoFecha(e.target.value)}
+                                    />
+                                  </Form.Group>
+                                </Col>
+                                <Col md={4}>
+                                  <Form.Group>
+                                    <Form.Label>Observación (opcional)</Form.Label>
+                                    <Form.Control
+                                      value={dbiEventoObs}
+                                      disabled={dbiEventoBusy}
+                                      onChange={(e) => setDbiEventoObs(e.target.value)}
+                                      placeholder="detalle..."
+                                    />
+                                  </Form.Group>
+                                </Col>
+                                <Col md={12} className="text-end">
+                                  <Button
+                                    variant="outline-success"
+                                    disabled={
+                                      dbiEventoBusy ||
+                                      !dbiEventoEstado.trim() ||
+                                      !dbiEventoFecha
+                                    }
+                                    onClick={agregarDbiEvento}
+                                  >
+                                    {dbiEventoBusy ? "Guardando..." : "Agregar hito"}
+                                  </Button>
+                                </Col>
+                              </Row>
+                            </div>
+                          );
+                        })()}
                       </div>
-                    );
-                  })()}
+                    </Col>
+                      );
+                    })()}
+                  </Row>
                 </>
               )}
             </Col>
@@ -3605,7 +5428,7 @@ export default function Expedientes() {
 
           {/* =========================
               Documentos del expediente
-            ========================= */}
+             ========================= */}
           <Row className="g-3">
             <Col md={12}>
               <h6 className="mb-2">Documentos del expediente</h6>
@@ -3700,7 +5523,7 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => handleOpenDoc(d)}
+                                            onClick={() => viewDoc(d.id_archivo)}
                                           >
                                             Ver
                                           </Button>
@@ -3791,7 +5614,7 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => handleOpenDoc(d)}
+                                            onClick={() => viewDoc(d.id_archivo)}
                                           >
                                             Ver
                                           </Button>
@@ -3863,7 +5686,7 @@ export default function Expedientes() {
                                 <Button
                                   variant="outline-secondary"
                                   size="sm"
-                                  onClick={() => handleOpenDoc(d)}
+                                  onClick={() => viewDoc(d.id_archivo)}
                                 >
                                   Ver
                                 </Button>
@@ -3893,8 +5716,12 @@ export default function Expedientes() {
             </Col>
           </Row>
         </Modal.Body>
-
         <Modal.Footer>
+          {!readonly && mode === "editar" && canCreate && current && (
+            <Button variant="outline-primary" onClick={openCloneModal}>
+              Clonar expediente
+            </Button>
+          )}
           {!readonly && canDeleteTotal && current && (
             <Button variant="danger" onClick={openDeleteModal}>
               Eliminar expediente
@@ -3911,17 +5738,13 @@ export default function Expedientes() {
         </Modal.Footer>
       </Modal>
 
-      {/* =========================
-          MODAL DELETE TOTAL
-        ========================= */}
       <Modal show={showDeleteModal} onHide={() => !deleteBusy && setShowDeleteModal(false)} centered>
         <Modal.Header closeButton={!deleteBusy}>
           <Modal.Title>Eliminar expediente definitivamente</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <div className="mb-3">
-            Se eliminará el expediente, sus etapas, geometrías, documentos y archivos físicos asociados. Esta acción
-            no se puede deshacer.
+            Se eliminara el expediente, sus etapas, geometrias, documentos y archivos fisicos asociados. Esta accion no se puede deshacer.
           </div>
           <div className="mb-2 text-muted small">{deleteTokenLabel}</div>
           <Form.Control
@@ -3939,6 +5762,201 @@ export default function Expedientes() {
           <Button variant="danger" disabled={deleteBusy || !deleteConfirmOk} onClick={deleteExpediente}>
             {deleteBusy ? "Eliminando..." : "Eliminar definitivamente"}
           </Button>
+        </Modal.Footer>
+      </Modal>
+
+      <Modal show={showCloneModal} onHide={() => !cloneBusy && setShowCloneModal(false)} centered>
+        <Modal.Header closeButton={!cloneBusy}>
+          <Modal.Title>Clonar expediente</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group>
+            <Form.Label>Tipo destino</Form.Label>
+            <Form.Select
+              value={cloneTipo}
+              disabled={cloneBusy}
+              onChange={(e) => setCloneTipo(e.target.value)}
+            >
+              <option value="">Seleccionar</option>
+              <option value="M">Mejora</option>
+              <option value="T">Terreno</option>
+            </Form.Select>
+          </Form.Group>
+          {cloneError && <div className="text-danger small mt-2">{cloneError}</div>}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" disabled={cloneBusy} onClick={() => setShowCloneModal(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            disabled={cloneBusy || !cloneTipo}
+            onClick={confirmClone}
+          >
+            {cloneBusy ? "Clonando..." : "Confirmar"}
+          </Button>
+        </Modal.Footer>
+      </Modal>
+      {/* =========================
+          MODAL DOCUMENTACION PRESENTADA
+        ========================= */}
+      <Modal show={docsChecklistOpen} onHide={() => setDocsChecklistOpen(false)} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Documentación presentada</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div className="text-muted small mb-2">
+            Marcá los documentos disponibles. Se guardan solo las claves seleccionadas.
+          </div>
+          <div className="row g-2">
+            {DOCS_CATALOG.map((doc) => {
+              const checked = (form.documentacion_presentada || []).includes(doc.value);
+              return (
+                <div className="col-md-6" key={`doc-opt-${doc.value}`}>
+                  <Form.Check
+                    type="checkbox"
+                    id={`doc-presentada-${doc.value}`}
+                    label={doc.label}
+                    checked={checked}
+                    disabled={readonly}
+                    onChange={(e) => {
+                      const next = new Set(form.documentacion_presentada || []);
+                      if (e.target.checked) next.add(doc.value);
+                      else next.delete(doc.value);
+                      setForm({ ...form, documentacion_presentada: Array.from(next) });
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setDocsChecklistOpen(false)}>
+            Cerrar
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* =========================
+          MODAL HISTORIAL DE VISITAS
+        ========================= */}
+      <Modal show={showVisitaModal} onHide={() => setShowVisitaModal(false)} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            {visitMode === "crear" ? "Agregar visita" : "Editar visita"}
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Row className="g-3">
+            <Col md={4}>
+              <Form.Group>
+                <Form.Label>Fecha</Form.Label>
+                <Form.Control
+                  type="date"
+                  value={visitForm.fecha}
+                  disabled={!canUpdate}
+                  onChange={(e) => setVisitForm({ ...visitForm, fecha: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={8}>
+              <Form.Group>
+                <Form.Label>Consultor</Form.Label>
+                <Form.Control
+                  value={visitForm.consultor}
+                  disabled={!canUpdate}
+                  onChange={(e) => setVisitForm({ ...visitForm, consultor: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={12}>
+              <Form.Group>
+                <Form.Label>Motivo</Form.Label>
+                <Form.Control
+                  as="textarea"
+                  rows={2}
+                  value={visitForm.motivo}
+                  disabled={!canUpdate}
+                  onChange={(e) => setVisitForm({ ...visitForm, motivo: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={12}>
+              <Form.Group>
+                <Form.Label>Respuesta</Form.Label>
+                <Form.Control
+                  as="textarea"
+                  rows={2}
+                  value={visitForm.respuesta}
+                  disabled={!canUpdate}
+                  onChange={(e) => setVisitForm({ ...visitForm, respuesta: e.target.value })}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={12}>
+              <div className="d-flex align-items-center mb-2">
+                <Form.Label className="mb-0">Documentos recibidos</Form.Label>
+                <Button
+                  className="ms-auto"
+                  size="sm"
+                  variant="outline-secondary"
+                  onClick={() => setVisitDocsOpen((v) => !v)}
+                >
+                  {visitDocsOpen ? "Ocultar" : "Ver / editar"}
+                </Button>
+              </div>
+              <div className="d-flex flex-wrap gap-2 mb-2">
+                {(visitForm.documentos_recibidos || []).length === 0 && (
+                  <span className="text-muted small">Sin documentos marcados</span>
+                )}
+                {(visitForm.documentos_recibidos || []).map((key) => {
+                  const item = DOCS_CATALOG.find((d) => d.value === key);
+                  return (
+                    <Badge bg="secondary" key={`visit-doc-${key}`}>
+                      {item?.label || key}
+                    </Badge>
+                  );
+                })}
+              </div>
+              <Collapse in={visitDocsOpen}>
+                <div>
+                  <div className="row g-2">
+                    {DOCS_CATALOG.map((doc) => {
+                      const checked = (visitForm.documentos_recibidos || []).includes(doc.value);
+                      return (
+                        <div className="col-md-6" key={`visit-doc-opt-${doc.value}`}>
+                          <Form.Check
+                            type="checkbox"
+                            id={`visit-doc-${doc.value}`}
+                            label={doc.label}
+                            checked={checked}
+                            disabled={!canUpdate}
+                            onChange={(e) => {
+                              const next = new Set(visitForm.documentos_recibidos || []);
+                              if (e.target.checked) next.add(doc.value);
+                              else next.delete(doc.value);
+                              setVisitForm({ ...visitForm, documentos_recibidos: Array.from(next) });
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </Collapse>
+            </Col>
+          </Row>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowVisitaModal(false)} disabled={visitSaving}>
+            Cancelar
+          </Button>
+          {canUpdate && (
+            <Button variant="primary" onClick={saveVisita} disabled={visitSaving}>
+              {visitSaving ? "Guardando..." : "Guardar"}
+            </Button>
+          )}
         </Modal.Footer>
       </Modal>
 
@@ -4039,18 +6057,20 @@ export default function Expedientes() {
             <Col md={5}>
               <h6 className="mb-2">Mapeo de columnas</h6>
 
-              {EXP_FIELDS.map((f) => (
-                <Form.Group className="mb-2" key={f.key}>
+              {EXP_FIELDS.map((f) => {
+                const isMulti = f.key === "documentos_urls" || f.key === "subtramo";
+                return (
+                <Form.Group className={f.key === "documentos_subcarpeta" ? "d-none" : "mb-2"} key={f.key}>
                   <Form.Label className="mb-1">{f.label}</Form.Label>
                   <Form.Select
-                    multiple={f.key === "documentos_urls"}
+                    multiple={isMulti}
                     value={
-                      f.key === "documentos_urls"
+                      isMulti
                         ? Array.isArray(mapCols[f.key]) ? mapCols[f.key] : []
                         : mapCols[f.key] || ""
                     }
                     onChange={(e) => {
-                      if (f.key === "documentos_urls") {
+                      if (isMulti) {
                         const selected = Array.from(e.target.selectedOptions).map((opt) => opt.value);
                         setMapCols((prev) => ({ ...prev, [f.key]: selected }));
                       } else {
@@ -4058,7 +6078,7 @@ export default function Expedientes() {
                       }
                     }}
                   >
-                    {f.key !== "documentos_urls" && <option value="">— No mapear —</option>}
+                    {!isMulti && <option value="">— No mapear —</option>}
                     {excelColumns.map((c) => (
                       <option key={`mapcol-${c.headerOriginal}-${c.index}`} value={c.headerOriginal}>
                         {c.headerOriginal
@@ -4068,7 +6088,8 @@ export default function Expedientes() {
                     ))}
                   </Form.Select>
                 </Form.Group>
-              ))}
+                );
+              })}
 
               <div className="text-muted small mt-2">
                 Filas detectadas: <b>{excelRows.length}</b>
@@ -4249,3 +6270,20 @@ export default function Expedientes() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

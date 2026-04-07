@@ -1,4 +1,3 @@
-// models/regencia.model.js
 const pool = require("../db");
 
 /* =========================
@@ -31,11 +30,7 @@ async function listarContratosPorProyecto(id_proyecto) {
   return rows;
 }
 
-/**
- * Renovar contrato = crea uno nuevo y marca el anterior ACTIVO como VENCIDO (opcional).
- */
 async function crearContrato({ id_proyecto, fecha_inicio, fecha_fin, titulo, observacion, creado_por }) {
-  // 1) cerrar contrato ACTIVO anterior (si existe)
   await pool.query(
     `
     UPDATE ema.regencia_contratos
@@ -45,7 +40,6 @@ async function crearContrato({ id_proyecto, fecha_inicio, fecha_fin, titulo, obs
     [id_proyecto, fecha_fin]
   );
 
-  // 2) desactivar cualquier ACTIVO previo (por consistencia: 1 activo)
   await pool.query(
     `
     UPDATE ema.regencia_contratos
@@ -55,7 +49,6 @@ async function crearContrato({ id_proyecto, fecha_inicio, fecha_fin, titulo, obs
     [id_proyecto]
   );
 
-  // 3) crear el nuevo
   const { rows } = await pool.query(
     `
     INSERT INTO ema.regencia_contratos (id_proyecto, fecha_inicio, fecha_fin, estado, titulo, observacion, creado_por)
@@ -103,7 +96,7 @@ async function actualizarContrato(id, { fecha_inicio, fecha_fin, estado, titulo,
 }
 
 /* =========================
-   ACTIVIDADES (calendario) Model
+   ACTIVIDADES
    ========================= */
 async function listarActividades({ id_proyecto, id_contrato, from, to, estado, tipo, q }) {
   const params = [];
@@ -114,7 +107,7 @@ async function listarActividades({ id_proyecto, id_contrato, from, to, estado, t
     where += ` AND a.id_proyecto = $${params.length} `;
   }
 
-  if (id_contrato) { // ✅ AHORA SÍ existe
+  if (id_contrato) {
     params.push(id_contrato);
     where += ` AND a.id_contrato = $${params.length} `;
   }
@@ -168,7 +161,7 @@ async function getActividad(id) {
 async function crearActividad(payload) {
   const {
     id_proyecto,
-    id_contrato, // ✅ NUEVO
+    id_contrato,
     titulo,
     descripcion,
     tipo,
@@ -190,7 +183,7 @@ async function crearActividad(payload) {
     `,
     [
       id_proyecto,
-      id_contrato || null,         // ✅ GUARDA CONTRATO
+      id_contrato || null,
       origen || "MANUAL",
       titulo,
       descripcion || null,
@@ -221,13 +214,13 @@ async function actualizarActividad(id, payload) {
     `
     UPDATE ema.regencia_actividades
     SET
-      titulo           = COALESCE($2, titulo),
-      descripcion      = COALESCE($3, descripcion),
-      tipo             = COALESCE($4, tipo),
-      inicio_at        = COALESCE($5, inicio_at),
-      fin_at           = COALESCE($6, fin_at),
-      estado           = COALESCE($7, estado),
-      regla_recurrencia= COALESCE($8, regla_recurrencia)
+      titulo            = COALESCE($2, titulo),
+      descripcion       = COALESCE($3, descripcion),
+      tipo              = COALESCE($4, tipo),
+      inicio_at         = COALESCE($5, inicio_at),
+      fin_at            = COALESCE($6, fin_at),
+      estado            = COALESCE($7, estado),
+      regla_recurrencia = COALESCE($8, regla_recurrencia)
     WHERE id=$1
     RETURNING *
     `,
@@ -267,20 +260,46 @@ async function setEstadoActividad(id, nuevoEstado) {
 async function listarResponsables(id_actividad) {
   const { rows } = await pool.query(
     `
-    SELECT *
-    FROM ema.regencia_responsables
-    WHERE id_actividad=$1
-    ORDER BY id ASC
+    SELECT
+      rr.id,
+      rr.id_actividad,
+      rr.id_usuario,
+      rr.id_consultor,
+      rr.email_externo,
+      rr.rol,
+
+      u.username,
+      u.first_name,
+      u.last_name,
+      u.email,
+
+      c.nombre AS consultor_nombre,
+
+      TRIM(
+        COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')
+      ) AS nombre_completo,
+
+      COALESCE(
+        NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+        u.username,
+        u.email,
+        c.nombre,
+        rr.email_externo
+      ) AS nombre_mostrar
+
+    FROM ema.regencia_responsables rr
+    LEFT JOIN public.users u
+      ON u.id = rr.id_usuario
+    LEFT JOIN ema.consultores c
+      ON c.id_consultor = rr.id_consultor
+    WHERE rr.id_actividad = $1
+    ORDER BY rr.id ASC
     `,
     [id_actividad]
   );
   return rows;
 }
 
-/**
- * Reemplaza responsables de una actividad (simple y cómodo).
- * payload: [{id_usuario?, id_consultor?, email_externo?, rol?}, ...]
- */
 async function setResponsables(id_actividad, lista = []) {
   await pool.query(`DELETE FROM ema.regencia_responsables WHERE id_actividad=$1`, [id_actividad]);
 
@@ -290,7 +309,13 @@ async function setResponsables(id_actividad, lista = []) {
       INSERT INTO ema.regencia_responsables (id_actividad, id_usuario, id_consultor, email_externo, rol)
       VALUES ($1,$2,$3,$4,COALESCE($5,'RESPONSABLE'))
       `,
-      [id_actividad, r.id_usuario || null, r.id_consultor || null, r.email_externo || null, r.rol || null]
+      [
+        id_actividad,
+        r.id_usuario || null,
+        r.id_consultor || null,
+        r.email_externo || null,
+        r.rol || null,
+      ]
     );
   }
 
@@ -300,13 +325,7 @@ async function setResponsables(id_actividad, lista = []) {
 /* =========================
    ALERTAS y QUEUE
    ========================= */
-
-/**
- * Crea una alerta asociada a una actividad y genera su entrada en queue.
- * offset_min: negativo = antes del inicio_at. Ej: -10080 (7 días)
- */
 async function crearAlertaYQueue({ id_actividad, modo="AUTO", offset_min, canal="IN_APP", activo=true }) {
-  // 1) insertar alerta
   const { rows: alertRows } = await pool.query(
     `
     INSERT INTO ema.regencia_alertas (id_actividad, modo, offset_min, canal, activo)
@@ -317,7 +336,6 @@ async function crearAlertaYQueue({ id_actividad, modo="AUTO", offset_min, canal=
   );
   const alerta = alertRows[0];
 
-  // 2) calcular disparar_at = inicio_at + offset
   const { rows: actRows } = await pool.query(
     `SELECT inicio_at FROM ema.regencia_actividades WHERE id=$1 LIMIT 1`,
     [id_actividad]
@@ -340,13 +358,6 @@ async function crearAlertaYQueue({ id_actividad, modo="AUTO", offset_min, canal=
   return { alerta, queue: qRows[0] };
 }
 
-/**
- * Genera alertas estándar según tipo de actividad.
- * - VISITA: -7 días
- * - ENTREGA_INFORME: -3 días
- * - AUDITORIA: -90 días
- * - CONTRATO: se maneja por job (contratos), acá no generamos
- */
 async function generarAlertasEstandar(id_actividad) {
   const act = await getActividad(id_actividad);
   if (!act) return { created: 0, items: [] };
@@ -371,67 +382,18 @@ async function generarAlertasEstandar(id_actividad) {
 }
 
 /* =========================
-   HELPERS: fechas hábiles
+   HELPERS FECHAS
    ========================= */
-
-function toDateOnly(d) {
-  // d puede ser Date o string YYYY-MM-DD
-  const dt = (d instanceof Date) ? d : new Date(d + "T00:00:00");
-  if (isNaN(dt.getTime())) throw new Error("Fecha inválida: " + d);
-  return dt;
-}
-
-function isWeekend(dt) {
-  const day = dt.getDay(); // 0 dom, 6 sáb
-  return day === 0 || day === 6;
-}
-
-function nextBusinessDay(dt) {
-  const out = new Date(dt);
-  while (isWeekend(out)) out.setDate(out.getDate() + 1);
-  return out;
-}
-
-function prevBusinessDay(dt) {
-  const out = new Date(dt);
-  while (isWeekend(out)) out.setDate(out.getDate() - 1);
-  return out;
-}
-
-function addMonthsKeepDay(baseDate, months) {
-  // Mantiene el "día" lo mejor posible (si el mes no tiene ese día, cae al último del mes)
-  const d = new Date(baseDate);
-  const day = d.getDate();
-  const targetMonth = d.getMonth() + months;
-
-  const tmp = new Date(d);
-  tmp.setDate(1);
-  tmp.setMonth(targetMonth);
-
-  // último día del mes destino
-  const lastDay = new Date(tmp.getFullYear(), tmp.getMonth() + 1, 0).getDate();
-  tmp.setDate(Math.min(day, lastDay));
-  tmp.setHours(d.getHours(), d.getMinutes(), 0, 0);
-  return tmp;
-}
-
-/* =========================
-   GENERADOR: VISITAS MENSUALES AUTO
-   ========================= */
-
 function toDateOnlyISO(x) {
-  // x puede venir como Date, string, o null
   if (!x) return null;
   if (x instanceof Date) return x.toISOString().slice(0, 10);
-  // si ya es 'YYYY-MM-DD' u otro, intentamos parsear
   const d = new Date(x);
   if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  // fallback: si viene ya como 'YYYY-MM-DD'
   return String(x).slice(0, 10);
 }
 
 function isWeekend(dateObj) {
-  const day = dateObj.getDay(); // 0 dom, 6 sáb
+  const day = dateObj.getDay();
   return day === 0 || day === 6;
 }
 
@@ -442,7 +404,6 @@ function addDays(dateObj, days) {
 }
 
 function shiftToBusinessDay(dateObj, shiftMode = "NEXT_BUSINESS_DAY") {
-  // Si cae fin de semana: mover al siguiente día hábil (por defecto)
   let d = new Date(dateObj);
   if (!isWeekend(d)) return d;
 
@@ -451,18 +412,15 @@ function shiftToBusinessDay(dateObj, shiftMode = "NEXT_BUSINESS_DAY") {
     return d;
   }
 
-  // NEXT_BUSINESS_DAY
   while (isWeekend(d)) d = addDays(d, +1);
   return d;
 }
 
 function lastDayOfMonth(year, monthIndex0) {
-  // monthIndex0: 0-11
   return new Date(year, monthIndex0 + 1, 0).getDate();
 }
 
 function buildMonthlyDate(baseISO, monthOffset, hour = 9, minute = 0) {
-  // baseISO: YYYY-MM-DD
   const base = new Date(baseISO + "T00:00:00");
   const baseDay = base.getDate();
 
@@ -472,7 +430,6 @@ function buildMonthlyDate(baseISO, monthOffset, hour = 9, minute = 0) {
   const targetMonth = m + monthOffset;
   const target = new Date(y, targetMonth, 1, hour, minute, 0, 0);
 
-  // clamp day si el mes no tiene ese día (ej: 31 -> 30/28)
   const maxDay = lastDayOfMonth(target.getFullYear(), target.getMonth());
   const day = Math.min(baseDay, maxDay);
 
@@ -480,16 +437,9 @@ function buildMonthlyDate(baseISO, monthOffset, hour = 9, minute = 0) {
   return target;
 }
 
-/**
- * Genera VISITAS mensuales AUTO para un contrato.
- *
- * Reglas:
- * - Genera desde seed_date (día del mes) por N meses hacia adelante.
- * - Si business_days_only: mueve si cae sábado/domingo según shift_if_weekend
- * - Corta por fecha_fin del contrato (y opcionalmente fecha_inicio)
- * - No duplica: usa índice único parcial + ON CONFLICT DO NOTHING
- * - Si crea la actividad, genera alertas estándar.
- */
+/* =========================
+   GENERADOR VISITAS
+   ========================= */
 async function generarVisitasMensualesDesdeContrato({
   id_contrato,
   seed_date,
@@ -502,7 +452,6 @@ async function generarVisitasMensualesDesdeContrato({
 }) {
   if (!id_contrato) throw new Error("Falta id_contrato");
 
-  // 1) Traer contrato
   const { rows: cRows } = await pool.query(
     `
     SELECT id, id_proyecto, fecha_inicio, fecha_fin, estado
@@ -521,11 +470,8 @@ async function generarVisitasMensualesDesdeContrato({
   if (!contratoFinISO) throw new Error("Contrato sin fecha_fin");
 
   const hoyISO = new Date().toISOString().slice(0, 10);
-
-  // seed_date: si viene vacío, usamos hoy
   const seedISO = toDateOnlyISO(seed_date) || hoyISO;
 
-  // Empezamos a generar desde "max(hoy, contratoInicio, seed)"
   const startISO = [hoyISO, contratoInicioISO, seedISO].filter(Boolean).sort().slice(-1)[0];
 
   const startDate = new Date(startISO + "T00:00:00");
@@ -535,28 +481,23 @@ async function generarVisitasMensualesDesdeContrato({
   let skipped = 0;
 
   for (let i = 0; i < months_ahead; i++) {
-    // 2) fecha candidata mensual (según seed día del mes)
     let dt = buildMonthlyDate(seedISO, i, hour, minute);
 
-    // 3) mover a hábil si corresponde
     if (business_days_only) {
       dt = shiftToBusinessDay(dt, shift_if_weekend);
     }
 
-    // 4) aplicar ventanas: no crear en el pasado / fuera del contrato
     if (dt < startDate) {
       skipped++;
       continue;
     }
     if (dt > endDate) {
-      // si ya superamos fecha_fin, podemos cortar (porque se va hacia adelante)
       break;
     }
 
-    const inicio_at = dt; // Date -> pg lo acepta como timestamp
+    const inicio_at = dt;
     const fin_at = null;
 
-    // 5) Insert con dedupe (usa tu índice parcial uq_reg_act_auto_dedupe)
     const { rows: ins } = await pool.query(
       `
       INSERT INTO ema.regencia_actividades
@@ -595,8 +536,6 @@ async function generarVisitasMensualesDesdeContrato({
 
     created++;
 
-    // 6) Generar alertas estándar SOLO si se creó la actividad
-    //    (esto evita duplicar alertas si el insert fue DO NOTHING)
     try {
       await generarAlertasEstandar(ins[0].id);
     } catch (e) {
@@ -608,25 +547,18 @@ async function generarVisitasMensualesDesdeContrato({
 }
 
 module.exports = {
-  // contratos
   getContratoActivoPorProyecto,
   listarContratosPorProyecto,
   crearContrato,
   actualizarContrato,
-
-  // actividades
   listarActividades,
   getActividad,
   crearActividad,
   actualizarActividad,
   setEstadoActividad,
   generarVisitasMensualesDesdeContrato,
-
-  // responsables
   listarResponsables,
   setResponsables,
-
-  // alertas
   generarAlertasEstandar,
   crearAlertaYQueue,
 };

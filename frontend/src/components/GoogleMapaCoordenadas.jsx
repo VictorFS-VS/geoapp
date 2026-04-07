@@ -24,6 +24,7 @@ export default function GoogleMapaCoordenadas({
   const markerRef = useRef(null);
   const overlayRef = useRef([]);
   const lastFitSigRef = useRef("");
+  const hasCoordsRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [mapType, setMapType] = useState("roadmap");
@@ -91,10 +92,12 @@ export default function GoogleMapaCoordenadas({
     if (!coords) {
       setManualLat("");
       setManualLng("");
+      hasCoordsRef.current = false;
       return;
     }
     setManualLat(String(coords.lat));
     setManualLng(String(coords.lng));
+    hasCoordsRef.current = true;
   }, [coords?.lat, coords?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -234,11 +237,11 @@ export default function GoogleMapaCoordenadas({
       fullscreenControl: false,
       clickableIcons: false,
       ...(mapId ? { mapId } : {}),
-      gestureHandling: readOnly || disabled ? "none" : "auto",
-      draggable: !(readOnly || disabled),
-      scrollwheel: !(readOnly || disabled),
-      disableDoubleClickZoom: readOnly || disabled,
-      keyboardShortcuts: !(readOnly || disabled),
+      gestureHandling: disabled ? "none" : "auto",
+      draggable: !disabled,
+      scrollwheel: !disabled,
+      disableDoubleClickZoom: disabled,
+      keyboardShortcuts: !disabled,
     });
 
     mapRef.current = map;
@@ -292,6 +295,7 @@ export default function GoogleMapaCoordenadas({
 
     map.addListener("click", (ev) => {
       if (readOnly || disabled) return;
+      if (hasCoordsRef.current) return;
       const lat = ev?.latLng?.lat?.();
       const lng = ev?.latLng?.lng?.();
       if (lat == null || lng == null) return;

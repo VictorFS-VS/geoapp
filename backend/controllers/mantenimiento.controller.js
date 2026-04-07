@@ -684,7 +684,15 @@ function getNameFromProps(props) {
   return normalizeText(pick(props, "name", "Name", "NAME", "nombre", "NOMBRE", "title", "TITLE")) || null;
 }
 
-async function insertKmlFeatureToTable({ tabla, idProyecto, idExpediente, feat, tipoExtra, username }) {
+async function insertKmlFeatureToTable({
+  tabla,
+  idProyecto,
+  idExpediente,
+  feat,
+  tipoExtra,
+  username,
+  tipoPoligono,
+}) {
   const props = feat.properties || {};
   const geom = feat.geometry;
   if (!geom) return false;
@@ -811,16 +819,23 @@ async function insertKmlFeatureToTable({ tabla, idProyecto, idExpediente, feat, 
     await pool.query(
       `
       INSERT INTO ${tabla}
-        (id_proyecto, id_expediente, name, descripcion, geom)
+        (id_proyecto, id_expediente, name, descripcion, tipo_poligono, geom)
       VALUES
-        ($1, $2, $3, $4,
+        ($1, $2, $3, $4, $5,
          ST_Transform(
-           ST_SetSRID(ST_MakeValid(ST_Force2D(ST_GeomFromGeoJSON($5))), ${OUT_SRID}),
+           ST_SetSRID(ST_MakeValid(ST_Force2D(ST_GeomFromGeoJSON($6))), ${OUT_SRID}),
            ${DB_SRID}
          )
         )
       `,
-      [Number(idProyecto), idExpediente ? Number(idExpediente) : null, name, descripcion, JSON.stringify(geom)]
+      [
+        Number(idProyecto),
+        idExpediente ? Number(idExpediente) : null,
+        name,
+        descripcion,
+        String(tipoPoligono || "proyecto"),
+        JSON.stringify(geom),
+      ]
     );
     return true;
   }
@@ -854,6 +869,12 @@ async function procesarArchivosMantenimiento(req, res) {
         "";
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
+    })();
+
+    const tipoPoligono = (() => {
+      const raw = bodyLast(req.body?.tipo_poligono);
+      const t = String(raw || "").toLowerCase().trim();
+      return t === "afectacion" ? "afectacion" : "proyecto";
     })();
 
     let mapping = {};
@@ -1179,6 +1200,7 @@ async function procesarArchivosMantenimiento(req, res) {
               feat,
               tipoExtra,
               username: req.user?.username || "Sistema",
+              tipoPoligono,
             });
             if (ok) localCount++;
           }
@@ -1331,6 +1353,7 @@ async function procesarArchivosMantenimiento(req, res) {
           feat,
           tipoExtra,
           username: req.user?.username || "Sistema",
+          tipoPoligono,
         });
 
         if (ok) {

@@ -100,11 +100,9 @@ export default function ModalActividad({
   const me = useMemo(() => getUserFromStorage(), []);
   const meId = useMemo(() => (me?.id ? Number(me.id) : null), [me]);
 
-  // usuarios
   const [usersLoading, setUsersLoading] = useState(false);
   const [users, setUsers] = useState([]);
 
-  // responsable seleccionado
   const [idResponsable, setIdResponsable] = useState(meId);
 
   const initialForm = useMemo(() => {
@@ -122,11 +120,11 @@ export default function ModalActividad({
   const [form, setForm] = useState(initialForm);
   const [error, setError] = useState("");
 
-  // cargar usuarios al abrir
   useEffect(() => {
     if (!show) return;
 
     let alive = true;
+
     (async () => {
       setUsersLoading(true);
       try {
@@ -148,29 +146,50 @@ export default function ModalActividad({
     };
   }, [show]);
 
-  // cuando abre modal: setear form + responsable default / responsable existente
   useEffect(() => {
     if (!show) return;
 
     setError("");
 
     if (mode === "crear") {
-      const now = new Date();
-      now.setHours(9, 0, 0, 0);
+      let fechaBase;
+
+      if (initialData?.inicio_at) {
+        fechaBase = new Date(initialData.inicio_at);
+      } else {
+        fechaBase = new Date();
+      }
+
+      if (isNaN(fechaBase.getTime())) {
+        fechaBase = new Date();
+      }
+
+      fechaBase.setHours(9, 0, 0, 0);
+
+      let fechaFin = null;
+      if (initialData?.fin_at) {
+        const tempFin = new Date(initialData.fin_at);
+        if (!isNaN(tempFin.getTime())) {
+          fechaFin = tempFin;
+        }
+      }
 
       setForm({
         ...initialForm,
-        inicio_at: toLocalDT(now),
-        fin_at: "",
+        titulo: initialData?.titulo || "",
+        descripcion: initialData?.descripcion || "",
+        tipo: initialData?.tipo || "VISITA",
+        estado: initialData?.estado || "PENDIENTE",
+        inicio_at: toLocalDT(fechaBase),
+        fin_at: fechaFin ? toLocalDT(fechaFin) : "",
       });
 
-      // ✅ por defecto: usuario logueado
       setIdResponsable(meId || null);
       return;
     }
 
-    // editar/ver
     const r = initialData || {};
+
     setForm({
       id_proyecto: id_proyecto ? Number(id_proyecto) : null,
       titulo: r.titulo || "",
@@ -181,7 +200,6 @@ export default function ModalActividad({
       estado: r.estado || "PENDIENTE",
     });
 
-    // ✅ tomar responsable desde r.responsables[0].id_usuario (si viene)
     const respId =
       (Array.isArray(r?.responsables) && r.responsables[0]?.id_usuario) ||
       r?.responsable?.id_usuario ||
@@ -192,7 +210,6 @@ export default function ModalActividad({
     setIdResponsable(respId ? Number(respId) : null);
   }, [show, mode, initialData, id_proyecto, initialForm, meId]);
 
-  // si aún no hay seleccionado y ya tenemos meId, setearlo (por si me cargó después)
   useEffect(() => {
     if (!show) return;
     if (!idResponsable && meId) setIdResponsable(meId);
@@ -219,8 +236,6 @@ export default function ModalActividad({
       inicio_at: toISOStringFromLocalDT(form.inicio_at),
       fin_at: form.fin_at ? toISOStringFromLocalDT(form.fin_at) : null,
       estado: form.estado || "PENDIENTE",
-
-      // ✅ backend: soporta body.responsables
       responsables: [{ id_usuario: Number(idResponsable), rol: "RESPONSABLE" }],
     };
 
@@ -235,7 +250,11 @@ export default function ModalActividad({
     <Modal show={show} onHide={onHide} centered size="lg" backdrop="static">
       <Modal.Header closeButton>
         <Modal.Title>
-          {mode === "crear" ? "Nueva actividad" : mode === "editar" ? "Editar actividad" : "Ver actividad"}
+          {mode === "crear"
+            ? "Nueva actividad"
+            : mode === "editar"
+              ? "Editar actividad"
+              : "Ver actividad"}
         </Modal.Title>
       </Modal.Header>
 
@@ -243,14 +262,15 @@ export default function ModalActividad({
         {error ? <Alert variant="danger">{error}</Alert> : null}
 
         <Row className="g-3">
-          {/* ✅ Responsable */}
           <Col md={12}>
             <Form.Group>
               <Form.Label>Responsable</Form.Label>
               <div className="d-flex gap-2 align-items-center">
                 <Form.Select
                   value={idResponsable || ""}
-                  onChange={(e) => setIdResponsable(e.target.value ? Number(e.target.value) : null)}
+                  onChange={(e) =>
+                    setIdResponsable(e.target.value ? Number(e.target.value) : null)
+                  }
                   disabled={readOnly || usersLoading}
                 >
                   <option value="">— Seleccionar responsable —</option>
@@ -263,7 +283,9 @@ export default function ModalActividad({
 
                 {usersLoading ? <Spinner animation="border" size="sm" /> : null}
               </div>
-              <div className="text-muted small mt-1">Por defecto se selecciona el usuario logueado.</div>
+              <div className="text-muted small mt-1">
+                Por defecto se selecciona el usuario logueado.
+              </div>
             </Form.Group>
           </Col>
 
@@ -282,7 +304,11 @@ export default function ModalActividad({
           <Col md={4}>
             <Form.Group>
               <Form.Label>Tipo</Form.Label>
-              <Form.Select value={form.tipo} onChange={(e) => setField("tipo", e.target.value)} disabled={readOnly}>
+              <Form.Select
+                value={form.tipo}
+                onChange={(e) => setField("tipo", e.target.value)}
+                disabled={readOnly}
+              >
                 {TIPOS.map((t) => (
                   <option key={t.value} value={t.value}>
                     {t.label}
@@ -309,7 +335,11 @@ export default function ModalActividad({
           <Col md={4}>
             <Form.Group>
               <Form.Label>Estado</Form.Label>
-              <Form.Select value={form.estado} onChange={(e) => setField("estado", e.target.value)} disabled={readOnly}>
+              <Form.Select
+                value={form.estado}
+                onChange={(e) => setField("estado", e.target.value)}
+                disabled={readOnly}
+              >
                 {ESTADOS.map((s) => (
                   <option key={s.value} value={s.value}>
                     {s.label}

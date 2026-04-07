@@ -34,19 +34,68 @@ async function tableExists(fqn) {
   return !!rows?.[0]?.oid;
 }
 
+/**
+ * Soporta:
+ * - req.user.perms = ["proponentes.read", ...]
+ * - req.user.perms = [{ code: "proponentes.read", scope: "all" }, ...]
+ */
+function getPermObjects(user = {}) {
+  const perms = Array.isArray(user?.perms) ? user.perms : [];
+
+  return perms
+    .map((p) => {
+      if (typeof p === "string" && p.trim()) {
+        return { code: p.trim(), scope: null };
+      }
+      if (p && typeof p === "object" && typeof p.code === "string" && p.code.trim()) {
+        return {
+          code: p.code.trim(),
+          scope: typeof p.scope === "string" && p.scope.trim() ? p.scope.trim() : null,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
 function hasPerm(user, code) {
-  const perms = user?.perms || [];
-  return Array.isArray(perms) && perms.includes(code);
+  const perms = Array.isArray(user?.perms) ? user.perms : [];
+
+  return perms.some((p) => {
+    if (typeof p === "string") return p === code;
+    if (p && typeof p === "object") return p.code === code;
+    return false;
+  });
+}
+
+/**
+ * Lee scope primero desde:
+ * 1) req.user.permsScope[code]
+ * 2) req.user.perms como objetos
+ */
+function getPermScope(user, code) {
+  const directScope =
+    user?.permsScope && typeof user.permsScope === "object"
+      ? user.permsScope[code] || null
+      : null;
+
+  if (directScope) return directScope;
+
+  const perms = getPermObjects(user);
+  const found = perms.find((p) => p.code === code);
+  return found?.scope || null;
 }
 
 function isAdmin(user) {
   const primary = Number(user?.tipo_usuario ?? user?.group_id ?? 0);
   if (primary === 1) return true;
+
   const roleIds = Array.isArray(user?.role_ids)
     ? user.role_ids
     : Array.isArray(user?.roleIds)
       ? user.roleIds
       : [];
+
   return roleIds.some((id) => Number(id) === 1);
 }
 
@@ -70,6 +119,7 @@ async function getClientesPermitidosRBAC(user = {}) {
       );
       (rUser.rows || []).forEach((r) => r.miembro_id && ids.add(Number(r.miembro_id)));
     }
+
     if (idCliente && (await tableExists(tableAdmin))) {
       const rCliente = await pool.query(
         `SELECT miembro_id FROM ${tableAdmin} WHERE admin_id = $1`,
@@ -131,6 +181,19 @@ function validarProponenteInput(body) {
   return { ok: Object.keys(errores).length === 0, errores };
 }
 
+/* ================= helpers de acceso ================= */
+
+function canReadAllProponentes(user = {}) {
+  if (isAdmin(user)) return true;
+
+  const scope = getPermScope(user, "proponentes.read");
+  return scope === "all";
+}
+
+async function getIdsVisiblesProponentes(user = {}) {
+  return getClientesPermitidosRBAC(user);
+}
+
 /* ================= controllers ================= */
 
 const obtenerProponentesDropdown = async (req, res) => {
@@ -139,9 +202,10 @@ const obtenerProponentesDropdown = async (req, res) => {
     let where = "";
     let params = [];
 
-    if (!isAdmin(user)) {
-      const ids = await getClientesPermitidosRBAC(user);
+    if (!canReadAllProponentes(user)) {
+      const ids = await getIdsVisiblesProponentes(user);
       if (!ids.length) return res.json({ data: [] });
+
       where = "WHERE c.id_cliente = ANY($1::int[])";
       params = [ids];
     }
@@ -154,6 +218,7 @@ const obtenerProponentesDropdown = async (req, res) => {
       ${where}
       ORDER BY c.id_cliente
     `;
+
     const { rows } = await pool.query(q, params);
     return res.json({ data: rows });
   } catch (err) {
@@ -181,11 +246,12 @@ const obtenerProponentes = async (req, res) => {
       valores.push(`%${search}%`);
     }
 
-    if (!isAdmin(user)) {
-      const ids = await getClientesPermitidosRBAC(user);
+    if (!canReadAllProponentes(user)) {
+      const ids = await getIdsVisiblesProponentes(user);
       if (!ids.length) {
         return res.json({ data: [], page, totalPages: 1, totalItems: 0 });
       }
+
       filtros.push(`c.id_cliente = ANY($${valores.length + 1}::int[])`);
       valores.push(ids);
     }
@@ -222,9 +288,10 @@ const obtenerProponentePorId = async (req, res) => {
   const user = req.user || {};
 
   try {
-    if (!isAdmin(user)) {
-      const ids = await getClientesPermitidosRBAC(user);
+    if (!canReadAllProponentes(user)) {
+      const ids = await getIdsVisiblesProponentes(user);
       const idNum = parseInt(id, 10);
+
       if (!ids.includes(idNum)) {
         return res.status(403).json({ error: "Sin permiso para ver este proponente" });
       }
@@ -234,6 +301,7 @@ const obtenerProponentePorId = async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Proponente no encontrado" });
     }
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error("Error al obtener proponente:", error);

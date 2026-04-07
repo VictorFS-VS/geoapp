@@ -8,6 +8,7 @@ const ExpedienteGpsField = React.forwardRef(function ExpedienteGpsField({
   onChange,
   onOpenMap,
   disabled = false,
+  readOnly = false,
   showClear = true,
   readOnlyGeometry = null,
 }, ref) {
@@ -35,13 +36,17 @@ const ExpedienteGpsField = React.forwardRef(function ExpedienteGpsField({
   }, [coords, modalOpen]);
 
   const handleOpenMap = () => {
-    if (disabled) return;
+    if (disabled && !readOnly) return;
     setModalCoords(coords);
     setModalOpen(true);
     onOpenMap?.();
   };
 
   const handleConfirm = () => {
+    if (readOnly) {
+      setModalOpen(false);
+      return;
+    }
     onChange?.(coordsToString(modalCoords || coords || ["", ""]));
     setModalOpen(false);
   };
@@ -88,47 +93,51 @@ const ExpedienteGpsField = React.forwardRef(function ExpedienteGpsField({
       </div>
 
       <Row className="g-2 align-items-end mb-2">
-        <Col>
-          <Form.Group>
-            <Form.Label className="mb-1" style={{ fontSize: 12 }}>
-              Latitud
-            </Form.Label>
-            <Form.Control
-              size="sm"
-              type="text"
-              value={latVal}
-              placeholder="-25.28646"
-              disabled={disabled}
-              onChange={(e) => applyChange(e.target.value, lngVal)}
-            />
-          </Form.Group>
-        </Col>
-        <Col>
-          <Form.Group>
-            <Form.Label className="mb-1" style={{ fontSize: 12 }}>
-              Longitud
-            </Form.Label>
-            <Form.Control
-              size="sm"
-              type="text"
-              value={lngVal}
-              placeholder="-57.647"
-              disabled={disabled}
-              onChange={(e) => applyChange(latVal, e.target.value)}
-            />
-          </Form.Group>
-        </Col>
+        {!readOnly && (
+          <>
+            <Col>
+              <Form.Group>
+                <Form.Label className="mb-1" style={{ fontSize: 12 }}>
+                  Latitud
+                </Form.Label>
+                <Form.Control
+                  size="sm"
+                  type="text"
+                  value={latVal}
+                  placeholder="-25.28646"
+                  disabled={disabled}
+                  onChange={(e) => applyChange(e.target.value, lngVal)}
+                />
+              </Form.Group>
+            </Col>
+            <Col>
+              <Form.Group>
+                <Form.Label className="mb-1" style={{ fontSize: 12 }}>
+                  Longitud
+                </Form.Label>
+                <Form.Control
+                  size="sm"
+                  type="text"
+                  value={lngVal}
+                  placeholder="-57.647"
+                  disabled={disabled}
+                  onChange={(e) => applyChange(latVal, e.target.value)}
+                />
+              </Form.Group>
+            </Col>
+          </>
+        )}
         <Col md="auto">
           <Button
             size="sm"
-            variant="outline-primary"
+            variant={readOnly ? "outline-secondary" : "outline-primary"}
             onClick={handleOpenMap}
-            disabled={disabled}
+            disabled={disabled && !readOnly}
           >
-            {hasCoords ? "Editar en mapa" : "Seleccionar en mapa"}
+            {readOnly ? "Ver en mapa" : hasCoords ? "Editar en mapa" : "Seleccionar en mapa"}
           </Button>
         </Col>
-        {showClear && hasCoords && (
+        {!readOnly && showClear && hasCoords && (
           <Col md="auto">
             <Button
               size="sm"
@@ -144,7 +153,7 @@ const ExpedienteGpsField = React.forwardRef(function ExpedienteGpsField({
 
       <Modal show={modalOpen} onHide={handleHide} size="lg" centered>
         <Modal.Header closeButton>
-          <Modal.Title>Seleccionar ubicación</Modal.Title>
+          <Modal.Title>{readOnly ? "Ver ubicación" : "Seleccionar ubicación"}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <div className="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-3">
@@ -166,25 +175,31 @@ const ExpedienteGpsField = React.forwardRef(function ExpedienteGpsField({
           </div>
           <GoogleMapaCoordenadas
             value={modalCoords}
-            onChange={(coords) => setModalCoords(coords)}
+            onChange={(coords) => {
+              if (readOnly) return;
+              setModalCoords(coords);
+            }}
             height={320}
             disabled={disabled}
+            readOnly={readOnly}
             hideManualControls
             readOnlyGeometry={readOnlyGeometry}
           />
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" size="sm" onClick={handleHide}>
-            Cancelar
+            {readOnly ? "Cerrar" : "Cancelar"}
           </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleConfirm}
-            disabled={!hasModalCoords}
-          >
-            Confirmar
-          </Button>
+          {!readOnly && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleConfirm}
+              disabled={!hasModalCoords}
+            >
+              Confirmar
+            </Button>
+          )}
         </Modal.Footer>
       </Modal>
     </div>

@@ -1,12 +1,9 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
+    "moduleResolution": "bundler",
     "paths": {
-      "@/*": ["src/*"]
-    },
-    "allowJs": true,
-    "checkJs": false
+      "@/*": ["./src/*"]
+    }
   },
-  "include": ["src"]
+  "exclude": ["node_modules", "dist"]
 }
-
