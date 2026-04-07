@@ -1,4 +1,3 @@
-// middlewares/auth.middleware.js
 "use strict";
 
 const jwt = require("jsonwebtoken");
@@ -20,10 +19,9 @@ function isPublicNoAuth(req) {
 function extractToken(authHeader) {
   if (!authHeader) return null;
   const parts = authHeader.trim().split(/\s+/);
-  return parts.length ? parts[parts.length - 1] : null; // tolera "Bearer Bearer <token>"
+  return parts.length ? parts[parts.length - 1] : null;
 }
 
-/* ---------- VERIFY TOKEN + RBAC ---------- */
 const verifyToken = async (req, res, next) => {
   if (isPublicNoAuth(req)) return next();
 
@@ -39,7 +37,6 @@ const verifyToken = async (req, res, next) => {
     const userId = Number(decoded.id);
     if (!userId) return res.status(401).json({ error: "Token inválido" });
 
-    // 1) base desde token
     req.user = {
       id: userId,
       username: decoded.username,
@@ -48,7 +45,6 @@ const verifyToken = async (req, res, next) => {
       id_consultor: decoded.id_consultor ? Number(decoded.id_consultor) : null,
     };
 
-    // 2) roles reales (multi-roles)
     const { rows: roleRows } = await pool.query(
       `SELECT group_id
          FROM public.users_groups
@@ -63,25 +59,30 @@ const verifyToken = async (req, res, next) => {
 
     req.user.role_ids = roleIds;
 
-    // Rol principal (compat): si el token trae group_id úsalo, sino el primero
     const primaryFromToken = Number(decoded.group_id || decoded.tipo_usuario || 0) || null;
     req.user.group_id = primaryFromToken || (roleIds.length ? roleIds[0] : null);
     req.user.tipo_usuario = req.user.group_id;
 
-    // 3) permisos RBAC
     const { perms, permsScope } = await loadUserPermsAndScope(userId);
+
     req.user.perms = Array.isArray(perms) ? perms : [];
     req.user.permsScope = permsScope || {};
 
-    // DEBUG (igual a tu estilo)
-    //console.log("AUTH DEBUG", {
-    //  user: req.user?.username,
-    //  id: req.user?.id,
-    //  group_id: req.user?.group_id,
-    //  role_ids: req.user?.role_ids,
-    //  perms_len: req.user?.perms?.length || 0,
-    //  scope_read_proyectos: req.user?.permsScope?.["proyectos.read"],
-    //});
+    // opcional: objetos completos para debug o uso futuro
+    req.user.permObjects = req.user.perms.map((code) => ({
+      code,
+      scope: req.user.permsScope?.[code] || null,
+    }));
+
+    // debug temporal
+    console.log("AUTH DEBUG", {
+      user: req.user?.username,
+      id: req.user?.id,
+      group_id: req.user?.group_id,
+      role_ids: req.user?.role_ids,
+      perms_len: req.user?.perms?.length || 0,
+      proponentes_read_scope: req.user?.permsScope?.["proponentes.read"] || null,
+    });
 
     return next();
   } catch (err) {

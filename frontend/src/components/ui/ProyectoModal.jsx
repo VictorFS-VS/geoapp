@@ -183,6 +183,12 @@ export default function ProyectoModal({ proyecto, children }) {
 
   const puedeEliminar = can("proyectos.delete");
 
+    const puedeQuejasReclamos =
+    can("quejas_reclamos.read") ||
+    can("quejas_reclamos.create") ||
+    can("quejas_reclamos.update") ||
+    can("quejas_reclamos.delete");
+
   const puedeVerMapa = can("proyectos.read");
   const puedeNDVI = can("use_change.read") || can("use_change.create");
   const puedeRegencia =
@@ -493,6 +499,17 @@ export default function ProyectoModal({ proyecto, children }) {
                 disabled={deleting || checkingTramos}
               >
                 📈 Evaluaciones de proyectos
+              </Button>
+            )}
+
+            {puedeQuejasReclamos && (
+              <Button
+                variant="warning"
+                className="w-100"
+                onClick={() => goTo(`/quejas-reclamos?id_proyecto=${gid}`)}
+                disabled={deleting || checkingTramos}
+              >
+                📣 Quejas y Reclamos
               </Button>
             )}
 

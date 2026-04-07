@@ -223,6 +223,7 @@ const encuestasRoutes = require("./routes/encuestas.routes");
 
 const actasRoutes = require("./routes/actas.routes");
 const exportRoutes = require("./routes/export.routes");
+const quejasReclamosRoutes = require("./routes/quejas_reclamos.routes");
 
 const informeKmzRoutes = require("./routes/informeKmz.routes");
 
@@ -300,6 +301,7 @@ app.use("/api/encuestas", encuestasRoutes);
 
 app.use("/api/actas", actasRoutes);
 app.use("/api/export", exportRoutes);
+app.use("/api/quejas-reclamos", quejasReclamosRoutes);
 
 // ✅ Informe KMZ (público controlado por el guard PUBLIC_NOAUTH de arriba)
 app.use("/api/informe-kmz", informeKmzRoutes);
