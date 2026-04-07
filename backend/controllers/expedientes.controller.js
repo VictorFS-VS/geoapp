@@ -225,9 +225,33 @@ function isRemoteUrl(url) {
   return /^https?:\/\//i.test(String(url || "").trim());
 }
 
+function getInternalPublicBases() {
+  return [
+    process.env.PUBLIC_BASE_URL,
+    process.env.VITE_PUBLIC_API_URL,
+    process.env.PUBLIC_API_URL,
+  ]
+    .map((value) => String(value || "").trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
+function normalizeInternalSystemUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw || !isRemoteUrl(raw)) return raw;
+
+  for (const base of getInternalPublicBases()) {
+    if (raw === base) return "/";
+    if (raw.startsWith(`${base}/`)) {
+      return raw.slice(base.length);
+    }
+  }
+
+  return raw;
+}
+
 function resolveAbsolutePath(url) {
   if (!url) return null;
-  const raw = String(url).trim();
+  const raw = normalizeInternalSystemUrl(url);
   if (!raw) return null;
   if (isRemoteUrl(raw)) return null;
 
@@ -2868,6 +2892,7 @@ exports.importExcel = async (req, res) => {
 
     const upsertImportDoc = async (idExpediente, subcarpeta, url, fallbackLabel) => {
       if (!url) return;
+      const normalizedUrl = normalizeInternalSystemUrl(url);
 
       const { rows: existingDocs } = await client.query(
         `SELECT id_archivo
@@ -2877,12 +2902,12 @@ exports.importExcel = async (req, res) => {
             AND COALESCE(subcarpeta,'') = COALESCE($2,'')
             AND url = $3
           LIMIT 1`,
-        [idExpediente, subcarpeta || null, url]
+        [idExpediente, subcarpeta || null, normalizedUrl]
       );
 
       if (existingDocs.length) {
-        const abs = resolveAbsolutePath(url);
-        const recoveredAbs = resolveRecoveredRemotePath(url);
+        const abs = resolveAbsolutePath(normalizedUrl);
+        const recoveredAbs = resolveRecoveredRemotePath(normalizedUrl);
         const existsOnDisk =
           (abs ? await fs.pathExists(abs) : false) ||
           (recoveredAbs ? await fs.pathExists(recoveredAbs) : false);
@@ -2892,10 +2917,10 @@ exports.importExcel = async (req, res) => {
           return;
         }
 
-        if (isRemoteUrl(url)) {
-          if (!attemptedRemoteRecoveries.has(url)) {
-            attemptedRemoteRecoveries.add(url);
-            const recovered = await downloadRemoteDocument(url, recoveredAbs);
+        if (isRemoteUrl(normalizedUrl)) {
+          if (!attemptedRemoteRecoveries.has(normalizedUrl)) {
+            attemptedRemoteRecoveries.add(normalizedUrl);
+            const recovered = await downloadRemoteDocument(normalizedUrl, recoveredAbs);
             if (recovered.ok) {
               documentsSkippedExisting += 1;
               return;
@@ -2904,7 +2929,7 @@ exports.importExcel = async (req, res) => {
               row: fallbackLabel,
               type: "missing_existing_document",
               message: "Documento existente en BD sin archivo local; no se pudo recrear desde URL remota",
-              value: { url, detail: recovered.reason || null },
+              value: { url: normalizedUrl, detail: recovered.reason || null },
             });
             return;
           }
@@ -2918,7 +2943,7 @@ exports.importExcel = async (req, res) => {
             row: fallbackLabel,
             type: "missing_existing_document",
             message: "Documento existente en BD sin archivo local; la descarga remota no dejó archivo recuperado",
-            value: { url },
+            value: { url: normalizedUrl },
           });
           return;
         }
@@ -2927,16 +2952,16 @@ exports.importExcel = async (req, res) => {
           row: fallbackLabel,
           type: "missing_existing_document",
           message: "Documento registrado en BD pero archivo no encontrado",
-          value: { url },
+          value: { url: normalizedUrl },
         });
         return;
       }
 
-      const nombre = buildDocNameFromUrl(url, fallbackLabel);
+      const nombre = buildDocNameFromUrl(normalizedUrl, fallbackLabel);
       await client.query(
         `INSERT INTO ema.tumba (id_documento, tipo_documento, id_tipo, subcarpeta, url, nombre_archivo)
          VALUES ($1, 'expedientes', 5, $2, $3, $4)`,
-        [idExpediente, subcarpeta || null, url, nombre]
+        [idExpediente, subcarpeta || null, normalizedUrl, nombre]
       );
       documentsInserted += 1;
     };

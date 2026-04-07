@@ -3142,15 +3142,27 @@ export default function Expedientes() {
     }
 
     if (doc.id_archivo) {
-      await viewDoc(doc.id_archivo);
+      await viewDoc(doc);
       return;
     }
 
     alert("El documento no tiene archivo físico ni URL externa.");
   }
 
-  const viewDoc = async (idArchivo) => {
-    const resp = await fetch(`${API}/expedientes/documentos/ver/${idArchivo}`, {
+  const viewDoc = async (doc) => {
+    if (!doc) return;
+
+    const externalUrl = getDocUrl(doc);
+    if (/^https?:\/\//i.test(externalUrl)) {
+      openExternalUrl(externalUrl);
+      return;
+    }
+
+    if (!doc.id_archivo) {
+      throw new Error("El documento no tiene archivo local asociado.");
+    }
+
+    const resp = await fetch(`${API}/expedientes/documentos/ver/${doc.id_archivo}`, {
       headers: { ...authHeaders() },
     });
 
@@ -3168,8 +3180,20 @@ export default function Expedientes() {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
-  const downloadDoc = async (idArchivo, filename) => {
-    const resp = await fetch(`${API}/expedientes/documentos/descargar/${idArchivo}`, {
+  const downloadDoc = async (doc) => {
+    if (!doc) return;
+
+    const externalUrl = getDocUrl(doc);
+    if (/^https?:\/\//i.test(externalUrl)) {
+      openExternalUrl(externalUrl);
+      return;
+    }
+
+    if (!doc.id_archivo) {
+      throw new Error("El documento no tiene archivo local asociado.");
+    }
+
+    const resp = await fetch(`${API}/expedientes/documentos/descargar/${doc.id_archivo}`, {
       headers: { ...authHeaders() },
     });
     if (!resp.ok) throw new Error(await resp.text());
@@ -3177,7 +3201,7 @@ export default function Expedientes() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = filename || "documento";
+    anchor.download = doc.nombre_archivo || "documento";
     anchor.style.display = "none";
     document.body.appendChild(anchor);
     anchor.click();
@@ -5523,14 +5547,14 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => viewDoc(d.id_archivo)}
+                                            onClick={() => viewDoc(d)}
                                           >
                                             Ver
                                           </Button>
                                           <Button
                                             variant="outline-primary"
                                             size="sm"
-                                            onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
+                                            onClick={() => downloadDoc(d)}
                                           >
                                             Descargar
                                           </Button>
@@ -5614,14 +5638,14 @@ export default function Expedientes() {
                                           <Button
                                             variant="outline-secondary"
                                             size="sm"
-                                            onClick={() => viewDoc(d.id_archivo)}
+                                            onClick={() => viewDoc(d)}
                                           >
                                             Ver
                                           </Button>
                                           <Button
                                             variant="outline-primary"
                                             size="sm"
-                                            onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
+                                            onClick={() => downloadDoc(d)}
                                           >
                                             Descargar
                                           </Button>
@@ -5686,14 +5710,14 @@ export default function Expedientes() {
                                 <Button
                                   variant="outline-secondary"
                                   size="sm"
-                                  onClick={() => viewDoc(d.id_archivo)}
+                                  onClick={() => viewDoc(d)}
                                 >
                                   Ver
                                 </Button>
                                 <Button
                                   variant="outline-primary"
                                   size="sm"
-                                  onClick={() => downloadDoc(d.id_archivo, d.nombre_archivo)}
+                                  onClick={() => downloadDoc(d)}
                                 >
                                   Descargar
                                 </Button>
