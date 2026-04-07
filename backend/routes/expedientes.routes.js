@@ -33,6 +33,13 @@ router.post(
 );
 
 router.get(
+  "/dbi/estados",
+  verifyToken,
+  requirePerm("expedientes.read"),
+  ctrl.getDbiEstadosCatalog
+);
+
+router.get(
   "/:idExpediente",
   verifyToken,
   requirePerm("expedientes.read"),
@@ -52,6 +59,12 @@ router.put(
   requirePerm("expedientes.update"),
   ctrl.update
 );
+router.post(
+  "/:idExpediente/clonar",
+  verifyToken,
+  requirePerm("expedientes.create"),
+  ctrl.clonarBase
+);
 
 router.delete(
   "/:idExpediente",
@@ -68,6 +81,30 @@ router.get(
   verifyToken,
   requirePerm("expedientes.read"),
   ctrl.listarDocs
+);
+
+// =====================
+// Historial de visitas
+// =====================
+router.get(
+  "/:idExpediente/visitas",
+  verifyToken,
+  requirePerm("expedientes.read"),
+  ctrl.listarVisitas
+);
+
+router.post(
+  "/:idExpediente/visitas",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.crearVisita
+);
+
+router.put(
+  "/:idExpediente/visitas/:idVisita",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.actualizarVisita
 );
 
 router.post(
@@ -155,7 +192,6 @@ router.post(
   ctrl.subirDBI
 );
 
-module.exports = router;
 router.post(
   "/:idExpediente/dbi/eventos",
   verifyToken,
@@ -170,14 +206,25 @@ router.post(
   ctrl.iniciarDbi
 );
 
-// ======================================================
-// ❌ ELIMINADAS (YA NO USAMOS bloque_terreno/bloque_mejoras)
-// ======================================================
-//
-// router.get("/:idExpediente/terreno", ... ctrl.geojsonTerreno);
-// router.get("/:idExpediente/mejoras", ... ctrl.geojsonMejoras);
-//
-// router.post("/:idExpediente/mejoras/poligono", ... ctrl.subirPoligonoMejoras);
-// router.post("/:idExpediente/terreno/poligono", ... ctrl.subirPoligonoTerreno);
+router.put(
+  "/:idExpediente/dbi/header",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.actualizarDbiHeader
+);
+
+router.put(
+  "/:idExpediente/dbi/eventos/:uuid",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.actualizarDbiEvento
+);
+
+router.delete(
+  "/:idExpediente/dbi/eventos/:uuid",
+  verifyToken,
+  requirePerm("expedientes.update"),
+  ctrl.eliminarDbiEvento
+);
 
 module.exports = router;

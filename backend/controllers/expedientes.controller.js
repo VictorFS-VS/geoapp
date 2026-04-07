@@ -4,10 +4,35 @@ const path = require("path");
 const fs = require("fs-extra");
 const mime = require("mime-types");
 const pool = require("../db");
+const { randomUUID } = require("crypto");
 
 // MISMA BASE que tu documentos.controller
 const BASE_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "documentosproyecto");
 const BASE_UPLOADS_ROOT = path.join(__dirname, "..", "uploads");
+
+const DBI_ESTADOS_CATALOG = [
+  { codigo: "orden_escritura", descripcion: "20.3.Orden de Escritura", color: "#3b82f6", orden: 1 },
+  { codigo: "mesa_entrada", descripcion: "Mesa de entrada", color: "#0ea5e9", orden: 2 },
+  { codigo: "en_revision", descripcion: "En revisión", color: "#f59e0b", orden: 3 },
+  { codigo: "observado", descripcion: "Observado", color: "#ef4444", orden: 4 },
+  { codigo: "resolucion_emitida", descripcion: "Resolución emitida", color: "#8b5cf6", orden: 5 },
+  { codigo: "decreto_emitido", descripcion: "Decreto emitido", color: "#6366f1", orden: 6 },
+  { codigo: "pagado", descripcion: "Pagado", color: "#22c55e", orden: 7 },
+  { codigo: "cerrado", descripcion: "Cerrado", color: "#16a34a", orden: 8 },
+  { codigo: "anulado", descripcion: "Anulado", color: "#6b7280", orden: 9 },
+];
+
+function normalizeDbiEstadoFromCatalog(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const lower = value.toLowerCase();
+  const byCodigo = DBI_ESTADOS_CATALOG.find((item) => String(item.codigo).toLowerCase() === lower);
+  if (byCodigo) return byCodigo.codigo;
+  const byDescripcion = DBI_ESTADOS_CATALOG.find(
+    (item) => String(item.descripcion).toLowerCase() === lower
+  );
+  return byDescripcion ? byDescripcion.codigo : value;
+}
 
 // =====================
 // helpers
@@ -110,6 +135,90 @@ function parseOptionalBoolean(raw, fieldName) {
   const err = new Error(`${fieldName} invalido (debe ser boolean)`);
   err.statusCode = 400;
   throw err;
+}
+
+function parseOptionalJsonb(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+
+  const v = raw[fieldName];
+  if (v === null) return { present: true, value: null };
+  if (typeof v === "object") return { present: true, value: v };
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return { present: true, value: null };
+    try {
+      return { present: true, value: JSON.parse(s) };
+    } catch (e) {
+      const err = new Error(`${fieldName} invalido (debe ser JSON)`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const err = new Error(`${fieldName} invalido (debe ser JSON)`);
+  err.statusCode = 400;
+  throw err;
+}
+
+function toJsonbParam(value) {
+  return value === null || value === undefined ? null : JSON.stringify(value);
+}
+
+function parseOptionalString(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+  return { present: true, value: cleanStr(raw[fieldName]) };
+}
+
+function normalizeCodigoUnicoBase(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const digits = s.replace(/\D+/g, "");
+  if (!digits) return null;
+  const n = Number.parseInt(digits, 10);
+  if (!Number.isFinite(n)) return null;
+  return String(n).padStart(10, "0");
+}
+
+async function buildCodigoUnicoForCreate({ idProyecto, codigoExp, tipoExpediente }) {
+  if (!idProyecto || !codigoExp || !tipoExpediente) return null;
+  const base = normalizeCodigoUnicoBase(codigoExp);
+  if (!base) return null;
+
+  const prefix = `${base}-${tipoExpediente}`;
+  const like = `${prefix}%`;
+
+  const { rows } = await pool.query(
+    `SELECT codigo_unico
+       FROM ema.expedientes
+      WHERE id_proyecto = $1
+        AND codigo_unico LIKE $2`,
+    [idProyecto, like]
+  );
+
+  let maxSuffix = 0;
+  let hasBase = false;
+
+  for (const row of rows || []) {
+    const code = String(row?.codigo_unico || "").trim();
+    if (!code) continue;
+    if (code === prefix) {
+      hasBase = true;
+      maxSuffix = Math.max(maxSuffix, 1);
+      continue;
+    }
+    if (code.startsWith(`${prefix}-`)) {
+      const tail = code.slice(prefix.length + 1);
+      const n = Number.parseInt(tail, 10);
+      if (Number.isFinite(n) && n > 1) {
+        maxSuffix = Math.max(maxSuffix, n);
+      }
+    }
+  }
+
+  if (!hasBase && maxSuffix === 0) return prefix;
+  return `${prefix}-${Math.max(maxSuffix, hasBase ? 1 : 0) + 1}`;
 }
 
 function isRemoteUrl(url) {
@@ -356,8 +465,39 @@ function nowIso() {
 }
 
 function parseToIsoOrNull(raw) {
-  if (!raw) return null;
-  const d = new Date(String(raw).trim());
+  if (raw === null || raw === undefined) return null;
+
+  if (raw instanceof Date) {
+    return Number.isNaN(raw.getTime()) ? null : raw.toISOString();
+  }
+
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [year, month, day] = s.split("-").map(Number);
+    const d = new Date(year, month - 1, day, 0, 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  const localMatch = s.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?$/
+  );
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second = "0", milli = "0"] = localMatch;
+    const d = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(milli.padEnd(3, "0"))
+    );
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 }
@@ -369,6 +509,21 @@ function parseYmdToIso(raw) {
   const d = new Date(`${s}T00:00:00`);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
+}
+
+function parseOptionalDateYMD(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+  const v = raw?.[fieldName];
+  if (v === null) return { present: true, value: null };
+  const s = String(v ?? "").trim();
+  if (!s) return { present: true, value: null };
+  if (!isYmd(s)) {
+    const err = new Error(`${fieldName} debe tener formato YYYY-MM-DD o ser null`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return { present: true, value: s };
 }
 
 function normalizeStageEntry(entry) {
@@ -400,24 +555,168 @@ function normalizeStageFolder(keys, folder) {
 function normalizeDbiState(dbi) {
   const src = dbi && typeof dbi === "object" && !Array.isArray(dbi) ? dbi : {};
   const estadosRaw = Array.isArray(src.estados) ? src.estados : [];
+  const resRaw =
+    src.resolucion && typeof src.resolucion === "object" && !Array.isArray(src.resolucion)
+      ? src.resolucion
+      : null;
+  const decRaw =
+    src.decreto && typeof src.decreto === "object" && !Array.isArray(src.decreto)
+      ? src.decreto
+      : null;
+
+  const codigoMeu =
+    src.codigo_meu === null || src.codigo_meu === undefined ? null : String(src.codigo_meu).trim();
+  const segEstado =
+    src.seg_estado === null || src.seg_estado === undefined ? null : String(src.seg_estado).trim();
+
+  const estadosFiltrados = estadosRaw
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      uuid: item.uuid || randomUUID(),
+      estado: item.estado ? String(item.estado) : "",
+      fecha: parseToIsoOrNull(item.fecha) || item.fecha || null,
+      obs: typeof item.obs === "string" ? item.obs : "",
+    }))
+    .filter((item) => item.estado || item.fecha || item.obs);
+
+  let estadoDerivado = src.estado || null;
+  if (estadosFiltrados.length > 0) {
+    const sortedEstados = [...estadosFiltrados].sort((a, b) => {
+      const ta = Date.parse(a.fecha || "");
+      const tb = Date.parse(b.fecha || "");
+      if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+      if (Number.isNaN(ta)) return 1;
+      if (Number.isNaN(tb)) return -1;
+      return ta - tb;
+    });
+    const lastEstado = sortedEstados[sortedEstados.length - 1].estado;
+    if (lastEstado) {
+      estadoDerivado = lastEstado;
+    }
+  }
 
   return {
     ...src,
     codigo: src.codigo || "",
+    codigo_meu: codigoMeu === "" ? null : codigoMeu,
     ok: Boolean(src.ok),
     obs: typeof src.obs === "string" ? src.obs : "",
     fecha_ingreso: src.fecha_ingreso || null,
-    estado: src.estado || null,
-    estados: estadosRaw
-      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
-      .map((item) => ({
-        ...item,
-        estado: item.estado ? String(item.estado) : "",
-        fecha: item.fecha || null,
-        obs: typeof item.obs === "string" ? item.obs : "",
-      }))
-      .filter((item) => item.estado || item.fecha || item.obs),
+    estado: estadoDerivado,
+    seg_estado: segEstado === "" ? null : segEstado,
+    resolucion: resRaw
+      ? {
+          ...resRaw,
+          numero:
+            resRaw.numero === null || resRaw.numero === undefined
+              ? null
+              : String(resRaw.numero).trim() || null,
+          fecha: parseToIsoOrNull(resRaw.fecha) || null,
+        }
+      : undefined,
+    decreto: decRaw
+      ? {
+          ...decRaw,
+          numero:
+            decRaw.numero === null || decRaw.numero === undefined
+              ? null
+              : String(decRaw.numero).trim() || null,
+          fecha: parseToIsoOrNull(decRaw.fecha) || null,
+        }
+      : undefined,
+    estados: estadosFiltrados,
   };
+}
+
+function normalizeOptionalStringField(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+  const v = raw[fieldName];
+  if (v === null) return { present: true, value: null };
+  const s = String(v ?? "").trim();
+  return { present: true, value: s === "" ? null : s };
+}
+
+function normalizeOptionalDbiBlock(raw, fieldName) {
+  const present = Object.prototype.hasOwnProperty.call(raw || {}, fieldName);
+  if (!present) return { present: false, value: null };
+  const v = raw[fieldName];
+  if (v === null) return { present: true, value: null };
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    return { present: true, value: null };
+  }
+  const fechaPresent = Object.prototype.hasOwnProperty.call(v, "fecha");
+  const fechaRaw = fechaPresent ? v.fecha : undefined;
+  const fechaTrimmed =
+    fechaRaw === null || fechaRaw === undefined ? "" : String(fechaRaw).trim();
+  const fecha = parseToIsoOrNull(fechaRaw) || null;
+  if (fechaPresent && fechaTrimmed && !fecha) {
+    const err = new Error(`${fieldName}.fecha invalida`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return {
+    present: true,
+    value: {
+      ...v,
+      numero: v.numero === null || v.numero === undefined ? null : String(v.numero).trim() || null,
+      fecha,
+    },
+  };
+}
+
+function isNilOrEmpty(v) {
+  return v === null || v === undefined || (typeof v === "string" && v.trim() === "");
+}
+
+function isEmptyDbiBlock(block) {
+  if (!block || typeof block !== "object") return true;
+  const numero = block.numero;
+  const fecha = block.fecha;
+  return isNilOrEmpty(numero) && isNilOrEmpty(fecha);
+}
+
+function mergeDbiAdminHeader(dbi, body) {
+  const segEstado = normalizeOptionalStringField(body, "seg_estado");
+  const resolucion = normalizeOptionalDbiBlock(body, "resolucion");
+  const decreto = normalizeOptionalDbiBlock(body, "decreto");
+  const obs = normalizeOptionalStringField(body, "obs");
+
+  const out = { ...dbi };
+  // Permitir que siga existiendo como dato administrativo SOLO si ya existe
+  if (segEstado.present && !isNilOrEmpty(dbi.seg_estado)) {
+    out.seg_estado = segEstado.value;
+  }
+  if (resolucion.present) out.resolucion = resolucion.value;
+  if (decreto.present) out.decreto = decreto.value;
+  if (obs.present) out.obs = obs.value || "";
+  return out;
+}
+
+function mergeDbiExtrasFromBody(dbi, body, opts = {}) {
+  const allowOverride = opts.allowOverride === true;
+  const codigoMeu = normalizeOptionalStringField(body, "codigo_meu");
+  const segEstado = normalizeOptionalStringField(body, "seg_estado");
+  const resolucion = normalizeOptionalDbiBlock(body, "resolucion");
+  const decreto = normalizeOptionalDbiBlock(body, "decreto");
+
+  const out = { ...dbi };
+  if (codigoMeu.present && (allowOverride || isNilOrEmpty(out.codigo_meu))) {
+    out.codigo_meu = codigoMeu.value;
+  }
+  // Permitir que siga existiendo como dato administrativo SOLO si ya existe
+  if (segEstado.present && !isNilOrEmpty(dbi.seg_estado) && (allowOverride || isNilOrEmpty(out.seg_estado))) {
+    out.seg_estado = segEstado.value;
+  }
+  if (resolucion.present && (allowOverride || isEmptyDbiBlock(out.resolucion))) {
+    out.resolucion = resolucion.value;
+  }
+  if (decreto.present && (allowOverride || isEmptyDbiBlock(out.decreto))) {
+    out.decreto = decreto.value;
+  }
+
+  return out;
 }
 
 function appendDbiEventIfNeeded(dbi, event) {
@@ -447,6 +746,12 @@ function normalizeTipo(tipo) {
   if (t === "terreno") return "terreno";
   if (t === "dbi") return "dbi";
   return null;
+}
+
+function normalizeTipoPoligono(raw) {
+  const t = String(raw || "").toLowerCase().trim();
+  if (t === "afectacion") return "afectacion";
+  return "proyecto";
 }
 
 async function getProyectoByExpediente(idExpediente) {
@@ -608,6 +913,11 @@ exports.listByProyecto = async (req, res) => {
   res.json(rows);
 };
 
+exports.getDbiEstadosCatalog = async (_req, res) => {
+  const ordered = [...DBI_ESTADOS_CATALOG].sort((a, b) => (a.orden || 0) - (b.orden || 0));
+  res.json(ordered);
+};
+
 exports.getOne = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
   const { rows } = await pool.query(
@@ -628,6 +938,33 @@ exports.create = async (req, res) => {
     const parteB = parseOptionalNonNegNumeric(b, "parte_b");
     const premioAplica = parseOptionalBoolean(b, "premio_aplica");
 
+    const superficie = parseOptionalNonNegNumeric(b, "superficie");
+    const superficieAfectada = parseOptionalNonNegNumeric(b, "superficie_afectada");
+    const porcentajeAfectacion = parseOptionalNonNegNumeric(b, "porcentaje_afectacion");
+    const desafectado = parseOptionalBoolean(b, "desafectado");
+    const desafectadoDetalle = parseOptionalJsonb(b, "desafectado_detalle");
+    const documentacionPresentada = parseOptionalJsonb(b, "documentacion_presentada");
+    const progresivaIni = parseOptionalString(b, "progresiva_ini");
+    const progresivaFin = parseOptionalString(b, "progresiva_fin");
+    const margen = parseOptionalString(b, "margen");
+    const percepcionNotificador = parseOptionalString(b, "percepcion_notificador");
+    const observacionNotificador = parseOptionalString(b, "observacion_notificador");
+    const padron = parseOptionalString(b, "padron");
+    const ctaCteCatastral = parseOptionalString(b, "cta_cte_catastral");
+    const telefono = parseOptionalString(b, "telefono");
+    const tipoExpediente = parseOptionalString(b, "tipo_expediente");
+
+    if (tipoExpediente.present && !["M", "T"].includes(tipoExpediente.value)) {
+      return res.status(400).json({ message: "tipo_expediente debe ser M o T" });
+    }
+
+    const idProyecto = Number(b.id_proyecto);
+    const codigoUnico = await buildCodigoUnicoForCreate({
+      idProyecto,
+      codigoExp: b.codigo_exp,
+      tipoExpediente: tipoExpediente.present ? tipoExpediente.value : null,
+    });
+
     const { rows } = await pool.query(
       `INSERT INTO ema.expedientes
        (
@@ -645,17 +982,33 @@ exports.create = async (req, res) => {
          id_tramo,
          id_sub_tramo,
          codigo_censo,
+         padron,
+         cta_cte_catastral,
          parte_a,
          parte_b,
-         premio_aplica
+         premio_aplica,
+         superficie,
+         superficie_afectada,
+         progresiva_ini,
+         progresiva_fin,
+         margen,
+         porcentaje_afectacion,
+         desafectado,
+         desafectado_detalle,
+         documentacion_presentada,
+         percepcion_notificador,
+         observacion_notificador,
+         telefono,
+         tipo_expediente,
+         codigo_unico
        )
        VALUES
        (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33
        )
        RETURNING *`,
       [
-        Number(b.id_proyecto),
+        idProyecto,
         fechaRelevamiento,
         b.gps || null,
         b.tecnico || null,
@@ -669,9 +1022,25 @@ exports.create = async (req, res) => {
         resTramo.id_tramo,
         resTramo.id_sub_tramo,
         resTramo.codigo_censo,
+        padron.present ? padron.value : null,
+        ctaCteCatastral.present ? ctaCteCatastral.value : null,
         parteA.present ? parteA.value : null,
         parteB.present ? parteB.value : null,
         premioAplica.present ? premioAplica.value : false,
+        superficie.present ? superficie.value : null,
+        superficieAfectada.present ? superficieAfectada.value : null,
+        progresivaIni.present ? progresivaIni.value : null,
+        progresivaFin.present ? progresivaFin.value : null,
+        margen.present ? margen.value : null,
+        porcentajeAfectacion.present ? porcentajeAfectacion.value : null,
+        desafectado.present ? desafectado.value : false,
+        desafectadoDetalle.present ? toJsonbParam(desafectadoDetalle.value) : toJsonbParam({}),
+        documentacionPresentada.present ? toJsonbParam(documentacionPresentada.value) : toJsonbParam([]),
+        percepcionNotificador.present ? percepcionNotificador.value : null,
+        observacionNotificador.present ? observacionNotificador.value : null,
+        telefono.present ? telefono.value : null,
+        tipoExpediente.present ? tipoExpediente.value : null,
+        codigoUnico,
       ]
     );
 
@@ -695,10 +1064,54 @@ exports.update = async (req, res) => {
     const fechaRelevamiento = requireFechaRelevamiento(b);
     const resTramo = await resolveTramoInfo(b);
 
+    const { rows: existingRows } = await pool.query(
+      `SELECT id_proyecto, codigo_exp, tipo_expediente, codigo_unico
+         FROM ema.expedientes
+        WHERE id_expediente = $1`,
+      [idExp]
+    );
+    const existing = existingRows[0] || null;
+
     const parteA = parseOptionalNonNegNumeric(b, "parte_a");
     const parteB = parseOptionalNonNegNumeric(b, "parte_b");
     const premioAplica = parseOptionalBoolean(b, "premio_aplica");
 
+    const superficie = parseOptionalNonNegNumeric(b, "superficie");
+    const superficieAfectada = parseOptionalNonNegNumeric(b, "superficie_afectada");
+    const porcentajeAfectacion = parseOptionalNonNegNumeric(b, "porcentaje_afectacion");
+    const desafectado = parseOptionalBoolean(b, "desafectado");
+    const desafectadoDetalle = parseOptionalJsonb(b, "desafectado_detalle");
+    const documentacionPresentada = parseOptionalJsonb(b, "documentacion_presentada");
+    const progresivaIni = parseOptionalString(b, "progresiva_ini");
+    const progresivaFin = parseOptionalString(b, "progresiva_fin");
+    const margen = parseOptionalString(b, "margen");
+    const percepcionNotificador = parseOptionalString(b, "percepcion_notificador");
+    const observacionNotificador = parseOptionalString(b, "observacion_notificador");
+    const padron = parseOptionalString(b, "padron");
+    const ctaCteCatastral = parseOptionalString(b, "cta_cte_catastral");
+    const telefono = parseOptionalString(b, "telefono");
+    const tipoExpediente = parseOptionalString(b, "tipo_expediente");
+
+    if (tipoExpediente.present && !["M", "T"].includes(tipoExpediente.value)) {
+      return res.status(400).json({ message: "tipo_expediente debe ser M o T" });
+    }
+
+    let codigoUnicoToSet = null;
+    if (existing && !String(existing.codigo_unico || "").trim()) {
+      const resolvedTipo =
+        (tipoExpediente.present ? tipoExpediente.value : null) ||
+        (existing.tipo_expediente ? String(existing.tipo_expediente).trim() : null);
+      const resolvedCodigoExp =
+        b.codigo_exp != null && String(b.codigo_exp).trim()
+          ? String(b.codigo_exp).trim()
+          : existing.codigo_exp;
+
+      codigoUnicoToSet = await buildCodigoUnicoForCreate({
+        idProyecto: existing.id_proyecto,
+        codigoExp: resolvedCodigoExp,
+        tipoExpediente: resolvedTipo,
+      });
+    }
     const sets = [
       "fecha_relevamiento=$1",
       "gps=$2",
@@ -749,6 +1162,86 @@ exports.update = async (req, res) => {
       params.push(premioAplica.value);
       idx += 1;
     }
+    if (superficie.present) {
+      sets.push(`superficie=$${idx}`);
+      params.push(superficie.value);
+      idx += 1;
+    }
+    if (superficieAfectada.present) {
+      sets.push(`superficie_afectada=$${idx}`);
+      params.push(superficieAfectada.value);
+      idx += 1;
+    }
+    if (progresivaIni.present) {
+      sets.push(`progresiva_ini=$${idx}`);
+      params.push(progresivaIni.value);
+      idx += 1;
+    }
+    if (progresivaFin.present) {
+      sets.push(`progresiva_fin=$${idx}`);
+      params.push(progresivaFin.value);
+      idx += 1;
+    }
+    if (margen.present) {
+      sets.push(`margen=$${idx}`);
+      params.push(margen.value);
+      idx += 1;
+    }
+    if (porcentajeAfectacion.present) {
+      sets.push(`porcentaje_afectacion=$${idx}`);
+      params.push(porcentajeAfectacion.value);
+      idx += 1;
+    }
+    if (desafectado.present) {
+      sets.push(`desafectado=$${idx}`);
+      params.push(desafectado.value);
+      idx += 1;
+    }
+    if (desafectadoDetalle.present) {
+      sets.push(`desafectado_detalle=$${idx}`);
+      params.push(toJsonbParam(desafectadoDetalle.value));
+      idx += 1;
+    }
+    if (documentacionPresentada.present) {
+      sets.push(`documentacion_presentada=$${idx}`);
+      params.push(toJsonbParam(documentacionPresentada.value));
+      idx += 1;
+    }
+    if (percepcionNotificador.present) {
+      sets.push(`percepcion_notificador=$${idx}`);
+      params.push(percepcionNotificador.value);
+      idx += 1;
+    }
+    if (observacionNotificador.present) {
+      sets.push(`observacion_notificador=$${idx}`);
+      params.push(observacionNotificador.value);
+      idx += 1;
+    }
+    if (padron.present) {
+      sets.push(`padron=$${idx}`);
+      params.push(padron.value);
+      idx += 1;
+    }
+    if (ctaCteCatastral.present) {
+      sets.push(`cta_cte_catastral=$${idx}`);
+      params.push(ctaCteCatastral.value);
+      idx += 1;
+    }
+    if (telefono.present) {
+      sets.push(`telefono=$${idx}`);
+      params.push(telefono.value);
+      idx += 1;
+    }
+    if (tipoExpediente.present) {
+      sets.push(`tipo_expediente=$${idx}`);
+      params.push(tipoExpediente.value);
+      idx += 1;
+    }
+    if (codigoUnicoToSet) {
+      sets.push(`codigo_unico=$${idx}`);
+      params.push(codigoUnicoToSet);
+      idx += 1;
+    }
 
     sets.push("updated_at=now()");
 
@@ -772,6 +1265,125 @@ exports.update = async (req, res) => {
     );
 
     res.json(rows2[0]);
+  } catch (e) {
+    return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
+  }
+};
+
+exports.clonarBase = async (req, res) => {
+  const idExpediente = Number(req.params.idExpediente);
+  try {
+    const tipoDestino = parseOptionalString(req.body || {}, "tipo_destino");
+    if (!tipoDestino.present || !["M", "T"].includes(tipoDestino.value)) {
+      return res.status(400).json({ message: "tipo_destino requerido (M|T)" });
+    }
+    if (!Number.isFinite(idExpediente) || idExpediente <= 0) {
+      return res.status(400).json({ message: "idExpediente invalido" });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: srcRows } = await client.query(
+        `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
+        [idExpediente]
+      );
+      if (!srcRows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Expediente origen no encontrado" });
+      }
+      const src = srcRows[0];
+
+      const codigoUnico = await buildCodigoUnicoForCreate({
+        idProyecto: src.id_proyecto,
+        codigoExp: src.codigo_exp,
+        tipoExpediente: tipoDestino.value,
+      });
+
+      const { rows: createdRows } = await client.query(
+        `INSERT INTO ema.expedientes
+         (
+           id_proyecto,
+           fecha_relevamiento,
+           gps,
+           codigo_exp,
+           propietario_nombre,
+           propietario_ci,
+           pareja_nombre,
+           pareja_ci,
+           telefono,
+           id_tramo,
+           id_sub_tramo,
+           tramo,
+           subtramo,
+           codigo_censo,
+           padron,
+           cta_cte_catastral,
+           parte_a,
+           parte_b,
+           premio_aplica,
+           tipo_expediente,
+           codigo_unico
+         )
+         VALUES
+         (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+         )
+         RETURNING *`,
+        [
+          src.id_proyecto,
+          src.fecha_relevamiento || null,
+          cleanStr(src.gps),
+          cleanStr(src.codigo_exp),
+          cleanStr(src.propietario_nombre),
+          cleanStr(src.propietario_ci),
+          cleanStr(src.pareja_nombre),
+          cleanStr(src.pareja_ci),
+          cleanStr(src.telefono),
+          src.id_tramo || null,
+          src.id_sub_tramo || null,
+          cleanStr(src.tramo),
+          cleanStr(src.subtramo),
+          cleanStr(src.codigo_censo),
+          cleanStr(src.padron),
+          cleanStr(src.cta_cte_catastral),
+          src.parte_a ?? null,
+          src.parte_b ?? null,
+          Boolean(src.premio_aplica),
+          tipoDestino.value,
+          codigoUnico,
+        ]
+      );
+
+      const newExp = createdRows[0];
+
+      await client.query(
+        `INSERT INTO ema.tumba (id_documento, tipo_documento, id_tipo, subcarpeta, url, nombre_archivo)
+         SELECT $1, tipo_documento, id_tipo, subcarpeta, url, nombre_archivo
+           FROM ema.tumba
+          WHERE id_documento = $2
+            AND tipo_documento = 'expedientes'
+            AND estado = 1`,
+        [newExp.id_expediente, idExpediente]
+      );
+
+      await client.query("COMMIT");
+
+      await ensureEtapas(newExp.id_expediente);
+
+      const { rows: fullRows } = await pool.query(
+        `SELECT * FROM ema.expedientes WHERE id_expediente = $1`,
+        [newExp.id_expediente]
+      );
+      return res.json(fullRows[0] || newExp);
+    } catch (e) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (e) {
     return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
   }
@@ -960,6 +1572,138 @@ exports.bulkDeleteExpedientesByProyecto = async (req, res) => {
 };
 
 // =====================
+// Historial de visitas
+// =====================
+exports.listarVisitas = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente invalido" });
+  }
+
+  const { rows } = await pool.query(
+    `SELECT id_historial_visita,
+            id_expediente,
+            fecha,
+            consultor,
+            motivo,
+            respuesta,
+            documentos_recibidos,
+            created_at
+       FROM ema.expediente_historial_visitas
+      WHERE id_expediente = $1
+      ORDER BY fecha DESC NULLS LAST, id_historial_visita DESC`,
+    [idExp]
+  );
+
+  return res.json(rows);
+};
+
+exports.crearVisita = async (req, res) => {
+  try {
+    const idExp = Number(req.params.idExpediente);
+    if (!Number.isFinite(idExp) || idExp <= 0) {
+      return res.status(400).json({ message: "idExpediente invalido" });
+    }
+
+    const b = req.body || {};
+    const fecha = parseOptionalDateYMD(b, "fecha");
+    const consultor = parseOptionalString(b, "consultor");
+    const motivo = parseOptionalString(b, "motivo");
+    const respuesta = parseOptionalString(b, "respuesta");
+    const documentosRecibidos = parseOptionalJsonb(b, "documentos_recibidos");
+
+    const { rows } = await pool.query(
+      `INSERT INTO ema.expediente_historial_visitas
+        (id_expediente, fecha, consultor, motivo, respuesta, documentos_recibidos)
+       VALUES
+        ($1, $2::date, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        idExp,
+        fecha.present ? fecha.value : null,
+        consultor.present ? consultor.value : null,
+        motivo.present ? motivo.value : null,
+        respuesta.present ? respuesta.value : null,
+        documentosRecibidos.present ? toJsonbParam(documentosRecibidos.value) : toJsonbParam([]),
+      ]
+    );
+
+    return res.json(rows[0]);
+  } catch (e) {
+    return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
+  }
+};
+
+exports.actualizarVisita = async (req, res) => {
+  try {
+    const idExp = Number(req.params.idExpediente);
+    const idVisita = Number(req.params.idVisita);
+    if (!Number.isFinite(idExp) || idExp <= 0) {
+      return res.status(400).json({ message: "idExpediente invalido" });
+    }
+    if (!Number.isFinite(idVisita) || idVisita <= 0) {
+      return res.status(400).json({ message: "idVisita invalido" });
+    }
+
+    const b = req.body || {};
+    const fecha = parseOptionalDateYMD(b, "fecha");
+    const consultor = parseOptionalString(b, "consultor");
+    const motivo = parseOptionalString(b, "motivo");
+    const respuesta = parseOptionalString(b, "respuesta");
+    const documentosRecibidos = parseOptionalJsonb(b, "documentos_recibidos");
+
+    const sets = [];
+    const params = [];
+    let idx = 1;
+
+    if (fecha.present) {
+      sets.push(`fecha=$${idx++}::date`);
+      params.push(fecha.value);
+    }
+    if (consultor.present) {
+      sets.push(`consultor=$${idx++}`);
+      params.push(consultor.value);
+    }
+    if (motivo.present) {
+      sets.push(`motivo=$${idx++}`);
+      params.push(motivo.value);
+    }
+    if (respuesta.present) {
+      sets.push(`respuesta=$${idx++}`);
+      params.push(respuesta.value);
+    }
+    if (documentosRecibidos.present) {
+      sets.push(`documentos_recibidos=$${idx++}`);
+      params.push(toJsonbParam(documentosRecibidos.value));
+    }
+
+    if (!sets.length) {
+      return res.status(400).json({ message: "Sin campos para actualizar" });
+    }
+
+    params.push(idVisita);
+    params.push(idExp);
+
+    const { rows } = await pool.query(
+      `UPDATE ema.expediente_historial_visitas
+          SET ${sets.join(", ")}
+        WHERE id_historial_visita = $${idx++}
+          AND id_expediente = $${idx}
+        RETURNING *`,
+      params
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "Visita no encontrada para este expediente" });
+    }
+
+    return res.json(rows[0]);
+  } catch (e) {
+    return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
+  }
+};
+
+// =====================
 // ✅ ETAPAS endpoints
 // =====================
 exports.getEtapas = async (req, res) => {
@@ -1007,7 +1751,7 @@ exports.setEtapa = async (req, res) => {
       ok,
       obs,
       fecha_ingreso: !wasOk && ok ? curr.fecha_ingreso || nowIso() : curr.fecha_ingreso || null,
-      estado: !wasOk && ok ? curr.estado || "ingresado" : curr.estado || null,
+      estado: !wasOk && ok ? curr.estado || (normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada") : curr.estado || null,
       estados: Array.isArray(curr.estados) ? curr.estados : [],
     };
 
@@ -1295,6 +2039,7 @@ exports.subirPoligonoMejoras = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
   const body = req.body || {};
   const geo = body.geojson;
+  const tipoPoligono = normalizeTipoPoligono(body?.tipo_poligono || req.query?.tipo_poligono);
 
   if (!geo) return res.status(400).json({ message: "Falta geojson" });
 
@@ -1302,9 +2047,9 @@ exports.subirPoligonoMejoras = async (req, res) => {
   const descripcion = body.descripcion || null;
 
   await pool.query(
-    `INSERT INTO ema.bloque_mejoras (id_expediente, name, descripcion, geom)
+    `INSERT INTO ema.bloque_mejoras (id_expediente, name, descripcion, tipo_poligono, geom)
      VALUES (
-       $1,$2,$3,
+       $1,$2,$3,$4,
        ST_Transform(
          ST_SetSRID(
            ST_MakeValid(ST_GeomFromGeoJSON($4)),
@@ -1313,7 +2058,7 @@ exports.subirPoligonoMejoras = async (req, res) => {
          $6
        )
      )`,
-    [idExp, name, descripcion, JSON.stringify(geo), IN_SRID, DB_SRID]
+    [idExp, name, descripcion, tipoPoligono, JSON.stringify(geo), IN_SRID, DB_SRID]
   );
 
   await markPlanoGeorefOK(idExp, "mejora");
@@ -1324,6 +2069,7 @@ exports.subirPoligonoTerreno = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
   const body = req.body || {};
   const geo = body.geojson;
+  const tipoPoligono = normalizeTipoPoligono(body?.tipo_poligono || req.query?.tipo_poligono);
 
   if (!geo) return res.status(400).json({ message: "Falta geojson" });
 
@@ -1331,9 +2077,9 @@ exports.subirPoligonoTerreno = async (req, res) => {
   const descripcion = body.descripcion || null;
 
   await pool.query(
-    `INSERT INTO ema.bloque_terreno (id_expediente, name, descripcion, geom)
+    `INSERT INTO ema.bloque_terreno (id_expediente, name, descripcion, tipo_poligono, geom)
      VALUES (
-       $1,$2,$3,
+       $1,$2,$3,$4,
        ST_Transform(
          ST_SetSRID(
            ST_MakeValid(ST_GeomFromGeoJSON($4)),
@@ -1342,7 +2088,7 @@ exports.subirPoligonoTerreno = async (req, res) => {
          $6
        )
      )`,
-    [idExp, name, descripcion, JSON.stringify(geo), IN_SRID, DB_SRID]
+    [idExp, name, descripcion, tipoPoligono, JSON.stringify(geo), IN_SRID, DB_SRID]
   );
 
   await markPlanoGeorefOK(idExp, "terreno");
@@ -1352,6 +2098,7 @@ exports.subirPoligonoTerreno = async (req, res) => {
 exports.eliminarPoligonoExpediente = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
   const tipo = normalizeTipo(req.params.tipo);
+  const tipoPoligono = normalizeTipoPoligono(req.query?.tipo_poligono || req.body?.tipo_poligono);
 
   if (!idExp) return res.status(400).json({ message: "idExpediente inválido" });
   if (tipo !== "mejora" && tipo !== "terreno") {
@@ -1359,7 +2106,10 @@ exports.eliminarPoligonoExpediente = async (req, res) => {
   }
 
   const tabla = tipo === "mejora" ? "ema.bloque_mejoras" : "ema.bloque_terreno";
-  const result = await pool.query(`DELETE FROM ${tabla} WHERE id_expediente = $1`, [idExp]);
+  const result = await pool.query(
+    `DELETE FROM ${tabla} WHERE id_expediente = $1 AND COALESCE(tipo_poligono,'proyecto') = $2`,
+    [idExp, tipoPoligono]
+  );
 
   await markPlanoGeoref(idExp, tipo, false);
 
@@ -1420,17 +2170,20 @@ exports.subirDBI = async (req, res) => {
   const curr = normalizeDbiState(rec?.carpeta_dbi);
   const fechaIngreso = curr.fecha_ingreso || nowIso();
 
+  const finalCodigo = curr.codigo || codigo;
   let out = {
     ...curr,
-    codigo,
+    codigo: finalCodigo,
     ok: true,
     fecha_ingreso: fechaIngreso,
-    estado: curr.estado || "ingresado",
+    estado: curr.estado || (normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada"),
   };
+
+  out = mergeDbiExtrasFromBody(out, req.body || {});
 
   if (!curr.fecha_ingreso) {
     out = appendDbiEventIfNeeded(out, {
-      estado: out.estado || "ingresado",
+      estado: out.estado || (normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada"),
       fecha: fechaIngreso,
       obs: out.obs || "",
     });
@@ -1451,7 +2204,8 @@ exports.agregarDbiEvento = async (req, res) => {
   }
 
   const estadoRaw = String(req.body?.estado || "").trim();
-  if (!estadoRaw) {
+  const estadoCatalog = normalizeDbiEstadoFromCatalog(estadoRaw);
+  if (!estadoCatalog) {
     return res.status(400).json({ message: "estado es requerido" });
   }
 
@@ -1461,29 +2215,141 @@ exports.agregarDbiEvento = async (req, res) => {
   const rec = await ensureEtapas(idExp);
   if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
 
-  let fechaIso = null;
-  if (fechaRaw) {
-    fechaIso = parseToIsoOrNull(fechaRaw);
-    if (!fechaIso) {
-      return res.status(400).json({ message: "fecha invalida (debe ser ISO o Date parseable)" });
-    }
+  if (!fechaRaw) {
+    return res.status(400).json({ message: "fecha es requerida para registrar el hito" });
+  }
+
+  const fechaIso = parseToIsoOrNull(fechaRaw);
+  if (!fechaIso) {
+    return res.status(400).json({ message: "fecha invalida (debe ser ISO o Date parseable)" });
   }
 
   let dbi = normalizeDbiState(rec.carpeta_dbi);
 
   const event = {
-    estado: estadoRaw,
+    uuid: randomUUID(),
+    estado: estadoCatalog,
     fecha: fechaIso || nowIso(),
     obs: obsRaw,
   };
 
   dbi = appendDbiEventIfNeeded(dbi, event);
-  dbi.estado = estadoRaw;
+  dbi.estado = estadoCatalog;
 
   await pool.query(`UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`, [
     dbi,
     idExp,
   ]);
+
+  return res.json(dbi);
+};
+
+exports.actualizarDbiEvento = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  const uuid = String(req.params.uuid || "").trim();
+
+  const estadoRaw = String(req.body?.estado || "").trim();
+  const fechaRaw = String(req.body?.fecha || "").trim();
+  const obsRaw = req.body?.obs ? String(req.body.obs) : "";
+
+  if (!estadoRaw || !fechaRaw) {
+    return res.status(400).json({ message: "estado y fecha son requeridos" });
+  }
+
+  const estadoCatalog = normalizeDbiEstadoFromCatalog(estadoRaw);
+  if (!estadoCatalog) {
+    return res.status(400).json({ message: "estado no válido en catálogo" });
+  }
+
+  const fechaIso = parseToIsoOrNull(fechaRaw);
+  if (!fechaIso) {
+    return res.status(400).json({ message: "fecha inválida" });
+  }
+
+  const rec = await ensureEtapas(idExp);
+  if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
+
+  let dbi = normalizeDbiState(rec.carpeta_dbi);
+  const hitoIndex = dbi.estados.findIndex((h) => h.uuid === uuid);
+
+  if (hitoIndex === -1) {
+    return res.status(404).json({ message: "Hito no encontrado en el historial" });
+  }
+
+  // Editamos preservando el uuid
+  dbi.estados[hitoIndex] = {
+    ...dbi.estados[hitoIndex],
+    estado: estadoCatalog,
+    fecha: fechaIso,
+    obs: obsRaw,
+  };
+
+  // Recalculamos estado actual derivado
+  dbi = normalizeDbiState(dbi);
+
+  await pool.query(
+    "UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2",
+    [dbi, idExp]
+  );
+
+  return res.json(dbi);
+};
+
+exports.eliminarDbiEvento = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  const uuid = String(req.params.uuid || "").trim();
+
+  const rec = await ensureEtapas(idExp);
+  if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
+
+  let dbi = normalizeDbiState(rec.carpeta_dbi);
+  const initialLength = dbi.estados.length;
+
+  if (uuid === "legacy" || !uuid) {
+    // Modo Fallback Legacy: Eliminar por coincidencia exacta de campos
+    const { estado, fecha, obs } = req.body || {};
+    if (!estado || !fecha) {
+      return res.status(400).json({ message: "Para eliminar hitos legacy se requiere estado y fecha de coincidencia" });
+    }
+
+    const obsNormalized = String(obs || "").trim();
+    const fechaNormalized = parseToIsoOrNull(fecha);
+
+    // Buscamos hito que coincida con la firma
+    const matches = dbi.estados.filter((h) => {
+      return (
+        h.estado === estado &&
+        parseToIsoOrNull(h.fecha) === fechaNormalized &&
+        String(h.obs || "").trim() === obsNormalized
+      );
+    });
+
+    if (matches.length === 0) {
+      return res.status(404).json({ message: "No se encontró el hito legacy para eliminar" });
+    }
+
+    if (matches.length > 1) {
+      return res.status(409).json({ message: "Eliminación ambigua: se encontraron múltiples hitos idénticos" });
+    }
+
+    // Eliminamos la coincidencia única
+    dbi.estados = dbi.estados.filter((h) => h !== matches[0]);
+  } else {
+    // Modo Estándar: Eliminar por UUID
+    dbi.estados = dbi.estados.filter((h) => h.uuid !== uuid);
+  }
+
+  if (dbi.estados.length === initialLength) {
+    return res.status(404).json({ message: "Hito no encontrado para eliminar" });
+  }
+
+  // Recalculamos estado actual derivado tras eliminar
+  dbi = normalizeDbiState(dbi);
+
+  await pool.query(
+    "UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2",
+    [dbi, idExp]
+  );
 
   return res.json(dbi);
 };
@@ -1520,20 +2386,54 @@ exports.iniciarDbi = async (req, res) => {
   }
 
   const fechaIngreso = fechaIngresoDate.toISOString();
+  const estadoManual = String(req.body?.seg_estado || "").trim(); 
+  let estadoInicial = normalizeDbiEstadoFromCatalog(estadoManual); 
+  if (!estadoInicial) { 
+    estadoInicial = normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada"; 
+  }
+  
   dbi = {
     ...dbi,
     codigo,
     fecha_ingreso: fechaIngreso,
-    estado: "mesa de entrada",
+    estado: estadoInicial,
     obs,
     ok: true,
   };
+  
+  const pBody = { ...(req.body || {}) };
+  delete pBody.seg_estado; // No usar seg_estado como metadato administrativo si se envia aca
+  dbi = mergeDbiExtrasFromBody(dbi, pBody);
 
   dbi = appendDbiEventIfNeeded(dbi, {
-    estado: "mesa de entrada",
+    estado: estadoInicial,
     fecha: fechaIngreso,
     obs,
   });
+
+  await pool.query(`UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`, [
+    dbi,
+    idExp,
+  ]);
+
+  return res.json(dbi);
+};
+
+exports.actualizarDbiHeader = async (req, res) => {
+  const idExp = Number(req.params.idExpediente);
+  if (!Number.isFinite(idExp) || idExp <= 0) {
+    return res.status(400).json({ message: "idExpediente invÃ¡lido" });
+  }
+
+  const rec = await ensureEtapas(idExp);
+  if (!rec) return res.status(404).json({ message: "Expediente no encontrado" });
+
+  let dbi = normalizeDbiState(rec.carpeta_dbi);
+  if (!dbi.codigo && !dbi.fecha_ingreso) {
+    return res.status(400).json({ message: "DBI no iniciado para este expediente." });
+  }
+
+  dbi = mergeDbiAdminHeader(dbi, req.body || {});
 
   await pool.query(`UPDATE ema.expedientes SET carpeta_dbi=$1, updated_at=now() WHERE id_expediente=$2`, [
     dbi,
@@ -1548,6 +2448,7 @@ exports.iniciarDbi = async (req, res) => {
 // =====================
 exports.geojsonTerreno = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
+  const tipoPoligono = normalizeTipoPoligono(req.query?.tipo_poligono);
   const { rows } = await pool.query(
     `SELECT id,
             name,
@@ -1555,8 +2456,9 @@ exports.geojsonTerreno = async (req, res) => {
             ST_AsGeoJSON(ST_Transform(ST_MakeValid(geom), ${OUT_SRID})) AS geometry
        FROM ema.bloque_terreno
       WHERE id_expediente = $1
+        AND COALESCE(tipo_poligono,'proyecto') = $2
       ORDER BY id DESC`,
-    [idExp]
+    [idExp, tipoPoligono]
   );
 
   res.json({
@@ -1573,6 +2475,7 @@ exports.geojsonTerreno = async (req, res) => {
 
 exports.geojsonMejoras = async (req, res) => {
   const idExp = Number(req.params.idExpediente);
+  const tipoPoligono = normalizeTipoPoligono(req.query?.tipo_poligono);
   const { rows } = await pool.query(
     `SELECT id,
             name,
@@ -1580,8 +2483,9 @@ exports.geojsonMejoras = async (req, res) => {
             ST_AsGeoJSON(ST_Transform(ST_MakeValid(geom), ${OUT_SRID})) AS geometry
        FROM ema.bloque_mejoras
       WHERE id_expediente = $1
+        AND COALESCE(tipo_poligono,'proyecto') = $2
       ORDER BY id DESC`,
-    [idExp]
+    [idExp, tipoPoligono]
   );
 
   res.json({
@@ -1665,6 +2569,16 @@ exports.importExcel = async (req, res) => {
     return null;
   }
 
+  function normalizeCatalogSimple(raw, allowed) {
+    const s = String(raw ?? "").trim();
+    if (!s) return null;
+    const key = s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+    return allowed.has(key) ? key : null;
+  }
+
   function normalizeUrlsField(raw) {
     if (Array.isArray(raw)) {
       return raw
@@ -1696,6 +2610,17 @@ exports.importExcel = async (req, res) => {
     id_import: normalizeSignificant(r.id_import ?? r.id_informe),
     tramo: cleanStr(r.tramo),
     subtramo: cleanStr(r.subtramo),
+    telefono: cleanStr(r.telefono),
+    percepcion_notificador: normalizeCatalogSimple(
+      r.percepcion_notificador,
+      new Set(["buena", "neutra", "mala"])
+    ),
+    observacion_notificador: cleanStr(r.observacion_notificador),
+    superficie: r.superficie,
+    superficie_afectada: r.superficie_afectada,
+    progresiva_ini: cleanStr(r.progresiva_ini),
+    progresiva_fin: cleanStr(r.progresiva_fin),
+    margen: normalizeCatalogSimple(r.margen, new Set(["izquierda", "derecha", "centro"])),
 
     ci_propietario_frente_url: normalizeSignificant(r.ci_propietario_frente_url),
     ci_propietario_dorso_url: normalizeSignificant(r.ci_propietario_dorso_url),
@@ -1729,11 +2654,19 @@ exports.importExcel = async (req, res) => {
         id_tramo,
         id_sub_tramo,
         tramo,
-        subtramo
+        subtramo,
+        telefono,
+        percepcion_notificador,
+        observacion_notificador,
+        superficie,
+        superficie_afectada,
+        progresiva_ini,
+        progresiva_fin,
+        margen
       )
       VALUES
       (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
       )
       RETURNING id_expediente
     `;
@@ -2117,6 +3050,14 @@ exports.importExcel = async (req, res) => {
           tramoResolution.id_sub_tramo,
           r.tramo,
           r.subtramo,
+          r.telefono,
+          r.percepcion_notificador,
+          r.observacion_notificador,
+          r.superficie,
+          r.superficie_afectada,
+          r.progresiva_ini,
+          r.progresiva_fin,
+          r.margen,
         ]);
 
         if (q.rowCount > 0) {
@@ -2254,6 +3195,47 @@ exports.importExcel = async (req, res) => {
 
         sets.push(`subtramo=$${idx}`);
         params.push(null);
+        idx += 1;
+      }
+
+      if (r.telefono) {
+        sets.push(`telefono=$${idx}`);
+        params.push(r.telefono);
+        idx += 1;
+      }
+      if (r.percepcion_notificador) {
+        sets.push(`percepcion_notificador=$${idx}`);
+        params.push(r.percepcion_notificador);
+        idx += 1;
+      }
+      if (r.observacion_notificador) {
+        sets.push(`observacion_notificador=$${idx}`);
+        params.push(r.observacion_notificador);
+        idx += 1;
+      }
+      if (r.superficie !== null && r.superficie !== undefined) {
+        sets.push(`superficie=$${idx}`);
+        params.push(r.superficie);
+        idx += 1;
+      }
+      if (r.superficie_afectada !== null && r.superficie_afectada !== undefined) {
+        sets.push(`superficie_afectada=$${idx}`);
+        params.push(r.superficie_afectada);
+        idx += 1;
+      }
+      if (r.progresiva_ini) {
+        sets.push(`progresiva_ini=$${idx}`);
+        params.push(r.progresiva_ini);
+        idx += 1;
+      }
+      if (r.progresiva_fin) {
+        sets.push(`progresiva_fin=$${idx}`);
+        params.push(r.progresiva_fin);
+        idx += 1;
+      }
+      if (r.margen) {
+        sets.push(`margen=$${idx}`);
+        params.push(r.margen);
         idx += 1;
       }
 
