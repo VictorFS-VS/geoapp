@@ -15,7 +15,7 @@ frontend/dist/
 frontend/build/
 backend/dist/
 backend/build/
-
+geoapp_V10/
 docs/
 
 *.log
