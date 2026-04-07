@@ -19,6 +19,7 @@ import QRCode from "qrcode";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
 import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
 import DuplicarPlantillaModal from "@/components/informes/DuplicarPlantillaModal";
+import { hasPerm as hasUserPerm } from "@/utils/auth";
 
 /* =========================
    API base (robusto)
@@ -572,14 +573,21 @@ export default function InformeBuilder() {
   function canEditPlantilla(p) {
     if (!p) return false;
 
-    // admin
     if (isAdminUser(currentUser)) return true;
-
-    // dueño
     if (Number(p.id_creador) === Number(currentUser?.id)) return true;
-
-    // compartido con rol edit
     return String(p.mi_rol || "").toLowerCase() === "edit";
+  }
+
+  function canDeletePlantilla(p) {
+    if (!p) return false;
+
+    const esDueno = Number(p.id_creador) === Number(currentUser?.id);
+    const esAdmin = isAdminUser(currentUser);
+    const tienePermisoDelete =
+      hasUserPerm("informes.delete", currentUser) ||
+      hasUserPerm("informes.plantillas.delete", currentUser);
+
+    return (esAdmin || esDueno) && tienePermisoDelete;
   }
 
   const miRol = useMemo(() => {
@@ -1383,7 +1391,10 @@ export default function InformeBuilder() {
   }
 
   function openEditarPlantilla(p) {
-    if (!canEditPlantilla(p)) return toastWarn("Solo lectura: no tenés permiso para editar.");
+    if (!canEditPlantilla(p)) {
+      return toastWarn("Solo lectura: no tenés permiso para editar.");
+    }
+
     setPlantillaEditId(p.id_plantilla);
     setPlantillaForm({
       nombre: p.nombre || "",
@@ -1458,7 +1469,11 @@ export default function InformeBuilder() {
 
   async function eliminarDefinitivoPlantilla(idPlantilla) {
     const p = plantillas.find((x) => Number(x.id_plantilla) === Number(idPlantilla));
-    if (!canEditPlantilla(p)) return toastWarn("Solo lectura: no tenés permiso para editar.");
+
+    if (!canDeletePlantilla(p)) {
+      return toastWarn("No tenés permiso para eliminar definitivamente esta plantilla.");
+    }
+
     const r = await confirmSwal({
       title: "Eliminar DEFINITIVAMENTE",
       html: `
@@ -2094,7 +2109,7 @@ export default function InformeBuilder() {
                                   Compartir
                                 </Button>
 
-                                {isAdminUser(getCurrentUser()) && (
+                                {canDeletePlantilla(p) && (
                                   <Button
                                     size="sm"
                                     variant="outline-danger"

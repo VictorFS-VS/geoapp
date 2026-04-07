@@ -113,19 +113,21 @@ function fmtDayLabel(dateValue) {
 
 function sameDay(dateValue, selectedDate) {
   const d = toDateSafe(dateValue);
-  if (!d || !selectedDate) return false;
+  const s = toDateSafe(`${selectedDate}T00:00:00`);
+  if (!d || !s) return false;
 
-  const y = d.getFullYear();
-  const m = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  return `${y}-${m}-${day}` === selectedDate;
+  return (
+    d.getFullYear() === s.getFullYear() &&
+    d.getMonth() === s.getMonth() &&
+    d.getDate() === s.getDate()
+  );
 }
 
 function startOfWeek(dateValue) {
   const d = toDateSafe(dateValue) || new Date();
   const copy = new Date(d);
-  const day = copy.getDay(); // 0 dom, 1 lun...
-  const diff = day === 0 ? -6 : 1 - day; // lunes
+  const day = copy.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
   copy.setHours(0, 0, 0, 0);
   copy.setDate(copy.getDate() + diff);
   return copy;
@@ -159,7 +161,7 @@ function isInWeek(dateValue, selectedDate) {
 
 function isSameMonth(dateValue, selectedDate) {
   const d = toDateSafe(dateValue);
-  const s = toDateSafe(selectedDate);
+  const s = toDateSafe(`${selectedDate}T00:00:00`);
   if (!d || !s) return false;
   return d.getFullYear() === s.getFullYear() && d.getMonth() === s.getMonth();
 }
@@ -313,6 +315,20 @@ export default function Regencia() {
     [selectedDate]
   );
 
+  const canEditActividad = useCallback(
+    () => {
+      if (isClientReadOnly) return false;
+      if (!hasContratoVigente) return false;
+      if (!id_contrato) return false;
+      return true;
+    },
+    [isClientReadOnly, hasContratoVigente, id_contrato]
+  );
+
+  function getOpenMode() {
+    return canEditActividad() ? "editar" : "ver";
+  }
+
   const loadContratos = useCallback(async () => {
     if (!id_proyecto) return;
 
@@ -438,10 +454,51 @@ export default function Regencia() {
     setOpenModal(true);
   }
 
-  function onNuevaActividad(prefill = null) {
+  async function marcarRealizada(row, e) {
+    if (e) e.stopPropagation();
+    if (!row?.id) return;
+    if (!canEditActividad()) return;
+    if (row.estado === "REALIZADA") return;
+
+    try {
+      await actualizarActividad(row.id, {
+        id_proyecto,
+        id_contrato,
+        titulo: row.titulo || "",
+        descripcion: row.descripcion || null,
+        tipo: row.tipo || "VISITA",
+        inicio_at: row.inicio_at,
+        fin_at: row.fin_at || null,
+        estado: "REALIZADA",
+        responsables:
+          Array.isArray(row.responsables) && row.responsables.length > 0
+            ? row.responsables
+                .map((r) => ({
+                  id_usuario: Number(r.id_usuario || r.id || r.user_id),
+                  rol: r.rol || "RESPONSABLE",
+                }))
+                .filter((x) => Number.isFinite(x.id_usuario))
+            : [],
+      });
+
+      await load();
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || "No se pudo marcar como realizada");
+    }
+  }
+
+  function onNuevaActividad(dateKey = selectedDate, prefillExtra = {}) {
     if (isClientReadOnly || !hasContratoVigente || !id_contrato) return;
 
-    setSelected(prefill || null);
+    const fechaBase = dateKey || fmtDateInput(new Date());
+
+    setSelected({
+      inicio_at: `${fechaBase}T09:00:00`,
+      fin_at: `${fechaBase}T10:00:00`,
+      ...prefillExtra,
+    });
+
     setSelectedResponsables([]);
     setModalMode("crear");
     setOpenModal(true);
@@ -665,12 +722,7 @@ export default function Regencia() {
               {!isClientReadOnly && (
                 <Button
                   variant="success"
-                  onClick={() =>
-                    onNuevaActividad({
-                      inicio_at: `${selectedDate}T09:00:00`,
-                      fin_at: `${selectedDate}T10:00:00`,
-                    })
-                  }
+                  onClick={() => onNuevaActividad(selectedDate)}
                   disabled={!hasContratoVigente || !id_contrato}
                 >
                   + Nueva actividad
@@ -891,10 +943,7 @@ export default function Regencia() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedDate(cell.key);
-                              onNuevaActividad({
-                                inicio_at: `${cell.key}T09:00:00`,
-                                fin_at: `${cell.key}T10:00:00`,
-                              });
+                              onNuevaActividad(cell.key);
                             }}
                             disabled={!hasContratoVigente || !id_contrato}
                             title="Nueva actividad"
@@ -906,21 +955,35 @@ export default function Regencia() {
 
                       <div className="calendar-month-events">
                         {cell.items.slice(0, 3).map((item) => (
-                          <button
-                            type="button"
-                            key={item.id}
-                            className={`calendar-event-pill ${estadoClass(item.estado)}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openVerEditar(item, "ver");
-                            }}
-                            title={`${fmtHour(item.inicio_at)} · ${item.titulo || "Sin título"}`}
-                          >
-                            <span className="calendar-event-hour">{fmtHour(item.inicio_at)}</span>
-                            <span className="calendar-event-title">
-                              {item.titulo || "Sin título"}
-                            </span>
-                          </button>
+                          <div key={item.id} className="calendar-event-row">
+                            <button
+                              type="button"
+                              className={`calendar-event-pill ${estadoClass(item.estado)}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openVerEditar(item, getOpenMode());
+                              }}
+                              title={`${fmtHour(item.inicio_at)} · ${item.titulo || "Sin título"}`}
+                            >
+                              <span className="calendar-event-hour">{fmtHour(item.inicio_at)}</span>
+                              <span className="calendar-event-title">
+                                {item.titulo || "Sin título"}
+                              </span>
+                            </button>
+
+                            {!isClientReadOnly &&
+                              item.estado !== "REALIZADA" &&
+                              canEditActividad() && (
+                                <button
+                                  type="button"
+                                  className="calendar-done-btn"
+                                  title="Marcar realizada"
+                                  onClick={(e) => marcarRealizada(item, e)}
+                                >
+                                  ✓
+                                </button>
+                              )}
+                          </div>
                         ))}
 
                         {cell.items.length > 3 && (
@@ -968,7 +1031,7 @@ export default function Regencia() {
                           <div
                             key={item.id}
                             className={`actividad-card compact ${getCardBorderClass(item.estado)}`}
-                            onClick={() => openVerEditar(item, "ver")}
+                            onClick={() => openVerEditar(item, getOpenMode())}
                           >
                             <div className="actividad-card-header">
                               <div className="actividad-card-title">
@@ -999,10 +1062,20 @@ export default function Regencia() {
                                     e.stopPropagation();
                                     openVerEditar(item, "editar");
                                   }}
-                                  disabled={!hasContratoVigente}
+                                  disabled={!canEditActividad()}
                                 >
                                   Editar
                                 </Button>
+
+                                {item.estado !== "REALIZADA" && canEditActividad() && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline-success"
+                                    onClick={(e) => marcarRealizada(item, e)}
+                                  >
+                                    Realizado
+                                  </Button>
+                                )}
                               </div>
                             )}
                           </div>
@@ -1044,7 +1117,7 @@ export default function Regencia() {
                         <div
                           key={item.id}
                           className={`actividad-card ${getCardBorderClass(item.estado)}`}
-                          onClick={() => openVerEditar(item, "ver")}
+                          onClick={() => openVerEditar(item, getOpenMode())}
                         >
                           <div className="actividad-card-header">
                             <div className="actividad-card-title">
@@ -1079,10 +1152,20 @@ export default function Regencia() {
                                   e.stopPropagation();
                                   openVerEditar(item, "editar");
                                 }}
-                                disabled={!hasContratoVigente}
+                                disabled={!canEditActividad()}
                               >
                                 Editar
                               </Button>
+
+                              {item.estado !== "REALIZADA" && canEditActividad() && (
+                                <Button
+                                  size="sm"
+                                  variant="outline-success"
+                                  onClick={(e) => marcarRealizada(item, e)}
+                                >
+                                  Realizado
+                                </Button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1109,7 +1192,7 @@ export default function Regencia() {
                   <th style={{ width: 180 }}>Inicio</th>
                   <th style={{ width: 180 }}>Fin</th>
                   <th style={{ width: 130 }}>Estado</th>
-                  <th style={{ width: 180 }}>Acciones</th>
+                  <th style={{ width: 220 }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -1145,21 +1228,22 @@ export default function Regencia() {
                           <Button
                             size="sm"
                             variant="outline-primary"
-                            onClick={() => openVerEditar(r, "ver")}
+                            onClick={() => openVerEditar(r, canEditActividad() ? "editar" : "ver")}
                           >
-                            Ver
+                            {canEditActividad() ? "Editar" : "Ver"}
                           </Button>
 
-                          {!isClientReadOnly && (
-                            <Button
-                              size="sm"
-                              variant="outline-warning"
-                              onClick={() => openVerEditar(r, "editar")}
-                              disabled={!hasContratoVigente}
-                            >
-                              Editar
-                            </Button>
-                          )}
+                          {!isClientReadOnly &&
+                            r.estado !== "REALIZADA" &&
+                            canEditActividad() && (
+                              <Button
+                                size="sm"
+                                variant="outline-success"
+                                onClick={(e) => marcarRealizada(r, e)}
+                              >
+                                Realizado
+                              </Button>
+                            )}
                         </div>
                       </td>
                     </tr>
@@ -1305,6 +1389,7 @@ export default function Regencia() {
           margin-top: 12px;
           display: flex;
           gap: 8px;
+          flex-wrap: wrap;
         }
 
         .calendar-month-header {
@@ -1378,8 +1463,15 @@ export default function Regencia() {
           gap: 6px;
         }
 
+        .calendar-event-row {
+          display: flex;
+          gap: 6px;
+          align-items: stretch;
+        }
+
         .calendar-event-pill {
           border: 0;
+          flex: 1;
           width: 100%;
           text-align: left;
           border-radius: 10px;
@@ -1415,6 +1507,23 @@ export default function Regencia() {
         .estado-cancelada {
           background: #e2e3e5;
           color: #41464b;
+        }
+
+        .calendar-done-btn {
+          border: 0;
+          min-width: 30px;
+          height: 30px;
+          border-radius: 10px;
+          background: #198754;
+          color: #fff;
+          font-weight: 800;
+          cursor: pointer;
+          flex-shrink: 0;
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+        }
+
+        .calendar-done-btn:hover {
+          filter: brightness(0.95);
         }
 
         .calendar-more {
