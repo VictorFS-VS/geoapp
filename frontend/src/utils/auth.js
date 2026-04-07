@@ -105,9 +105,7 @@ export const decodeJWT = (token) => {
     const parts = token.split(".");
     if (parts.length < 2) return null;
 
-    const payload = parts[1]
-      .replace(/-/g, "+")
-      .replace(/_/g, "/");
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
 
     const json = atob(payload);
     return JSON.parse(json);
@@ -135,6 +133,7 @@ export const getTipoUsuarioFromToken = () => {
  * Normaliza una lista de permisos que puede venir como:
  * - ["usuarios.read", "usuarios.update"]
  * - [{ code: "usuarios.read" }, { code: "usuarios.update" }]
+ * - [{ code: "usuarios.read", scope: "all" }]
  * - mezcla de ambos
  */
 export const normalizePerms = (perms) => {
@@ -150,6 +149,34 @@ export const normalizePerms = (perms) => {
   }
 
   return [...new Set(out)];
+};
+
+/**
+ * Devuelve permisos completos conservando code + scope.
+ * Ej:
+ * [
+ *   { code: "proponentes.read", scope: "all" },
+ *   { code: "proponentes.update", scope: "project" }
+ * ]
+ */
+export const getUserPermsFull = (userArg = null) => {
+  const u = userArg || getUser();
+  if (!Array.isArray(u?.perms)) return [];
+
+  return u.perms
+    .map((p) => {
+      if (typeof p === "string" && p.trim()) {
+        return { code: p.trim(), scope: null };
+      }
+      if (p && typeof p === "object" && typeof p.code === "string" && p.code.trim()) {
+        return {
+          code: p.code.trim(),
+          scope: typeof p.scope === "string" && p.scope.trim() ? p.scope.trim() : null,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
 };
 
 export const getUserPerms = (userArg = null) => {
@@ -172,6 +199,36 @@ export const hasAllPerms = (codes = [], userArg = null) => {
   if (!Array.isArray(codes) || codes.length === 0) return false;
   const perms = getUserPerms(userArg);
   return codes.every((c) => perms.includes(c));
+};
+
+/**
+ * Devuelve el scope del permiso si existe.
+ * Ej: "all", "project", "own", null
+ */
+export const getPermScope = (code, userArg = null) => {
+  if (!code) return null;
+  const perms = getUserPermsFull(userArg);
+  const found = perms.find((p) => p.code === code);
+  return found?.scope || null;
+};
+
+/**
+ * Verifica permiso teniendo en cuenta scope.
+ * Reglas:
+ * - si el permiso no existe => false
+ * - si scope del permiso es "all" => true para cualquier consulta
+ * - si coincide exactamente => true
+ */
+export const hasPermScope = (code, scope = null, userArg = null) => {
+  if (!code) return false;
+  const perms = getUserPermsFull(userArg);
+  const found = perms.find((p) => p.code === code);
+
+  if (!found) return false;
+  if (found.scope === "all") return true;
+  if (!scope) return true;
+
+  return found.scope === scope;
 };
 
 /* =========================================================

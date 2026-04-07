@@ -315,15 +315,12 @@ export default function Regencia() {
     [selectedDate]
   );
 
-  const canEditActividad = useCallback(
-    () => {
-      if (isClientReadOnly) return false;
-      if (!hasContratoVigente) return false;
-      if (!id_contrato) return false;
-      return true;
-    },
-    [isClientReadOnly, hasContratoVigente, id_contrato]
-  );
+  const canEditActividad = useCallback(() => {
+    if (isClientReadOnly) return false;
+    if (!hasContratoVigente) return false;
+    if (!id_contrato) return false;
+    return true;
+  }, [isClientReadOnly, hasContratoVigente, id_contrato]);
 
   function getOpenMode() {
     return canEditActividad() ? "editar" : "ver";
@@ -1424,6 +1421,7 @@ export default function Regencia() {
           box-shadow: 0 2px 8px rgba(0,0,0,0.04);
           cursor: pointer;
           transition: transform 0.15s ease, box-shadow 0.15s ease;
+          overflow: hidden;
         }
 
         .calendar-month-cell:hover {
@@ -1461,18 +1459,20 @@ export default function Regencia() {
           display: flex;
           flex-direction: column;
           gap: 6px;
+          min-width: 0;
         }
 
         .calendar-event-row {
           display: flex;
           gap: 6px;
-          align-items: stretch;
+          align-items: center;
+          min-width: 0;
         }
 
         .calendar-event-pill {
           border: 0;
           flex: 1;
-          width: 100%;
+          min-width: 0;
           text-align: left;
           border-radius: 10px;
           padding: 6px 8px;
@@ -1481,17 +1481,21 @@ export default function Regencia() {
           gap: 6px;
           align-items: center;
           cursor: pointer;
+          overflow: hidden;
         }
 
         .calendar-event-hour {
           font-weight: 800;
           white-space: nowrap;
+          flex-shrink: 0;
         }
 
         .calendar-event-title {
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
+          flex: 1;
+          min-width: 0;
         }
 
         .estado-pendiente {
@@ -1512,6 +1516,7 @@ export default function Regencia() {
         .calendar-done-btn {
           border: 0;
           min-width: 30px;
+          width: 30px;
           height: 30px;
           border-radius: 10px;
           background: #198754;
@@ -1543,6 +1548,7 @@ export default function Regencia() {
           font-weight: 800;
           line-height: 1;
           cursor: pointer;
+          flex-shrink: 0;
         }
 
         .mini-add-btn:disabled {
