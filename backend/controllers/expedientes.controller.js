@@ -380,8 +380,8 @@ async function cleanupExpedienteFiles(fileRows = []) {
       }
 
       if (await fs.pathExists(absNorm)) {
-        await fs.remove(absNorm);
-        deleted += 1;
+        // Corte de seguridad: NO borrar fÃ­sico desde Expedientes.
+        skipped += 1;
       } else {
         skipped += 1;
       }
@@ -2009,13 +2009,6 @@ exports.eliminarDoc = async (req, res) => {
   const { rows } = await pool.query(`SELECT url FROM ema.tumba WHERE id_archivo = $1`, [idArchivo]);
 
   if (!rows.length) return res.status(404).json({ message: "Documento no encontrado." });
-
-  const abs = resolveAbsolutePath(rows[0].url) || resolveRecoveredRemotePath(rows[0].url);
-  if (abs && (await fs.pathExists(abs))) {
-    try {
-      await fs.remove(abs);
-    } catch {}
-  }
 
   await pool.query(`DELETE FROM ema.tumba WHERE id_archivo = $1`, [idArchivo]);
   res.json({ message: "Documento eliminado." });
