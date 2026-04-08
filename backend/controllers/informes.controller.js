@@ -100,8 +100,8 @@ async function cleanupInformeFiles(fileRows = []) {
         continue;
       }
 
-      await fs.promises.unlink(abs);
-      deleted += 1;
+      // Corte de seguridad: NO borrar fÃ­sico desde Informes.
+      skipped += 1;
     } catch (e) {
       if (String(e?.code) === "ENOENT") {
         skipped += 1;
@@ -1249,14 +1249,7 @@ async function deleteSeccion(req, res) {
 
     await client.query("COMMIT");
 
-    for (const ruta of rutas) {
-      try {
-        const abs = path.resolve(path.join(uploadsRoot, String(ruta).replace(/\//g, path.sep)));
-        if (abs.startsWith(uploadsRoot + path.sep)) {
-          await fs.promises.unlink(abs).catch(() => {});
-        }
-      } catch {}
-    }
+    // Corte de seguridad: NO borrar fÃ­sico desde Informes.
 
     if (!delSec.rowCount) return res.status(404).json({ ok: false, error: "SecciÃ³n no encontrada" });
     return res.json({ ok: true });
@@ -1791,16 +1784,7 @@ async function deletePregunta(req, res) {
 
     await client.query("COMMIT");
 
-    for (const f of fotos.rows) {
-      try {
-        const rel = String(f.ruta_archivo || "");
-        if (!rel) continue;
-        const abs = path.resolve(path.join(uploadsRoot, rel.replace(/\//g, path.sep)));
-        if (abs.startsWith(uploadsRoot + path.sep)) {
-          await fs.promises.unlink(abs).catch(() => {});
-        }
-      } catch {}
-    }
+    // Corte de seguridad: NO borrar fÃ­sico desde Informes.
 
     return res.json({ ok: true });
   } catch (err) {
@@ -3119,19 +3103,7 @@ async function deletePregunta(req, res) {
           [idInforme, deleteIds]
         );
 
-        for (const f of fotosDel) {
-          try {
-            const ruta = String(f.ruta_archivo || "").trim();
-
-            if (isExternalUrl(ruta)) continue;
-
-            const abs = path.resolve(path.join(uploadsRoot, ruta.replace(/\//g, path.sep)));
-
-            if (abs.startsWith(uploadsRoot + path.sep)) {
-              await fs.promises.unlink(abs).catch(() => {});
-            }
-          } catch {}
-        }
+        // Corte de seguridad: NO borrar fÃ­sico desde Informes.
       }
 
       // =========================
@@ -3355,9 +3327,7 @@ async function deletePregunta(req, res) {
       await client.query(`DELETE FROM ema.informe_foto WHERE id_foto = $1 AND id_informe = $2`, [idFoto, idInforme]);
       await client.query("COMMIT");
 
-      if (abs.startsWith(uploadsRoot + path.sep)) {
-        fs.promises.unlink(abs).catch(() => {});
-      }
+      // Corte de seguridad: NO borrar fÃ­sico desde Informes.
       return res.json({ ok: true });
     } catch (err) {
       await client.query("ROLLBACK");
