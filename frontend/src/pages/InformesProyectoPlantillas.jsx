@@ -1,4 +1,3 @@
-// src/pages/InformesProyectoPlantillas.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Table, Button, Badge, Spinner, Alert } from "react-bootstrap";
@@ -45,6 +44,15 @@ function firstArray(...candidates) {
     if (Array.isArray(x)) return x;
   }
   return [];
+}
+
+function creadorPlantillaLabel(p) {
+  if (!p) return "-";
+  return (
+    p.creador_nombre ||
+    p.creador_username ||
+    (p.id_creador ? `ID ${p.id_creador}` : "-")
+  );
 }
 
 const InformesProyectoPlantillas = () => {
@@ -157,7 +165,7 @@ const InformesProyectoPlantillas = () => {
   function abrirNuevoImport(plantilla) {
     const idPlantilla = Number(plantilla?.id_plantilla);
     if (!idPlantilla) {
-      Toast.fire({ icon: "warning", title: "Plantilla invalida." });
+      Toast.fire({ icon: "warning", title: "Plantilla inválida." });
       return;
     }
     setPlantillaImportSel(plantilla);
@@ -240,6 +248,7 @@ const InformesProyectoPlantillas = () => {
                 <tr>
                   <th style={{ width: 90 }}>ID</th>
                   <th>Plantilla</th>
+                  <th style={{ width: 170 }}>Creado por</th>
                   <th style={{ width: 140 }}>Total</th>
                   <th style={{ width: 220 }}>Último informe</th>
                   <th style={{ width: 360 }}>Acciones</th>
@@ -252,7 +261,20 @@ const InformesProyectoPlantillas = () => {
                       <Badge bg="secondary">{p.id_plantilla}</Badge>
                     </td>
 
-                    <td>{p.nombre || `Plantilla ${p.id_plantilla}`}</td>
+                    <td>
+                      <div className="fw-semibold">
+                        {p.nombre || `Plantilla ${p.id_plantilla}`}
+                      </div>
+                      <div className="small text-muted">
+                        {p.descripcion || "Sin descripción"}
+                      </div>
+                    </td>
+
+                    <td>
+                      <span className="small">
+                        {creadorPlantillaLabel(p)}
+                      </span>
+                    </td>
 
                     <td>
                       <Badge bg="info">{Number(p.total) || 0}</Badge>

@@ -665,6 +665,7 @@ export default function QuejasReclamos() {
 
   const [tramos, setTramos] = useState([]);
   const [loadingTramos, setLoadingTramos] = useState(false);
+  const [nombreProyecto, setNombreProyecto] = useState("");
 
   const [showFirmaReclamante, setShowFirmaReclamante] = useState(false);
   const [showFirmaResponsable, setShowFirmaResponsable] = useState(false);
@@ -750,6 +751,41 @@ export default function QuejasReclamos() {
     }
   }
 
+  async function cargarNombreProyecto(idProj) {
+    const id = String(idProj || "").trim();
+
+    if (!id) {
+      setNombreProyecto("");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/proyectos/${id}`, {
+        headers: authHeader(false),
+      });
+
+      if (!res.ok) {
+        setNombreProyecto(`Proyecto ${id}`);
+        return;
+      }
+
+      const data = await res.json();
+
+      setNombreProyecto(
+        data?.nombre ||
+          data?.proyecto ||
+          data?.nombre_proyecto ||
+          data?.data?.nombre ||
+          data?.data?.proyecto ||
+          data?.data?.nombre_proyecto ||
+          `Proyecto ${id}`
+      );
+    } catch (err) {
+      console.error("Error cargando nombre del proyecto:", err);
+      setNombreProyecto(`Proyecto ${id}`);
+    }
+  }
+
   useEffect(() => {
     fetchData(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -757,6 +793,11 @@ export default function QuejasReclamos() {
 
   useEffect(() => {
     cargarTramosPorProyecto(proyectoActualFormulario);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proyectoActualFormulario]);
+
+  useEffect(() => {
+    cargarNombreProyecto(proyectoActualFormulario);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proyectoActualFormulario]);
 
@@ -777,11 +818,13 @@ export default function QuejasReclamos() {
         id_tramo: "",
       })
     );
+    setNombreProyecto("");
     setTramos([]);
     setShowModal(true);
 
     if (nuevoProyecto) {
       cargarTramosPorProyecto(nuevoProyecto);
+      cargarNombreProyecto(nuevoProyecto);
     }
   }
 
@@ -814,8 +857,10 @@ export default function QuejasReclamos() {
 
       if (proyectoRegistro) {
         await cargarTramosPorProyecto(proyectoRegistro);
+        await cargarNombreProyecto(proyectoRegistro);
       } else {
         setTramos([]);
+        setNombreProyecto("");
       }
     } catch (err) {
       console.error(err);
@@ -832,6 +877,7 @@ export default function QuejasReclamos() {
     setFormData(normalizeFormData(initialForm));
     setMode("crear");
     setTramos([]);
+    setNombreProyecto("");
   }
 
   function handleChange(e) {
@@ -839,9 +885,6 @@ export default function QuejasReclamos() {
 
     setFormData((prev) => {
       const next = { ...prev, [name]: value };
-      if (name === "id_proyecto") {
-        next.id_tramo = "";
-      }
       return next;
     });
   }
@@ -994,9 +1037,8 @@ export default function QuejasReclamos() {
             <Row className="g-2">
               <Col md={2}>
                 <Form.Control
-                  placeholder="ID Proyecto"
-                  value={idProyecto}
-                  onChange={(e) => setIdProyecto(e.target.value)}
+                  value={nombreProyecto || (idProyecto ? `Proyecto ${idProyecto}` : "")}
+                  readOnly
                 />
               </Col>
 
@@ -1096,7 +1138,7 @@ export default function QuejasReclamos() {
                           <td>
                             <EstadoBadge estado={item.estado} />
                           </td>
-                          <td>{item.id_proyecto || "-"}</td>
+                          <td>{item.nombre_proyecto || item.proyecto || item.id_proyecto || "-"}</td>
                           <td>
                             {item.latitud && item.longitud
                               ? `${item.latitud}, ${item.longitud}`
@@ -1380,13 +1422,16 @@ export default function QuejasReclamos() {
               </Col>
 
               <Col md={3}>
-                <Form.Label>ID Proyecto</Form.Label>
+                <Form.Label>Proyecto</Form.Label>
                 <Form.Control
-                  name="id_proyecto"
-                  value={formData.id_proyecto}
-                  onChange={handleChange}
-                  disabled={isView}
+                  value={nombreProyecto || (formData.id_proyecto ? `Proyecto ${formData.id_proyecto}` : "")}
+                  readOnly
                 />
+                {!!formData.id_proyecto && (
+                  <Form.Text className="text-muted">
+                    ID: {formData.id_proyecto}
+                  </Form.Text>
+                )}
               </Col>
 
               <Col md={3}>

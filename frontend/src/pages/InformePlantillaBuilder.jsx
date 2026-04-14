@@ -869,6 +869,15 @@ export default function InformeBuilder() {
     max_envios: "",
   });
 
+  const [showEditShareModal, setShowEditShareModal] = useState(false);
+  const [editingShareId, setEditingShareId] = useState(null);
+  const [editShareForm, setEditShareForm] = useState({
+    id_proyecto: "",
+    titulo: "",
+    expira_en_local: "",
+    max_envios: "",
+  });
+
   /* ───────────────────────── QR (Share link) ───────────────────────── */
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrLoading, setQrLoading] = useState(false);
@@ -1992,6 +2001,72 @@ export default function InformeBuilder() {
     setRuleUI((s) => ({ ...s, valueList: values }));
   }
 
+  function openEditarShareLink(link) {
+    if (!link) return;
+
+    setEditingShareId(link.id_share || link.id || null);
+    setEditShareForm({
+      id_proyecto: link.id_proyecto ? String(link.id_proyecto) : "",
+      titulo: link.titulo || "",
+      expira_en_local: link.expira_en ? toDatetimeLocalValue(link.expira_en) : defaultExp,
+      max_envios:
+        link.max_envios === null || link.max_envios === undefined
+          ? ""
+          : String(link.max_envios),
+    });
+    setShowEditShareModal(true);
+  }
+
+  async function onUpdateShareLink() {
+    if (!editingShareId) {
+      toastWarn("No hay link seleccionado para editar");
+      return;
+    }
+
+    if (!editShareForm.id_proyecto) {
+      toastWarn("Debés seleccionar un proyecto");
+      return;
+    }
+
+    if (!editShareForm.expira_en_local) {
+      toastWarn("Elegí una fecha/hora de expiración");
+      return;
+    }
+
+    const exp = new Date(editShareForm.expira_en_local);
+    if (Number.isNaN(exp.getTime())) {
+      toastWarn("La fecha de expiración no es válida");
+      return;
+    }
+
+    if (exp.getTime() <= Date.now()) {
+      toastWarn("La expiración debe ser en el futuro");
+      return;
+    }
+
+    try {
+      setShareLoading(true);
+
+      await apiSend(`${API_URL}/informes/share-links/${editingShareId}`, "PUT", {
+        id_proyecto: Number(editShareForm.id_proyecto),
+        titulo: editShareForm.titulo?.trim() ? editShareForm.titulo.trim() : null,
+        expira_en: exp.toISOString(),
+        max_envios: editShareForm.max_envios
+          ? Number(editShareForm.max_envios)
+          : null,
+      });
+
+      toastOk("Link actualizado");
+      setShowEditShareModal(false);
+      setEditingShareId(null);
+      await refreshShareLinks(plantillaSelId);
+    } catch (e) {
+      toastErr(e.message);
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
   /* ───────────────────────── Render ───────────────────────── */
   return (
     <>
@@ -2491,33 +2566,54 @@ export default function InformeBuilder() {
                           return (
                             <tr key={l.id_share}>
                               <td>{l.id_share}</td>
-
-                              {/* ✅ FIX: mostrar CODIGO - NOMBRE (ID) en vez de solo id */}
-                              <td title={proyectoLabel(l.id_proyecto)}>{proyectoLabel(l.id_proyecto)}</td>
-
+                              <td title={proyectoLabel(l.id_proyecto)}>
+                                {proyectoLabel(l.id_proyecto)}
+                              </td>
                               <td>{l.titulo ?? "-"}</td>
                               <td>{l.expira_en ? new Date(l.expira_en).toLocaleString() : "-"}</td>
                               <td>
                                 {l.envios_count ?? 0}
                                 {l.max_envios != null ? ` / ${l.max_envios}` : ""}
                               </td>
-                              <td>{l.cerrado_en ? <Badge bg="secondary">Cerrado</Badge> : <Badge bg="success">Abierto</Badge>}</td>
+                              <td>
+                                {l.cerrado_en ? (
+                                  <Badge bg="secondary">Cerrado</Badge>
+                                ) : (
+                                  <Badge bg="success">Abierto</Badge>
+                                )}
+                              </td>
                               <td className="text-end">
                                 <div className="btn-group btn-group-sm">
-                                  <Button variant="outline-primary" disabled={!url} onClick={() => copyToClipboard(url)}>
+                                  <Button
+                                    variant="outline-primary"
+                                    disabled={!url}
+                                    onClick={() => copyToClipboard(url)}
+                                  >
                                     Copiar
                                   </Button>
 
-                                  <Button variant="outline-secondary" disabled={!url} onClick={() => openUrl(url)}>
+                                  <Button
+                                    variant="outline-secondary"
+                                    disabled={!url}
+                                    onClick={() => openUrl(url)}
+                                  >
                                     Abrir
                                   </Button>
 
-                                  <Button variant="outline-dark" disabled={!url} onClick={() => openQrForUrl(url)}>
+                                  <Button
+                                    variant="outline-dark"
+                                    disabled={!url}
+                                    onClick={() => openQrForUrl(url)}
+                                  >
                                     QR
                                   </Button>
 
                                   {!l.cerrado_en ? (
-                                    <Button size="sm" variant="outline-danger" onClick={() => onCloseShareLink(l.id_share)}>
+                                    <Button
+                                      size="sm"
+                                      variant="outline-danger"
+                                      onClick={() => onCloseShareLink(l.id_share)}
+                                    >
                                       Cerrar
                                     </Button>
                                   ) : (
@@ -2526,7 +2622,20 @@ export default function InformeBuilder() {
                                     </Button>
                                   )}
 
-                                  <Button size="sm" variant="danger" onClick={() => onDeleteShareLink(l.id_share)}>
+                                  <Button
+                                    size="sm"
+                                    variant="outline-primary"
+                                    onClick={() => openEditarShareLink(l)}
+                                    disabled={!!l.cerrado_en}
+                                  >
+                                    Editar
+                                  </Button>
+
+                                  <Button
+                                    size="sm"
+                                    variant="danger"
+                                    onClick={() => onDeleteShareLink(l.id_share)}
+                                  >
                                     Eliminar
                                   </Button>
                                 </div>
@@ -2534,6 +2643,7 @@ export default function InformeBuilder() {
                             </tr>
                           );
                         })}
+
                         {!shareLinks?.length ? (
                           <tr>
                             <td colSpan={7} className="text-muted">
@@ -3511,6 +3621,87 @@ export default function InformeBuilder() {
                 authHeaders={authHeaders}
                 onSuccess={handleDuplicarPlantillaSuccess}
               />
+
+              <Modal
+                show={showEditShareModal}
+                onHide={() => setShowEditShareModal(false)}
+                centered
+              >
+                <Modal.Header closeButton>
+                  <Modal.Title>Editar link público</Modal.Title>
+                </Modal.Header>
+
+                <Modal.Body>
+                  <Form.Group className="mb-3">
+                    <Form.Label>Proyecto</Form.Label>
+                    <Form.Select
+                      value={editShareForm.id_proyecto}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, id_proyecto: e.target.value }))
+                      }
+                    >
+                      <option value="">Seleccionar...</option>
+                      {(proyectos || []).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.codigo ? `${p.codigo} - ` : ""}{p.nombre}
+                        </option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+
+                  <Form.Group className="mb-3">
+                    <Form.Label>Título</Form.Label>
+                    <Form.Control
+                      type="text"
+                      value={editShareForm.titulo}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, titulo: e.target.value }))
+                      }
+                      placeholder="Opcional"
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-3">
+                    <Form.Label>Expira en</Form.Label>
+                    <Form.Control
+                      type="datetime-local"
+                      value={editShareForm.expira_en_local}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, expira_en_local: e.target.value }))
+                      }
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-2">
+                    <Form.Label>Máx. envíos</Form.Label>
+                    <Form.Control
+                      type="number"
+                      min="1"
+                      value={editShareForm.max_envios}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, max_envios: e.target.value }))
+                      }
+                      placeholder="Vacío = sin límite"
+                    />
+                  </Form.Group>
+                </Modal.Body>
+
+                <Modal.Footer>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowEditShareModal(false)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={onUpdateShareLink}
+                    disabled={shareLoading}
+                  >
+                    {shareLoading ? "Guardando..." : "Guardar cambios"}
+                  </Button>
+                </Modal.Footer>
+              </Modal>
     </>
   );
 }

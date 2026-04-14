@@ -181,6 +181,13 @@ router.get(
 );
 
 router.put(
+  "/share-links/:idShare",
+  verifyToken,
+  requirePerm("informes.sharelinks.manage"),
+  informesCtrl.updateShareLink
+);
+
+router.put(
   "/share-links/:idShare/cerrar",
   verifyToken,
   requirePerm("informes.sharelinks.manage"),
