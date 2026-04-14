@@ -2750,12 +2750,11 @@ exports.importExcel = async (req, res) => {
         progresiva_ini,
         progresiva_fin,
         margen,
-        tipo_expediente,
-        codigo_unico
+        tipo_expediente
       )
       VALUES
       (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
       )
       RETURNING id_expediente
     `;
@@ -2773,6 +2772,8 @@ exports.importExcel = async (req, res) => {
     let documentsRecovered = 0;
     const affectedExpedientes = new Set();
     const attemptedRemoteRecoveries = new Set();
+    // Tracker de bases ya insertadas en ESTE lote (para detectar dupes dentro del mismo Excel)
+    const basesInsertedThisBatch = new Set();
 
     function normalizeCatalogText(v) {
       if (!v) return "";
@@ -3088,18 +3089,40 @@ exports.importExcel = async (req, res) => {
         }
       }
 
+      // --- Búsqueda por codigo_exp normalizado ---
+      let baseAlreadyExistsInDb = false;
       if (!existing && r.codigo_exp) {
+        const normalizedBase = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp;
         const { rows: found } = await client.query(
-          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
+          `SELECT id_expediente, id_import, codigo_exp, codigo_censo, codigo_unico
              FROM ema.expedientes
-            WHERE id_proyecto = $1 AND codigo_exp = $2`,
-          [r.id_proyecto, r.codigo_exp]
+            WHERE id_proyecto = $1
+              AND (
+                codigo_exp = $2
+                OR
+                CASE
+                  WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+                  THEN (split_part(codigo_exp, '/', 1)::int)::text
+                  ELSE split_part(codigo_exp, '/', 1)
+                END = $2
+              )`,
+          [r.id_proyecto, normalizedBase]
         );
-        if (found.length > 0) {
+        if (found.length === 1) {
           matchType = "codigo_exp";
           existing = found[0];
+        } else if (found.length > 1) {
+          // Base ya existe con múltiples carpetas → NO insertar, solo informar
+          baseAlreadyExistsInDb = true;
+          warnings.push({
+            row: r._rowIndex,
+            type: "skipped_existing_base",
+            message: `Base '${normalizedBase}' ya tiene ${found.length} expediente(s). Fila omitida para evitar duplicado. Use id_import o codigo_censo para actualizar un registro específico.`,
+            value: { codigo_exp: r.codigo_exp, existing_ids: found.map(f => f.id_expediente) },
+          });
         }
       }
+
 
       if (!existing && r.codigo_censo) {
         const { rows: found } = await client.query(
@@ -3123,13 +3146,24 @@ exports.importExcel = async (req, res) => {
         }
       }
 
+      // Si la base ya existe en BD (con múltiples carpetas) y no hay otro match exacto,
+      // saltamos este registro sin insertar para evitar duplicados de código base.
+      if (!existing && baseAlreadyExistsInDb) {
+        continue;
+      }
+
       if (!existing) {
-        const codigoUnico = await buildCodigoUnico({
-          client,
-          id_proyecto: r.id_proyecto,
-          codigo_exp: r.codigo_exp,
-          tipo_expediente: r.tipo_expediente,
-        });
+        // --- Deduplicación dentro del mismo lote de Excel ---
+        const baseForBatch = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp || null;
+        if (baseForBatch && basesInsertedThisBatch.has(baseForBatch)) {
+          warnings.push({
+            row: r._rowIndex,
+            type: "skipped_duplicate_in_batch",
+            message: `Fila omitida: la base '${baseForBatch}' ya fue procesada en este mismo lote de importación.`,
+            value: { codigo_exp: r.codigo_exp },
+          });
+          continue;
+        }
 
         const q = await client.query(insertSql, [
           r.id_proyecto,
@@ -3137,7 +3171,7 @@ exports.importExcel = async (req, res) => {
           r.fecha_relevamiento,
           r.gps,
           r.tecnico,
-          normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp || null,
+          baseForBatch,
           r.codigo_censo,
           r.propietario_nombre,
           r.propietario_ci,
@@ -3156,12 +3190,14 @@ exports.importExcel = async (req, res) => {
           r.progresiva_fin,
           r.margen,
           r.tipo_expediente,
-          codigoUnico,
         ]);
 
         if (q.rowCount > 0) {
           inserted += 1;
+          // Registrar en el dedup set para evitar dupes de filas siguientes del mismo Excel
+          if (baseForBatch) basesInsertedThisBatch.add(baseForBatch);
           const idExpediente = q.rows[0]?.id_expediente;
+
 
           if (idExpediente) {
             affectedExpedientes.add(Number(idExpediente));
@@ -3255,23 +3291,10 @@ exports.importExcel = async (req, res) => {
         idx += 1;
       }
 
-      // Inicializar codigo_unico si no existe
-      if (!String(existing?.codigo_unico || "").trim()) {
-        const codigoUnico = await buildCodigoUnico({
-          client,
-          id_proyecto: r.id_proyecto,
-          codigo_exp: r.codigo_exp,
-          tipo_expediente: r.tipo_expediente,
-        });
-
-        sets.push(`codigo_unico=$${idx}`);
-        params.push(codigoUnico);
-        idx += 1;
-      }
-
+      const baseForUpdate = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp;
       if (r.codigo_exp) {
         sets.push(`codigo_exp=$${idx}`);
-        params.push(normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp);
+        params.push(baseForUpdate);
         idx += 1;
       }
       if (r.codigo_censo) {
