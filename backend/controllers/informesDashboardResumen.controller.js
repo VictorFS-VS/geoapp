@@ -680,6 +680,7 @@ async function getInformesResumenBase(req, res) {
   }
   const selectedFieldIds = selectedFieldsParsed.ids;
   const time_grouping = parseTimeGrouping(req.query.time_grouping);
+  const skip_temporal = toBool(req.query.skip_temporal, false);
 
   try {
     const universe = await buildDashboardUniverseContext({
@@ -1012,17 +1013,20 @@ async function getInformesResumenBase(req, res) {
     }
 
     let temporal = {
-      enabled: true,
-      date_field_id: dateFieldId,
-      date_field_label: dateFieldLabel,
-      time_grouping,
+      enabled: !skip_temporal,
+      date_field_id: skip_temporal ? null : dateFieldId,
+      date_field_label: skip_temporal ? null : dateFieldLabel,
+      time_grouping: skip_temporal ? null : time_grouping,
       absolute_min: null,
       absolute_max: null,
+      range_total: 0,
       series: [],
       series_absolute: [],
+      mode: skip_temporal ? "lightweight" : "full",
     };
 
-    try {
+    if (!skip_temporal) {
+      try {
       const filteredCte = `
         WITH filtered AS (
           SELECT i.id_informe
@@ -1268,28 +1272,30 @@ async function getInformesResumenBase(req, res) {
         temporal.sources_counts_absolute = temporal.sources_counts_absolute || temporal.sources_counts;
         temporal.sources_counts_filtered = temporal.sources_counts_filtered || { "__created_at": 0 };
       }
-    } catch (err) {
-      console.error("[TEMPORAL_ABS_ERROR] temporal block failed", {
-        id_proyecto,
-        id_plantilla,
-        date_field_id: dateFieldId,
-        time_grouping,
-        message: err?.message || String(err),
-      });
-      if (err?.stack) {
-        console.error("[TEMPORAL_ABS_ERROR] stack", String(err.stack).slice(0, 1000));
+      } catch (err) {
+        console.error("[TEMPORAL_ABS_ERROR] temporal block failed", {
+          id_proyecto,
+          id_plantilla,
+          date_field_id: dateFieldId,
+          time_grouping,
+          message: err?.message || String(err),
+        });
+        if (err?.stack) {
+          console.error("[TEMPORAL_ABS_ERROR] stack", String(err.stack).slice(0, 1000));
+        }
+        temporal = {
+          enabled: false,
+          date_field_id: dateFieldId,
+          date_field_label: dateFieldLabel,
+          time_grouping,
+          absolute_min: null,
+          absolute_max: null,
+          range_total: 0,
+          series: [],
+          series_absolute: [],
+          mode: "full",
+        };
       }
-      temporal = {
-        enabled: false,
-        date_field_id: dateFieldId,
-        date_field_label: dateFieldLabel,
-        time_grouping,
-        absolute_min: null,
-        absolute_max: null,
-        range_total: 0,
-        series: [],
-        series_absolute: [],
-      };
     }
 
     return res.json({

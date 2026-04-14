@@ -1,11 +1,16 @@
 "use strict";
 
+const pool = require("../../db");
+
 const { getInformesResumenBase } = require("../../controllers/informesDashboardResumen.controller");
 const { getPlantillaDashboardMetadata } = require("../../controllers/informesDashboardMetadata.controller");
 const { selectProjectHomeKpis } = require("./projectHomeKpiSelector.service");
 const { getProjectHomeSelectedFields } = require("./projectHomeMetadata.service");
 const { getProjectHomeFocusPlantilla } = require("./projectHomeFocus.service");
 const { getProjectHomeExpedientesResumen } = require("./projectHomeExpedientes.service");
+const { getProjectHomeQuejasResumen } = require("./projectHomeQuejas.service");
+const { getItemsByProject } = require("./projectHomeItem.service");
+const { getCatastroSummary } = require("../../gv/gv_summary.service");
 const {
   getProjectHomeConfig,
   resolveProjectHomeConfigOverrides,
@@ -60,6 +65,7 @@ async function getInformesResumenRaw({
   time_grouping = "week",
   date_from = null,
   date_to = null,
+  skip_temporal = false,
 }) {
   // EXEC 2.2:
   // - reuse getInformesResumenBase
@@ -84,6 +90,7 @@ async function getInformesResumenRaw({
       time_grouping,
       date_from,
       date_to,
+      skip_temporal,
     },
   };
 
@@ -285,27 +292,64 @@ function resolveActiveWindow(temporal, timeGrouping, behavior = DEFAULT_TEMPORAL
   return null;
 }
 
-async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) {
-  // 1) Global summary is always computed over the whole project universe.
-  const rawGlobalBase = await getInformesResumenRaw({ req, id_proyecto, id_plantilla: null });
+async function getProjectHomeResumen({
+  req,
+  id_proyecto,
+  id_plantilla = null,
+  homeItem = null,
+  skip_temporal = false,
+}) {
+  const can = (p) => {
+    const roles = Array.isArray(req.user?.roleIds) ? req.user.roleIds : [];
+    const isAdmin = Number(req.user?.tipo_usuario) === 1 || Number(req.user?.group_id) === 1 || roles.some(rid => Number(rid) === 1);
+    if (isAdmin) return true;
+    return (req.user?.perms || []).includes(p);
+  };
+
+  // 0) Metadata del proyecto
+  const projectResult = await pool.query(
+    "SELECT gid as id, nombre, estado FROM ema.proyectos WHERE gid = $1",
+    [id_proyecto]
+  );
+  const project = projectResult.rows[0] || { id: id_proyecto, nombre: `Proyecto ${id_proyecto}`, estado: null };
+
+  const hasInformes = can("informes.read");
+  const hasExpedientes = can("expedientes.read");
+  const hasQuejas = can("quejas_reclamos.read");
+  const hasCatastro = can("expedientes.read") || can("catastro.read");
+
+  // 1) Global summary is computed over the whole project universe (Informes).
+  const rawGlobalBase = hasInformes 
+    ? await getInformesResumenRaw({
+        req,
+        id_proyecto,
+        id_plantilla: null,
+        skip_temporal,
+      })
+    : { ok: true, general: {}, kpis: {}, geo: {}, temporal: {}, plantillas: [], field_summaries: [] };
 
   // 2) Load persisted config (if any) for the exact combo requested.
-  const configRow = await getProjectHomeConfig({ req, id_proyecto, id_plantilla });
+  const configRow = (hasInformes && !homeItem) 
+    ? await getProjectHomeConfig({ req, id_proyecto, id_plantilla }) 
+    : homeItem;
 
   // 3) Determine plantilla focus (manual config > explicit param > auto focus)
   const autopPlantilla = getProjectHomeFocusPlantilla(rawGlobalBase);
   const configuredPlantillaId = configRow?.id_plantilla || null;
+
+
   const requestedPlantillaId = id_plantilla || null;
   const focusPlantillaId =
     configuredPlantillaId || requestedPlantillaId || autopPlantilla?.id_plantilla || null;
   const focusSource = configuredPlantillaId ? "manual" : "auto";
 
   let rawForKpisBase = rawGlobalBase;
-  if (focusPlantillaId) {
+  if (hasInformes && focusPlantillaId) {
     rawForKpisBase = await getInformesResumenRaw({
       req,
       id_proyecto,
       id_plantilla: focusPlantillaId,
+      skip_temporal,
     });
   }
 
@@ -313,7 +357,7 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
 
   // 4) Validate overrides against what's actually available now.
   let temporalSources = null;
-  if (focusPlantillaId) {
+  if (hasInformes && !skip_temporal && focusPlantillaId) {
     try {
       temporalSources = await getPlantillaTemporalSources({
         req,
@@ -331,10 +375,15 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
   });
 
   // 4) Apply temporal overrides (if valid) to the global summary used for activity.
-  const effectiveDateFieldId = overrides?.preferred_date_field_id || "__created_at";
-  const effectiveTimeGrouping = overrides?.preferred_time_grouping || "week";
-  const needsTemporalOverride =
-    effectiveDateFieldId !== "__created_at" || effectiveTimeGrouping !== "week";
+  const effectiveDateFieldId = skip_temporal
+    ? null
+    : overrides?.preferred_date_field_id || "__created_at";
+  const effectiveTimeGrouping = skip_temporal
+    ? null
+    : overrides?.preferred_time_grouping || "week";
+  const needsTemporalOverride = hasInformes 
+    && !skip_temporal
+    && (effectiveDateFieldId !== "__created_at" || effectiveTimeGrouping !== "week");
   const rawGlobal = needsTemporalOverride
     ? await getInformesResumenRaw({
         req,
@@ -342,6 +391,7 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
         id_plantilla: null,
         date_field_id: effectiveDateFieldId,
         time_grouping: effectiveTimeGrouping,
+        skip_temporal,
       })
     : rawGlobalBase;
 
@@ -373,6 +423,7 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
       time_grouping: effectiveTimeGrouping,
       date_from: activeWindow.date_from,
       date_to: activeWindow.date_to,
+      skip_temporal,
     });
   }
 
@@ -381,7 +432,7 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
       ? rawForKpis.plantillas.find((p) => Number(p.id_plantilla) === Number(focusPlantillaId))
       : null;
 
-  const focus = focusPlantillaId
+  const focus = (hasInformes && focusPlantillaId)
     ? {
         id_plantilla: focusPlantillaId,
         nombre:
@@ -391,9 +442,9 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
       }
     : null;
 
-  const kpis = rawGlobal.kpis || {};
-  const geo = rawGlobal.geo || {};
-  const temporal = rawGlobal.temporal || {};
+  const kpis = hasInformes ? (rawGlobal.kpis || {}) : {};
+  const geo = hasInformes ? (rawGlobal.geo || {}) : {};
+  const temporal = hasInformes ? (rawGlobal.temporal || {}) : {};
 
   const autoSelected = selectProjectHomeKpis(rawForKpis.field_summaries);
   const resolvedKpis = configRow
@@ -409,40 +460,157 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
     source_mode = appliedTemporalOverride || appliedKpiOverride ? "config" : "auto_fallback";
   }
 
-  const expedientes = await getProjectHomeExpedientesResumen({ req, id_proyecto });
+  const expedientes = hasExpedientes ? await getProjectHomeExpedientesResumen({ req, id_proyecto }) : null;
+  const quejas = hasQuejas ? await getProjectHomeQuejasResumen({ req, id_proyecto }) : null;
+  
+  let catastro_summary = null;
+  if (hasCatastro) {
+    catastro_summary = await getCatastroSummary(id_proyecto);
+    if (!catastro_summary) {
+      console.warn("[projectHome] catastro_summary vino null, forzando fallback");
+      catastro_summary = {
+        has_access: true,
+        hero: {
+          pendientes: 0,
+          cobertura_pct: 0,
+          geolocalizacion_pct: 0,
+          insight: "Sin datos"
+        },
+        calidad: null,
+        operativa: null,
+        economico: null,
+        _forced: true
+      };
+    }
+  }
+
   const trace = buildProjectHomeConfigResolutionTrace(configRow, overrides, resolvedKpis);
   const fallbackPeriodTotal = Number(temporal.range_total) || 0;
+  const lightweightPeriodTotal = Number(kpis.total_informes) || 0;
+
+  const featuredRaw = hasInformes ? await getItemsByProject({ req, id_proyecto, include_legacy: true }) : [];
+  const featured = featuredRaw.slice(0, 4);
+  const featured_reports = await Promise.all(featured.map(async (item) => {
+    let focusRaw = rawForKpisBase;
+    if (Number(item.id_plantilla) !== Number(focusPlantillaId)) {
+      focusRaw = await getInformesResumenRaw({
+        req,
+        id_proyecto,
+        id_plantilla: item.id_plantilla,
+        skip_temporal: true,
+      });
+    }
+
+    const autoSelected = selectProjectHomeKpis(focusRaw.field_summaries || []);
+    const resolvedKpisItem = resolveProjectHomeKpiOverridesFromSummaries(
+      item, 
+      focusRaw.field_summaries || [], 
+      autoSelected
+    );
+
+    const baseTotal = Number(focusRaw?.kpis?.total_informes) || 0;
+    
+    // Process Primary
+    let primary_val = baseTotal;
+    let primary_label = "Registros totales";
+    let primary_context = "Sin KPI configurado";
+    
+    if (resolvedKpisItem.primary && Array.isArray(resolvedKpisItem.primary.items) && resolvedKpisItem.primary.items.length > 0) {
+      const itemsCopy = [...resolvedKpisItem.primary.items].sort((a, b) => (Number(b.count) || 0) - (Number(a.count) || 0));
+      const top1 = itemsCopy[0];
+      const topCount = Number(top1.count) || 0;
+      
+      let localBase = 0;
+      for (const t of itemsCopy) localBase += (Number(t.count) || 0);
+      
+      primary_val = topCount;
+      primary_label = String(top1.label || "Indefinido");
+      
+      const pct = baseTotal > 0 ? Math.round((topCount / baseTotal) * 100) : 0;
+      primary_context = `Predomina en ${resolvedKpisItem.primary.etiqueta} (${pct}%)`;
+    }
+
+    // Process Secondary
+    const secondary_lines = [];
+    if (Array.isArray(resolvedKpisItem.secondary)) {
+      for (const sec of resolvedKpisItem.secondary) {
+        if (!sec || !Array.isArray(sec.items) || sec.items.length === 0) continue;
+        const itemsCopy = [...sec.items].sort((a, b) => (Number(b.count) || 0) - (Number(a.count) || 0));
+        const top1 = itemsCopy[0];
+        const secPct = baseTotal > 0 ? Math.round((Number(top1.count) / baseTotal) * 100) : 0;
+
+        secondary_lines.push({
+          label: sec.etiqueta || "Secundario",
+          val: Number(top1.count) || 0,
+          pct: secPct,
+          meta: `Predomina: ${top1.label || "Indefinido"}`
+        });
+        if (secondary_lines.length >= 2) break;
+      }
+    }
+
+    let display_title = "Informe destacado";
+    if (item.label && !/^(Informe|Reporte)\s*\d*$/i.test(String(item.label).trim())) {
+      display_title = String(item.label).trim();
+    } else if (item.plantilla_nombre) {
+      display_title = String(item.plantilla_nombre).trim();
+    }
+
+    return {
+      key: item.id_home_item === 'legacy-base' ? 'legacy' : String(item.id_home_item),
+      source_kind: item.source_kind || 'item',
+      id_home_item: item.id_home_item === 'legacy-base' ? null : Number(item.id_home_item),
+      id_plantilla: Number(item.id_plantilla),
+      label: item.label || item.plantilla_nombre || `Reporte ${item.id_plantilla}`,
+      display_title,
+      primary_val,
+      primary_label,
+      primary_context,
+      secondary_lines,
+      base_total: Number(focusRaw?.kpis?.total_informes) || 0
+    };
+  }));
 
   return {
     ok: true,
     source_mode,
     scope: { id_proyecto, id_plantilla },
-    general: {
+    project,
+    general: hasInformes ? {
       total_informes: Number(kpis.total_informes) || 0,
       informes_con_geo: Number(geo.total_geo ?? kpis.informes_con_geo) || 0,
       informes_sin_geo: Number(geo.total_sin_geo ?? kpis.informes_sin_geo) || 0,
-    },
-    activity: {
-      date_field_id: effectiveDateFieldId,
-      date_field_label: effectiveDateFieldId === "__created_at" ? "Fecha de carga" : temporal.date_field_label,
-      time_grouping: effectiveTimeGrouping,
-      range_from: activeWindow?.date_from || temporal.absolute_min || null,
-      range_to: activeWindow?.date_to || temporal.absolute_max || null,
-      period_total:
-        activeWindow?.period_total ?? fallbackPeriodTotal,
-    },
-    kpis: {
+    } : null,
+    activity: hasInformes ? {
+      date_field_id: skip_temporal ? null : effectiveDateFieldId,
+      date_field_label: skip_temporal
+        ? null
+        : effectiveDateFieldId === "__created_at"
+          ? "Fecha de carga"
+          : temporal.date_field_label,
+      time_grouping: skip_temporal ? null : effectiveTimeGrouping,
+      range_from: skip_temporal ? null : activeWindow?.date_from || temporal.absolute_min || null,
+      range_to: skip_temporal ? null : activeWindow?.date_to || temporal.absolute_max || null,
+      period_total: skip_temporal
+        ? lightweightPeriodTotal
+        : activeWindow?.period_total ?? fallbackPeriodTotal,
+      mode: skip_temporal ? "lightweight" : "full",
+    } : null,
+    kpis: hasInformes ? {
       primary: resolvedKpis.primary,
       secondary: resolvedKpis.secondary,
-    },
-    informes: {
+    } : null,
+    informes: hasInformes ? {
       plantilla_focus: plantillaFocus,
-    },
+    } : null,
     expedientes,
-    field_summaries: Array.isArray(rawForKpis.field_summaries) ? rawForKpis.field_summaries : [],
-    temporal_sources: Array.isArray(temporalSources) ? temporalSources : [],
-    plantillas: Array.isArray(rawGlobalBase.plantillas) ? rawGlobalBase.plantillas : [],
-    focus,
+    quejas,
+    catastro_summary,
+    featured_reports: hasInformes ? featured_reports : null,
+    field_summaries: hasInformes && Array.isArray(rawForKpis.field_summaries) ? rawForKpis.field_summaries : [],
+    temporal_sources: hasInformes && Array.isArray(temporalSources) ? temporalSources : [],
+    plantillas: hasInformes && Array.isArray(rawGlobalBase.plantillas) ? rawGlobalBase.plantillas : [],
+    focus: hasInformes ? focus : null,
     config_resolution: {
       has_config: trace.has_config,
       source_mode,
@@ -450,6 +618,9 @@ async function getProjectHomeResumen({ req, id_proyecto, id_plantilla = null }) 
       rejected_overrides: trace.rejected_overrides,
     },
   };
+
+  console.log("[projectHome] catastro_summary:", JSON.stringify(finalPayload.catastro_summary, null, 2));
+  return finalPayload;
 }
 
 module.exports = { getProjectHomeResumen };

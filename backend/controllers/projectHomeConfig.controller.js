@@ -1,7 +1,9 @@
 "use strict";
 
 const pool = require("../db");
-const { getProjectHomeConfig } = require("../services/projectHome/projectHomeConfig.service");
+const {
+  getProjectHomeConfigWithFallback,
+} = require("../services/projectHome/projectHomeConfig.service");
 const {
   getProjectHomePlantillaValidationData,
 } = require("../services/projectHome/projectHomeMetadata.service");
@@ -114,8 +116,17 @@ async function getConfig(req, res) {
       return res.status(400).json({ ok: false, error: "id_proyecto requerido" });
     }
 
-    const cfg = await getProjectHomeConfig({ req, id_proyecto, id_plantilla });
-    return res.json({ ok: true, config: cfg });
+    const resolved = await getProjectHomeConfigWithFallback({
+      req,
+      id_proyecto,
+      id_plantilla,
+    });
+    return res.json({
+      ok: true,
+      config: resolved?.config ?? null,
+      effective_config: resolved?.effective_config ?? null,
+      source_mode: resolved?.source_mode || "auto",
+    });
   } catch (err) {
     const status = Number(err?.status) || 500;
     if (status >= 500) console.error("projectHomeConfig.getConfig:", err);

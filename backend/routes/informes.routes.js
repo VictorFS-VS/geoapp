@@ -6,6 +6,7 @@ const router = express.Router();
 
 const informesCtrl = require("../controllers/informes.controller");
 const informesImportCtrl = require("../controllers/informes.import.controller");
+const massiveImportCtrl = require("../controllers/informes.massiveImport.controller");
 const { verifyToken } = require("../middlewares/auth.middleware");
 const { requirePerm } = require("../middlewares/requirePerm");
 
@@ -252,6 +253,16 @@ router.post(
   verifyToken,
   requirePerm("informes.delete"),
   informesCtrl.bulkDeleteInformesByProyectoPlantilla
+);
+
+/* =========================================================
+   IMPORTADOR MASIVO (ZIP)
+   ========================================================= */
+router.post(
+  "/proyecto/:idProyecto/import-photos-zip",
+  verifyToken,
+  requirePerm("informes.update"),
+  massiveImportCtrl.importPhotosZip
 );
 
 /* =========================================================
