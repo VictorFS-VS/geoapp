@@ -1,10 +1,34 @@
 "use strict";
 
 const pool = require("../../db");
+const { getInformesResumenBase } = require("../../controllers/informesDashboardResumen.controller");
+const { getProjectHomeFocusPlantilla } = require("./projectHomeFocus.service");
 
 async function tableExists(fqn) {
   const r = await pool.query("SELECT to_regclass($1) AS oid", [fqn]);
   return !!r.rows?.[0]?.oid;
+}
+
+function createJsonCaptureRes(resolve) {
+  const res = {
+    statusCode: 200,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      resolve({ statusCode: this.statusCode, payload });
+      return payload;
+    },
+  };
+  return res;
+}
+
+async function callController(controllerFn, req) {
+  return await new Promise((resolve, reject) => {
+    const res = createJsonCaptureRes(resolve);
+    Promise.resolve(controllerFn(req, res)).catch(reject);
+  });
 }
 
 function toInt(v, fallback = null) {
@@ -82,6 +106,62 @@ async function getProjectHomeConfig({ _req, id_proyecto, id_plantilla = null }) 
   `;
   const rAny = await pool.query(qAny, [Number(id_proyecto)]);
   return rAny.rows?.[0] || null;
+}
+
+function buildDefaultEffectiveConfig({ id_proyecto, id_plantilla = null }) {
+  return {
+    id_home_config: null,
+    id_proyecto: Number(id_proyecto),
+    id_plantilla: id_plantilla ? Number(id_plantilla) : null,
+    kpi_primary_field_id: null,
+    kpi_secondary_field_ids: [],
+    preferred_date_field_id: "__created_at",
+    preferred_time_grouping: "week",
+    is_active: true,
+  };
+}
+
+async function getProjectHomeConfigWithFallback({ req, id_proyecto, id_plantilla = null }) {
+  const config = await getProjectHomeConfig({ _req: req, id_proyecto, id_plantilla });
+  if (config) {
+    return {
+      config,
+      effective_config: config,
+      source_mode: "config",
+    };
+  }
+
+  const resumenReq = {
+    ...req,
+    query: {
+      id_proyecto: Number(id_proyecto),
+      id_plantilla: null,
+      selected_fields: [],
+      date_field_id: "__created_at",
+      time_grouping: "week",
+      date_from: null,
+      date_to: null,
+    },
+  };
+  const rawGlobal = await callController(getInformesResumenBase, resumenReq);
+  if (rawGlobal.statusCode >= 400 || rawGlobal.payload?.ok === false) {
+    const err = new Error(rawGlobal.payload?.error || "No se pudo resolver fallback de configuracion");
+    err.status = rawGlobal.statusCode >= 400 ? rawGlobal.statusCode : 500;
+    throw err;
+  }
+
+  const autoFocus = getProjectHomeFocusPlantilla(rawGlobal.payload || {});
+  const requestedPlantillaId = toInt(id_plantilla, null);
+  const focusPlantillaId = requestedPlantillaId || autoFocus?.id_plantilla || null;
+
+  return {
+    config: null,
+    effective_config: buildDefaultEffectiveConfig({
+      id_proyecto,
+      id_plantilla: focusPlantillaId,
+    }),
+    source_mode: "auto",
+  };
 }
 
 /**
@@ -293,6 +373,7 @@ function buildProjectHomeConfigResolutionTrace(configRow, overrides, kpiResoluti
 
 module.exports = {
   getProjectHomeConfig,
+  getProjectHomeConfigWithFallback,
   resolveProjectHomeConfigOverrides,
   resolveProjectHomeKpiOverridesFromSummaries,
   buildProjectHomeConfigResolutionTrace,

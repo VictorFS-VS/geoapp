@@ -5,6 +5,7 @@ import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstr
 import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
+import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
 import { useAuth } from "@/auth/AuthContext";
 
 function normalizeApiBase(base) {
@@ -188,6 +189,24 @@ const InformesProyecto = () => {
   const [kmzChoiceInformeId, setKmzChoiceInformeId] = useState(null);
 
   const kmzPickGlobalRef = useRef(null);
+
+  // ✅ Massive Import ZI
+  const [showImportZip, setShowImportZip] = useState(false);
+  const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
+
+  useEffect(() => {
+    if (idPlantillaFiltro) {
+      fetch(`${API_URL}/informes/plantillas/${idPlantillaFiltro}`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(d => {
+          const allPreguntas = d.secciones ? d.secciones.flatMap(s => s.preguntas || []) : [];
+          setPreguntasPlantilla(allPreguntas);
+        })
+        .catch(err => console.error("Error cargando preguntas de plantilla:", err));
+    } else {
+      setPreguntasPlantilla([]);
+    }
+  }, [idPlantillaFiltro]);
 
   useEffect(() => {
     if (!idProyecto) return;
@@ -819,6 +838,15 @@ const InformesProyecto = () => {
             </Button>
           )}
 
+          <Button
+            variant="outline-success"
+            disabled={!idPlantillaFiltro || anyDownloading}
+            onClick={() => setShowImportZip(true)}
+            title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Importación masiva de fotos via ZIP"}
+          >
+            📦 Importar Fotos (ZIP)
+          </Button>
+
           <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
             ➕ Nuevo informe
           </Button>
@@ -1024,6 +1052,17 @@ const InformesProyecto = () => {
           </div>
         </Modal.Footer>
       </Modal>
+
+      <ImportarFotosZipModal
+        show={showImportZip}
+        onHide={() => {
+          setShowImportZip(false);
+          cargarInformes();
+        }}
+        idProyecto={idProyecto}
+        idPlantilla={idPlantillaFiltro}
+        preguntas={preguntasPlantilla}
+      />
     </div>
   );
 };

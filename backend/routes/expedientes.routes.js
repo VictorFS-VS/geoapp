@@ -33,6 +33,20 @@ router.post(
 );
 
 router.get(
+  "/proyecto/:idProyecto/suggest-codigo",
+  verifyToken,
+  requirePerm("expedientes.read"),
+  ctrl.suggestCodigoUnico
+);
+
+router.get(
+  "/proyecto/:idProyecto/check-base",
+  verifyToken,
+  requirePerm("expedientes.read"),
+  ctrl.checkBaseAvailability
+);
+
+router.get(
   "/dbi/estados",
   verifyToken,
   requirePerm("expedientes.read"),
@@ -64,6 +78,18 @@ router.post(
   verifyToken,
   requirePerm("expedientes.create"),
   ctrl.clonarBase
+);
+router.post(
+  "/:idExpediente/reset-codigo-unico",
+  verifyToken,
+  requirePerm("admin"),
+  ctrl.resetCodigoUnico
+);
+router.post(
+  "/reorder-codigo-unico",
+  verifyToken,
+  requirePerm("admin"),
+  ctrl.reorderCodigoUnico
 );
 
 router.delete(

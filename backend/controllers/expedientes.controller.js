@@ -174,51 +174,35 @@ function parseOptionalString(raw, fieldName) {
 function normalizeCodigoUnicoBase(raw) {
   const s = String(raw ?? "").trim();
   if (!s) return null;
-  const digits = s.replace(/\D+/g, "");
+  // Nueva lógica: Dígitos antes del /
+  const baseRaw = s.split("/")[0];
+  const digits = baseRaw.replace(/\D+/g, "");
   if (!digits) return null;
   const n = Number.parseInt(digits, 10);
   if (!Number.isFinite(n)) return null;
-  return String(n).padStart(10, "0");
+  return String(n); // Sin ceros a la izquierda innecesarios (padding 10 eliminado)
 }
 
-async function buildCodigoUnicoForCreate({ idProyecto, codigoExp, tipoExpediente }) {
-  if (!idProyecto || !codigoExp || !tipoExpediente) return null;
-  const base = normalizeCodigoUnicoBase(codigoExp);
-  if (!base) return null;
+async function buildCodigoUnico({ client, id_proyecto, codigo_exp, tipo_expediente }) {
+  if (!id_proyecto || !codigo_exp) return null;
+  const baseRaw = String(codigo_exp || "").split("/")[0];
+  const base = parseInt(baseRaw, 10);
+  if (Number.isNaN(base)) return null;
 
-  const prefix = `${base}-${tipoExpediente}`;
-  const like = `${prefix}%`;
+  const tipo = tipo_expediente || "T";
+  const like = `${base}-%`;
+  const qClient = client || pool;
 
-  const { rows } = await pool.query(
-    `SELECT codigo_unico
-       FROM ema.expedientes
-      WHERE id_proyecto = $1
+  const { rows } = await qClient.query(
+    `SELECT COUNT(*) as total 
+       FROM ema.expedientes 
+      WHERE id_proyecto = $1 
         AND codigo_unico LIKE $2`,
-    [idProyecto, like]
+    [id_proyecto, like]
   );
 
-  let maxSuffix = 0;
-  let hasBase = false;
-
-  for (const row of rows || []) {
-    const code = String(row?.codigo_unico || "").trim();
-    if (!code) continue;
-    if (code === prefix) {
-      hasBase = true;
-      maxSuffix = Math.max(maxSuffix, 1);
-      continue;
-    }
-    if (code.startsWith(`${prefix}-`)) {
-      const tail = code.slice(prefix.length + 1);
-      const n = Number.parseInt(tail, 10);
-      if (Number.isFinite(n) && n > 1) {
-        maxSuffix = Math.max(maxSuffix, n);
-      }
-    }
-  }
-
-  if (!hasBase && maxSuffix === 0) return prefix;
-  return `${prefix}-${Math.max(maxSuffix, hasBase ? 1 : 0) + 1}`;
+  const n = Number(rows?.[0]?.total || 0) + 1;
+  return `${base}-${n}-${tipo}`;
 }
 
 function isRemoteUrl(url) {
@@ -983,11 +967,53 @@ exports.create = async (req, res) => {
     }
 
     const idProyecto = Number(b.id_proyecto);
-    const codigoUnico = await buildCodigoUnicoForCreate({
-      idProyecto,
-      codigoExp: b.codigo_exp,
-      tipoExpediente: tipoExpediente.present ? tipoExpediente.value : null,
-    });
+    const resolvedTipo = tipoExpediente.present ? tipoExpediente.value : "T";
+    const codigoUnicoManual = parseOptionalString(b, "codigo_unico");
+    let codigoUnico = null;
+
+    const regexStrict = /^\d+-\d+-(T|M)$/;
+
+    if (codigoUnicoManual.present && String(codigoUnicoManual.value).trim()) {
+      codigoUnico = String(codigoUnicoManual.value).trim().toUpperCase();
+
+      // Validar formato estricto
+      if (!regexStrict.test(codigoUnico)) {
+        return res.status(400).json({
+          message:
+            "Formato de código único inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda innecesarios.",
+        });
+      }
+
+      // Validar consistencia de base
+      const normalizedBase = normalizeCodigoUnicoBase(b.codigo_exp);
+      const manualBase = codigoUnico.split("-")[0];
+      if (normalizedBase && manualBase !== normalizedBase) {
+        return res.status(400).json({
+          message: `Inconsistencia: La base del código único (${manualBase}) debe coincidir con la base de notificación (${normalizedBase}).`,
+        });
+      }
+
+      // Validar consistencia de tipo
+      if (codigoUnico.endsWith("-T") && resolvedTipo !== "T") {
+        return res.status(400).json({
+          message:
+            "Inconsistencia: El código único finaliza en -T pero el tipo es 'Mejora'.",
+        });
+      }
+      if (codigoUnico.endsWith("-M") && resolvedTipo !== "M") {
+        return res.status(400).json({
+          message:
+            "Inconsistencia: El código único finaliza en -M pero el tipo es 'Terreno'.",
+        });
+      }
+    } else {
+      codigoUnico = await buildCodigoUnico({
+        client: pool,
+        id_proyecto: idProyecto,
+        codigo_exp: b.codigo_exp,
+        tipo_expediente: resolvedTipo,
+      });
+    }
 
     const { rows } = await pool.query(
       `INSERT INTO ema.expedientes
@@ -1036,7 +1062,7 @@ exports.create = async (req, res) => {
         fechaRelevamiento,
         b.gps || null,
         b.tecnico || null,
-        b.codigo_exp || null,
+        normalizeCodigoUnicoBase(b.codigo_exp) || (codigoUnico ? codigoUnico.split("-")[0] : null),
         b.propietario_nombre || null,
         b.propietario_ci || null,
         cleanStr(b.pareja_nombre),
@@ -1121,21 +1147,64 @@ exports.update = async (req, res) => {
     }
 
     let codigoUnicoToSet = null;
-    if (existing && !String(existing.codigo_unico || "").trim()) {
-      const resolvedTipo =
-        (tipoExpediente.present ? tipoExpediente.value : null) ||
-        (existing.tipo_expediente ? String(existing.tipo_expediente).trim() : null);
-      const resolvedCodigoExp =
-        b.codigo_exp != null && String(b.codigo_exp).trim()
-          ? String(b.codigo_exp).trim()
-          : existing.codigo_exp;
+    const codigoUnicoManual = parseOptionalString(b, "codigo_unico");
 
-      codigoUnicoToSet = await buildCodigoUnicoForCreate({
-        idProyecto: existing.id_proyecto,
-        codigoExp: resolvedCodigoExp,
-        tipoExpediente: resolvedTipo,
+    const cambioCodigo = existing && b.codigo_exp != null && String(b.codigo_exp).trim() !== String(existing.codigo_exp).trim();
+    const cambioTipo = existing && tipoExpediente.present && String(tipoExpediente.value).trim() !== String(existing.tipo_expediente).trim();
+    const noTiene = existing && !String(existing.codigo_unico || "").trim();
+
+    const finalTipo = tipoExpediente.present ? tipoExpediente.value : (existing ? existing.tipo_expediente : "T");
+    const regexStrict = /^\d+-\d+-(T|M)$/;
+
+    if (codigoUnicoManual.present && String(codigoUnicoManual.value).trim()) {
+      codigoUnicoToSet = String(codigoUnicoManual.value).trim().toUpperCase();
+
+      // Validar formato estricto
+      if (!regexStrict.test(codigoUnicoToSet)) {
+        return res.status(400).json({
+          message:
+            "Formato de código único inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda innecesarios.",
+        });
+      }
+
+      // Validar consistencia de base
+      const normalizedBase = normalizeCodigoUnicoBase(b.codigo_exp != null ? b.codigo_exp : existing.codigo_exp);
+      const manualBase = codigoUnicoToSet.split("-")[0];
+      if (normalizedBase && manualBase !== normalizedBase) {
+        return res.status(400).json({
+          message: `Inconsistencia: La base del código único (${manualBase}) debe coincidir con la base de notificación (${normalizedBase}).`,
+        });
+      }
+
+      // Validar consistencia
+      if (codigoUnicoToSet.endsWith("-T") && finalTipo !== "T") {
+        return res.status(400).json({
+          message:
+            "Inconsistencia: El código único finaliza en -T pero el tipo de carpeta es 'Mejora'.",
+        });
+      }
+      if (codigoUnicoToSet.endsWith("-M") && finalTipo !== "M") {
+        return res.status(400).json({
+          message:
+            "Inconsistencia: El código único finaliza en -M pero el tipo de carpeta es 'Terreno'.",
+        });
+      }
+    } else if (cambioCodigo || cambioTipo || noTiene) {
+      codigoUnicoToSet = await buildCodigoUnico({
+        client: pool,
+        id_proyecto: existing.id_proyecto,
+        codigo_exp: cambioCodigo ? b.codigo_exp : existing.codigo_exp,
+        tipo_expediente: finalTipo,
       });
     }
+    const codigoFinal = codigoUnicoToSet || (existing ? existing.codigo_unico : null);
+    let codigoExpFinal = normalizeCodigoUnicoBase(b.codigo_exp != null ? b.codigo_exp : (existing ? existing.codigo_exp : null));
+
+    // Fallback si codigo_exp sigue vacío
+    if (!codigoExpFinal && codigoFinal) {
+      codigoExpFinal = codigoFinal.split("-")[0];
+    }
+
     const sets = [
       "fecha_relevamiento=$1",
       "gps=$2",
@@ -1156,7 +1225,7 @@ exports.update = async (req, res) => {
       fechaRelevamiento,
       b.gps || null,
       b.tecnico || null,
-      b.codigo_exp || null,
+      codigoExpFinal,
       b.propietario_nombre || null,
       b.propietario_ci || null,
       cleanStr(b.pareja_nombre),
@@ -1318,10 +1387,11 @@ exports.clonarBase = async (req, res) => {
       }
       const src = srcRows[0];
 
-      const codigoUnico = await buildCodigoUnicoForCreate({
-        idProyecto: src.id_proyecto,
-        codigoExp: src.codigo_exp,
-        tipoExpediente: tipoDestino.value,
+      const codigoUnico = await buildCodigoUnico({
+        client,
+        id_proyecto: src.id_proyecto,
+        codigo_exp: src.codigo_exp,
+        tipo_expediente: tipoDestino.value,
       });
 
       const { rows: createdRows } = await client.query(
@@ -2679,11 +2749,12 @@ exports.importExcel = async (req, res) => {
         superficie_afectada,
         progresiva_ini,
         progresiva_fin,
-        margen
+        margen,
+        tipo_expediente
       )
       VALUES
       (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
       )
       RETURNING id_expediente
     `;
@@ -2701,6 +2772,8 @@ exports.importExcel = async (req, res) => {
     let documentsRecovered = 0;
     const affectedExpedientes = new Set();
     const attemptedRemoteRecoveries = new Set();
+    // Tracker de bases ya insertadas en ESTE lote (para detectar dupes dentro del mismo Excel)
+    const basesInsertedThisBatch = new Set();
 
     function normalizeCatalogText(v) {
       if (!v) return "";
@@ -3016,18 +3089,40 @@ exports.importExcel = async (req, res) => {
         }
       }
 
+      // --- Búsqueda por codigo_exp normalizado ---
+      let baseAlreadyExistsInDb = false;
       if (!existing && r.codigo_exp) {
+        const normalizedBase = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp;
         const { rows: found } = await client.query(
-          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
+          `SELECT id_expediente, id_import, codigo_exp, codigo_censo, codigo_unico
              FROM ema.expedientes
-            WHERE id_proyecto = $1 AND codigo_exp = $2`,
-          [r.id_proyecto, r.codigo_exp]
+            WHERE id_proyecto = $1
+              AND (
+                codigo_exp = $2
+                OR
+                CASE
+                  WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+                  THEN (split_part(codigo_exp, '/', 1)::int)::text
+                  ELSE split_part(codigo_exp, '/', 1)
+                END = $2
+              )`,
+          [r.id_proyecto, normalizedBase]
         );
-        if (found.length > 0) {
+        if (found.length === 1) {
           matchType = "codigo_exp";
           existing = found[0];
+        } else if (found.length > 1) {
+          // Base ya existe con múltiples carpetas → NO insertar, solo informar
+          baseAlreadyExistsInDb = true;
+          warnings.push({
+            row: r._rowIndex,
+            type: "skipped_existing_base",
+            message: `Base '${normalizedBase}' ya tiene ${found.length} expediente(s). Fila omitida para evitar duplicado. Use id_import o codigo_censo para actualizar un registro específico.`,
+            value: { codigo_exp: r.codigo_exp, existing_ids: found.map(f => f.id_expediente) },
+          });
         }
       }
+
 
       if (!existing && r.codigo_censo) {
         const { rows: found } = await client.query(
@@ -3051,14 +3146,32 @@ exports.importExcel = async (req, res) => {
         }
       }
 
+      // Si la base ya existe en BD (con múltiples carpetas) y no hay otro match exacto,
+      // saltamos este registro sin insertar para evitar duplicados de código base.
+      if (!existing && baseAlreadyExistsInDb) {
+        continue;
+      }
+
       if (!existing) {
+        // --- Deduplicación dentro del mismo lote de Excel ---
+        const baseForBatch = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp || null;
+        if (baseForBatch && basesInsertedThisBatch.has(baseForBatch)) {
+          warnings.push({
+            row: r._rowIndex,
+            type: "skipped_duplicate_in_batch",
+            message: `Fila omitida: la base '${baseForBatch}' ya fue procesada en este mismo lote de importación.`,
+            value: { codigo_exp: r.codigo_exp },
+          });
+          continue;
+        }
+
         const q = await client.query(insertSql, [
           r.id_proyecto,
           r.id_import,
           r.fecha_relevamiento,
           r.gps,
           r.tecnico,
-          r.codigo_exp,
+          baseForBatch,
           r.codigo_censo,
           r.propietario_nombre,
           r.propietario_ci,
@@ -3076,11 +3189,15 @@ exports.importExcel = async (req, res) => {
           r.progresiva_ini,
           r.progresiva_fin,
           r.margen,
+          r.tipo_expediente,
         ]);
 
         if (q.rowCount > 0) {
           inserted += 1;
+          // Registrar en el dedup set para evitar dupes de filas siguientes del mismo Excel
+          if (baseForBatch) basesInsertedThisBatch.add(baseForBatch);
           const idExpediente = q.rows[0]?.id_expediente;
+
 
           if (idExpediente) {
             affectedExpedientes.add(Number(idExpediente));
@@ -3173,9 +3290,11 @@ exports.importExcel = async (req, res) => {
         params.push(r.pareja_ci);
         idx += 1;
       }
+
+      const baseForUpdate = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp;
       if (r.codigo_exp) {
         sets.push(`codigo_exp=$${idx}`);
-        params.push(r.codigo_exp);
+        params.push(baseForUpdate);
         idx += 1;
       }
       if (r.codigo_censo) {
@@ -3511,3 +3630,201 @@ exports.importExcelLegacy = async (req, res) => {
     client.release();
   }
 };
+
+exports.resetCodigoUnico = async (req, res) => {
+  try {
+    const idExp = Number(req.params.idExpediente);
+    if (!idExp) return res.status(400).json({ message: "idExpediente inválido" });
+
+    const { rows: existingRows } = await pool.query(
+      `SELECT id_proyecto, codigo_exp, tipo_expediente FROM ema.expedientes WHERE id_expediente = $1`,
+      [idExp]
+    );
+    const existing = existingRows[0];
+    if (!existing) return res.status(404).json({ message: "Expediente no encontrado" });
+
+    const codigoUnico = await buildCodigoUnico({
+      client: pool,
+      id_proyecto: existing.id_proyecto,
+      codigo_exp: existing.codigo_exp,
+      tipo_expediente: existing.tipo_expediente || "T",
+    });
+
+    await pool.query(`UPDATE ema.expedientes SET codigo_unico = $1, updated_at = now() WHERE id_expediente = $2`, [
+      codigoUnico,
+      idExp,
+    ]);
+
+    res.json({ ok: true, codigo_unico: codigoUnico });
+  } catch (e) {
+    return res.status(500).json({ message: e?.message || String(e) });
+  }
+};
+
+exports.reorderCodigoUnico = async (req, res) => {
+  const { id_proyecto, changes } = req.body || {};
+  if (!id_proyecto || !Array.isArray(changes) || !changes.length) {
+    return res.status(400).json({ message: "id_proyecto y changes[] son requeridos" });
+  }
+
+  const regexFormat = /^\d+-\d+-(T|M)$/;
+  const NEW_CODES = new Set();
+  const AFFECTED_IDS = new Set();
+
+  function getBase(s) {
+    if (!s) return null;
+    return String(s).split(/[\/\-]/)[0].replace(/\D/g, "");
+  }
+
+  try {
+    // 1. Validaciones básicas en el payload
+    for (const c of changes) {
+      if (!c.id_expediente || !c.nuevo_codigo) {
+        return res.status(400).json({ message: "Cada cambio debe tener id_expediente y nuevo_codigo" });
+      }
+      if (!regexFormat.test(c.nuevo_codigo)) {
+        return res.status(400).json({ message: `Formato inválido en ${c.nuevo_codigo}. Debe ser BASE-N-TIPO (ej: 55-1-T)` });
+      }
+      if (NEW_CODES.has(c.nuevo_codigo)) {
+        return res.status(400).json({ message: `Código duplicado en la solicitud: ${c.nuevo_codigo}` });
+      }
+      NEW_CODES.add(c.nuevo_codigo);
+      AFFECTED_IDS.add(Number(c.id_expediente));
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 2. Cargar registros actuales y validar bases + proyecto
+      const { rows: currentRows } = await client.query(
+        `SELECT id_expediente, id_proyecto, codigo_exp, codigo_unico 
+           FROM ema.expedientes 
+          WHERE id_expediente = ANY($1::int[]) 
+            FOR UPDATE`,
+        [Array.from(AFFECTED_IDS)]
+      );
+
+      if (currentRows.length !== AFFECTED_IDS.size) {
+        throw new Error("Uno o más expedientes no existen");
+      }
+
+      for (const row of currentRows) {
+        if (Number(row.id_proyecto) !== Number(id_proyecto)) {
+          throw new Error(`El expediente ${row.id_expediente} no pertenece al proyecto ${id_proyecto}`);
+        }
+        const change = changes.find((c) => Number(c.id_expediente) === Number(row.id_expediente));
+        const baseActual = getBase(row.codigo_exp);
+        const baseNueva = getBase(change.nuevo_codigo);
+
+        if (parseInt(baseActual, 10) !== parseInt(baseNueva, 10)) {
+          throw new Error(`Inconsistencia en base: ${row.id_expediente} (${baseActual}) vs nuevo (${baseNueva}). No se permite cambiar la base.`);
+        }
+      }
+
+      // 3. Validar colisiones con la DB (fuera de los afectados)
+      const { rows: collisions } = await client.query(
+        `SELECT codigo_unico FROM ema.expedientes 
+          WHERE id_proyecto = $1 
+            AND codigo_unico = ANY($2::text[]) 
+            AND id_expediente != ANY($3::int[])`,
+        [id_proyecto, Array.from(NEW_CODES), Array.from(AFFECTED_IDS)]
+      );
+
+      if (collisions.length > 0) {
+        throw new Error(`Colisión en DB: El código ${collisions[0].codigo_unico} ya está en uso por otro expediente.`);
+      }
+
+      // 4. SWAP SAFE (Parking)
+      // Mover a temporal para evitar conflictos de Unique si existieran (o lógica de negocio)
+      for (const row of currentRows) {
+        const base = getBase(row.codigo_exp);
+        const parking = `${base}-9999-TEMP-${row.id_expediente}`;
+        await client.query(`UPDATE ema.expedientes SET codigo_unico = $1 WHERE id_expediente = $2`, [
+          parking,
+          row.id_expediente,
+        ]);
+      }
+
+      // 5. Aplicar códigos finales
+      for (const c of changes) {
+        await client.query(`UPDATE ema.expedientes SET codigo_unico = $1, updated_at = now() WHERE id_expediente = $2`, [
+          c.nuevo_codigo,
+          c.id_expediente,
+        ]);
+      }
+
+      await client.query("COMMIT");
+      res.json({ ok: true, message: "Reordenamiento completado exitosamente" });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    return res.status(500).json({ message: e?.message || String(e) });
+  }
+};
+
+exports.suggestCodigoUnico = async (req, res) => {
+  try {
+    const idProyecto = Number(req.params.idProyecto);
+    const { base, tipo } = req.query;
+
+    if (!idProyecto || !base) {
+      return res.status(400).json({ message: "idProyecto y base son requeridos" });
+    }
+
+    const code = await buildCodigoUnico({
+      client: pool,
+      id_proyecto: idProyecto,
+      codigo_exp: base,
+      tipo_expediente: tipo || "T",
+    });
+
+    res.json({ codigo_unico: code });
+  } catch (e) {
+    res.status(500).json({ message: e?.message || String(e) });
+  }
+};
+
+exports.checkBaseAvailability = async (req, res) => {
+  try {
+    const { idProyecto } = req.params;
+    const { base } = req.query;
+    if (!idProyecto || !base) {
+      return res.status(400).json({ message: "Faltan parámetros idProyecto o base" });
+    }
+
+    const normalizedBase = normalizeCodigoUnicoBase(base);
+
+    // Buscamos coincidencia normalizando el lado de la DB también
+    // Captura tanto formatos nuevos "55" como viejos "0055/..."
+    const { rows } = await pool.query(
+      `SELECT id_expediente, codigo_exp, propietario_nombre, codigo_unico
+       FROM ema.expedientes
+       WHERE id_proyecto = $1 
+         AND (
+           codigo_exp = $2 
+           OR 
+           CASE 
+             WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$' 
+             THEN (split_part(codigo_exp, '/', 1)::int)::text 
+             ELSE split_part(codigo_exp, '/', 1) 
+           END = $2
+         )
+       LIMIT 5`,
+      [idProyecto, normalizedBase]
+    );
+
+    res.json({
+      available: rows.length === 0,
+      existing: rows,
+    });
+  } catch (e) {
+    console.error("Error checking base availability:", e);
+    res.status(500).json({ message: "Error al verificar disponibilidad" });
+  }
+};
+

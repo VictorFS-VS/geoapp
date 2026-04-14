@@ -125,6 +125,35 @@ function normalizePositiveId(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function extractSimpleBase(s) {
+  const raw = String(s || "").trim();
+  if (!raw) return "";
+  const basePart = raw.split("/")[0];
+  const digits = basePart.replace(/\D/g, "");
+  if (!digits) return "";
+  return String(parseInt(digits, 10));
+}
+
+function isCodigoUnicoValid(code) {
+  if (!code) return true;
+  return /^\d+-\d+-(T|M)$/.test(String(code).trim().toUpperCase());
+}
+
+function isCodigoUnicoConsistent(code, baseNotificacion) {
+  if (!code || !baseNotificacion) return true;
+  const normalizedBase = extractSimpleBase(baseNotificacion);
+  if (!normalizedBase) return true;
+
+  const codeBase = String(code).split("-")[0];
+  return codeBase === normalizedBase;
+}
+
+function isCodigoUnicoTypeConsistent(code, type) {
+  if (!code || !type) return true;
+  const suffix = String(code).toUpperCase().split("-").pop();
+  return suffix === type.toUpperCase();
+}
+
 function formatLocalDateTime(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -482,6 +511,8 @@ export default function Expedientes() {
     }
   }, [paramProjectId, queryProjectId, contextProjectId, setCurrentProjectId]);
 
+
+
   if (!idProyecto) {
     return <div className="container mt-4">Proyecto no definido</div>;
   }
@@ -601,6 +632,53 @@ export default function Expedientes() {
   const [avaluoOpen, setAvaluoOpen] = useState(true);
   const [docsChecklistOpen, setDocsChecklistOpen] = useState(false);
 
+  const [baseAvailability, setBaseAvailability] = useState({
+    checked: false,
+    available: true,
+    existing: [],
+  });
+
+  // Verificar disponibilidad de base
+  useEffect(() => {
+    // Si hay codigo_exp usemos eso, si no, intentemos extraer del unico que estan tipeando
+    const rawBase = form.codigo_exp || String(form.codigo_unico || "").split("-")[0];
+    const base = extractSimpleBase(rawBase);
+
+    if (!base || mode === "ver") {
+      setBaseAvailability({ checked: false, available: true, existing: [] });
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const data = await apiGet(
+          `${API}/expedientes/proyecto/${idProyecto}/check-base?base=${encodeURIComponent(base)}`
+        );
+        // Filtrar coincidencias:
+        // 1. No mostrar el expediente actual que estamos editando.
+        // 2. No mostrar si el propietario es el mismo (es normal tener múltiples carpetas p/ el mismo dueño).
+        const currentOwner = String(form.propietario_nombre || "").trim().toLowerCase();
+
+        const realExisting = (data.existing || []).filter((e) => {
+          const isSameRecord = Number(e.id_expediente) === Number(current?.id_expediente);
+          const eOwner = String(e.propietario_nombre || "").trim().toLowerCase();
+          const isSameOwner = currentOwner && eOwner === currentOwner;
+          return !isSameRecord && !isSameOwner;
+        });
+
+        setBaseAvailability({
+          checked: true,
+          available: realExisting.length === 0,
+          existing: realExisting,
+        });
+      } catch (e) {
+        console.error("Error al verificar base:", e);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [form.codigo_exp, idProyecto, current?.id_expediente, mode]);
+
+
   const readonly =
     mode === "ver" ||
     (mode === "crear" && !canCreate) ||
@@ -619,6 +697,53 @@ export default function Expedientes() {
     if (Number.isFinite(n)) return n.toFixed(6);
     return val;
   };
+
+  // Sugerir código único automáticamente si está vacío
+  useEffect(() => {
+    if (!show || mode === "ver") return;
+    const hasManualCode = current?.codigo_unico && String(current.codigo_unico).trim();
+    if (hasManualCode) return; // No sobreescribir si ya tiene uno en DB
+
+    const base = extractSimpleBase(form.codigo_exp);
+    if (!base) return;
+
+    const tipo = form.tipo_expediente || (tipoCarpeta === "terreno" ? "T" : "M");
+
+    // Verificar si el código actual ya coincide con el tipo
+    const currentCode = String(form.codigo_unico || "").trim();
+    const needsUpdate =
+      !currentCode ||
+      (tipo === "T" && currentCode.endsWith("-M")) ||
+      (tipo === "M" && currentCode.endsWith("-T"));
+
+    if (!needsUpdate) return;
+
+
+    const timer = setTimeout(async () => {
+      try {
+        const data = await apiGet(
+          `${API}/expedientes/proyecto/${idProyecto}/suggest-codigo?base=${encodeURIComponent(
+            base
+          )}&tipo=${tipo}`
+        );
+        if (data?.codigo_unico) {
+          setForm((prev) => ({ ...prev, codigo_unico: data.codigo_unico }));
+        }
+      } catch (e) {
+        console.error("Error sugiriendo código:", e);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [
+    show,
+    mode,
+    form.codigo_exp,
+    tipoCarpeta,
+    form.tipo_expediente,
+    idProyecto,
+    current?.codigo_unico,
+  ]);
 
   const loadCatastroFeatures = async (force = false) => {
     if (!idProyecto) return;
@@ -847,6 +972,30 @@ export default function Expedientes() {
     const geom = getPolygonGeometry(combined);
     if (geom) setLastPlanoGeometry(geom);
     gpsFieldRef.current?.openMap?.();
+  };
+
+  const handleResetCodigoUnico = async () => {
+    if (!current?.id_expediente) return;
+    if (
+      !window.confirm(
+        "¿Estás seguro de que deseas regenerar el código único? Esto cambiará el IDENTIFICADOR del expediente."
+      )
+    )
+      return;
+    try {
+      const res = await apiJson(`${API}/expedientes/${current.id_expediente}/reset-codigo-unico`, "POST", {});
+      if (res.ok) {
+        setForm((prev) => ({ ...prev, codigo_unico: res.codigo_unico }));
+        setRows((prev) =>
+          prev.map((r) =>
+            r.id_expediente === current.id_expediente ? { ...r, codigo_unico: res.codigo_unico } : r
+          )
+        );
+        alerts.success("Código único regenerado: " + res.codigo_unico);
+      }
+    } catch (e) {
+      alerts.error(String(e?.message || e));
+    }
   };
 
   const handleEliminarPlano = async (tipoPoligono) => {
@@ -2953,26 +3102,38 @@ export default function Expedientes() {
   // El fallback a tipoCarpeta cubre el caso de expedientes recién creados en la
   // misma sesión (mode === "crear") donde hydrateFormFromRow aún no corrió.
     const payload = buildExpedientePayload(form, tipoCarpeta);
-    if (mode === "crear") {
-      const created = await apiJson(`${API}/expedientes`, "POST", payload);
-      setCurrent(created);
-      mergeRow(created);
-      setMode("editar");
-      await load();
-      await loadDocs(created.id_expediente);
-      await loadEtapas(created.id_expediente, tipoCarpeta);
-      alerts.toast.success("Datos guardados");
-      setShow(false);
-      return;
+    try {
+      if (mode === "crear") {
+        const created = await apiJson(`${API}/expedientes`, "POST", payload);
+        setCurrent(created);
+        mergeRow(created);
+        setMode("editar");
+        await load();
+        await loadDocs(created.id_expediente);
+        await loadEtapas(created.id_expediente, tipoCarpeta);
+        alerts.toast.success("Datos guardados");
+        setShow(false);
+        return;
+      }
+      if (mode === "editar" && current) {
+        const upd = await apiJson(`${API}/expedientes/${current.id_expediente}`, "PUT", payload);
+        setCurrent(upd);
+        mergeRow(upd);
+        await load();
+        alerts.toast.success("Datos guardados");
+        setShow(false);
+      }
+    } catch (e) {
+      console.error("Error saving expediente:", e);
+      // Usar alert o toast para el error
+      const msg = e?.message || String(e);
+      if (typeof alerts?.toast?.error === "function") {
+        alerts.toast.error(msg);
+      } else {
+        alert(msg);
+      }
     }
-    if (mode === "editar" && current) {
-      const upd = await apiJson(`${API}/expedientes/${current.id_expediente}`, "PUT", payload);
-      setCurrent(upd);
-      mergeRow(upd);
-      await load();
-      alerts.toast.success("Datos guardados");
-      setShow(false);
-    }
+
   };
 
   const openDeleteModal = () => {
@@ -3767,25 +3928,57 @@ export default function Expedientes() {
                 />
               </Form.Group>
             </Col>
-            <Col md={3}>
+            <Col md={3} style={{ display: "none" }}>
               <Form.Group>
-                <Form.Label>Nro. Notificación</Form.Label>
-                <Form.Control
-                  value={form.codigo_exp}
-                  disabled={readonly}
-                  onChange={(e) => setForm({ ...form, codigo_exp: e.target.value })}
-                />
+                <Form.Label>Nro. Notificación Base (Oculto)</Form.Label>
+                <Form.Control value={form.codigo_exp} readOnly disabled={readonly} />
               </Form.Group>
             </Col>
             <Col md={3}>
               <Form.Group>
-                <Form.Label>Código único</Form.Label>
-                <Form.Control
-                  value={form.codigo_unico || ""}
-                  placeholder="Se genera al guardar"
-                  readOnly
-                  disabled={readonly}
-                />
+                <Form.Label>Nro. Notificación Único</Form.Label>
+                <div className="d-flex gap-2">
+                  <Form.Control
+                    value={form.codigo_unico || ""}
+                    placeholder="Se genera al guardar"
+                    disabled={readonly}
+                    isInvalid={
+                      (form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)) ||
+                      (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp)) ||
+                      (form.codigo_unico && !isCodigoUnicoTypeConsistent(form.codigo_unico, form.tipo_expediente || (tipoCarpeta === "terreno" ? "T" : "M")))
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const base = val.split("-")[0];
+                      // Sincronizamos la base (aunque esté oculta) para que el estado
+                      // del formulario sea consistente para el guardado.
+                      setForm((prev) => ({ ...prev, codigo_unico: val, codigo_exp: base }));
+                    }}
+                  />
+                  {can("admin") && current?.id_expediente && (
+                    <Button
+                      variant="outline-warning"
+                      size="sm"
+                      title="Resetear código único (Admin)"
+                      onClick={handleResetCodigoUnico}
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+                <Form.Control.Feedback type="invalid" style={{ display: (form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)) || (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp)) || (form.codigo_unico && !isCodigoUnicoTypeConsistent(form.codigo_unico, form.tipo_expediente || (tipoCarpeta === "terreno" ? "T" : "M"))) ? 'block' : 'none' }}>
+                  {form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)
+                    ? "Formato inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda."
+                    : (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp))
+                      ? "Inconsistencia: La base del código único no coincide con la notificación base."
+                      : "Inconsistencia: El sufijo del código (-T/-M) no coincide con el tipo de carpeta seleccionado."}
+                </Form.Control.Feedback>
+
+                {!baseAvailability.available && (
+                  <div className="text-warning x-small mt-1" style={{ fontSize: '0.8rem', fontWeight: '500' }}>
+                    ℹ️ Existen otras carpetas con esta base: {baseAvailability.existing.map(e => `${e.propietario_nombre} (${e.codigo_unico})`).join(", ")}
+                  </div>
+                )}
               </Form.Group>
             </Col>
 
@@ -4653,6 +4846,7 @@ export default function Expedientes() {
                     disabled={!geometryEditable || !current || isTipoLocked}
                     onClick={async () => {
                       setTipoCarpeta("mejora");
+                      setForm((prev) => ({ ...prev, tipo_expediente: "M" }));
                       setPolyFilesByTipo({ proyecto: [], afectacion: [] });
                       if (current) await loadEtapas(current.id_expediente, "mejora");
                     }}
@@ -4664,6 +4858,7 @@ export default function Expedientes() {
                     disabled={!geometryEditable || !current || isTipoLocked}
                     onClick={async () => {
                       setTipoCarpeta("terreno");
+                      setForm((prev) => ({ ...prev, tipo_expediente: "T" }));
                       setPolyFilesByTipo({ proyecto: [], afectacion: [] });
                       if (current) await loadEtapas(current.id_expediente, "terreno");
                     }}
