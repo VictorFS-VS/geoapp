@@ -788,9 +788,17 @@ export default function ModuloInformes({
 
   const autoFitEnabledRef = useRef(true);
   const detalleTramoCacheRef = useRef(new Map());
+  const initialHideDoneRef = useRef(false);
 
   const [loading, setLoading] = useState(false);
   const [count, setCount] = useState(0);
+
+  const [pointsVisible, setPointsVisible] = useState(false);
+  const [floatingLoading, setFloatingLoading] = useState(false);
+  const [floatingPlantillas, setFloatingPlantillas] = useState([]);
+  const [floatingPage, setFloatingPage] = useState(0);
+
+
 
   const [listOpen, setListOpen] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState(null);
@@ -873,13 +881,6 @@ export default function ModuloInformes({
 
   const [filtroPlantillaId, setFiltroPlantillaId] = useState("all");
   const [filtroInformeId, setFiltroInformeId] = useState("all");
-  const [filtrosOpen, setFiltrosOpen] = useState(false);
-
-  const [filtroData, setFiltroData] = useState({
-    map: {},
-    plantillas: [],
-    informes: [],
-  });
 
   const informesMetaRef = useRef({ pid: null, map: {}, ts: 0 });
   const plantillaNameCacheRef = useRef({});
@@ -897,6 +898,10 @@ export default function ModuloInformes({
       } catch {}
     };
   }, []);
+
+  useEffect(() => {
+    initialHideDoneRef.current = false;
+  }, [pid]);
 
   function pickMetaFromInformeDetail(data) {
     const root = data?.data ?? data ?? {};
@@ -1031,6 +1036,51 @@ export default function ModuloInformes({
       return [];
     }
   }, []);
+
+  function buildPlantillasWithCounts(features = [], metaMap = {}) {
+    const acc = new Map();
+
+    for (const f of features || []) {
+      if (f?.geometry?.type !== "Point") continue;
+
+      const p = f.properties || {};
+      const idInf =
+        Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
+      if (!idInf) continue;
+
+      const plantillaId = getPlantillaIdFromPointProps(p, metaMap, idInf);
+      if (!plantillaId) continue;
+
+      const metaInf = metaMap[idInf] || {};
+      const nombre =
+        p?.nombre_plantilla ??
+        p?.plantilla_nombre ??
+        p?.plantilla ??
+        metaInf?.plantillaNombre ??
+        `Plantilla #${plantillaId}`;
+
+      const color =
+        metaInf?.plantillaColor || plantillaColorOf(plantillaId);
+
+      if (!acc.has(plantillaId)) {
+        acc.set(plantillaId, {
+          id: Number(plantillaId),
+          nombre,
+          color,
+          count: 0,
+        });
+      }
+
+      acc.get(plantillaId).count += 1;
+    }
+
+    return Array.from(acc.values()).sort((a, b) => {
+      if ((b.count || 0) !== (a.count || 0)) {
+        return (b.count || 0) - (a.count || 0);
+      }
+      return String(a.nombre || "").localeCompare(String(b.nombre || ""));
+    });
+  }
 
   function buildPlantillasFromMetaMap(map) {
     const m = new Map();
@@ -1169,70 +1219,52 @@ export default function ModuloInformes({
     };
   }, [pid, fetchInformeIdsByProyecto]);
 
-  const loadFiltroData = useCallback(async () => {
-    if (!pid) {
-      const empty = { map: {}, plantillas: [], informes: [] };
-      if (mountedRef.current) setFiltroData(empty);
-      return empty;
-    }
+  useEffect(() => {
+    //console.log("🔥 cargando botones flotantes", pid);
+    if (!pid) return;
 
-    const meta = await ensureInformesMeta();
-    const metaMap = meta?.map || {};
+    let cancelled = false;
+    const ac = new AbortController();
 
-    let featuresAll = [];
-    try {
-      const urlPts = `${API_URL}/informes/proyecto/${pid}/puntos?_ts=${Date.now()}`;
-      const dataPts = await fetchGeoJSON(urlPts);
-      featuresAll = dedupePointFeatures(
-        Array.isArray(dataPts?.features) ? dataPts.features : []
-      );
-    } catch {
-      featuresAll = [];
-    }
+    (async () => {
+      try {
+        setFloatingLoading(true);
 
-    const informeIdsConPuntos = new Set();
-    const plantillaIdsConPuntos = new Set();
+        const meta = await ensureInformesMeta();
+        if (cancelled) return;
 
-    for (const f of featuresAll) {
-      if (f?.geometry?.type !== "Point") continue;
+        const metaMap = meta?.map || {};
 
-      const p = f.properties || {};
-      const idInf =
-        Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-      if (!idInf) continue;
+        const urlPts = `${API_URL}/informes/proyecto/${pid}/puntos?_ts=${Date.now()}`;
+        const dataPts = await fetchGeoJSON(urlPts, ac.signal);
+        if (cancelled) return;
 
-      const [lng, lat] = f.geometry.coordinates || [];
-      const la = toNum(lat);
-      const ln = toNum(lng);
+        const featuresAll = dedupePointFeatures(
+          Array.isArray(dataPts?.features) ? dataPts.features : []
+        );
 
-      if (la == null || ln == null) continue;
+        const ordered = buildPlantillasWithCounts(featuresAll, metaMap);
 
-      informeIdsConPuntos.add(idInf);
+        if (!cancelled) {
+          setFloatingPlantillas(ordered);
+          setFloatingPage(0);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          console.warn("No se pudieron cargar botones flotantes:", e);
+          setFloatingPlantillas([]);
+        }
+      } finally {
+        if (!cancelled) setFloatingLoading(false);
+      }
+    })();
 
-      const plId = getPlantillaIdFromPointProps(p, metaMap, idInf);
-      if (plId) plantillaIdsConPuntos.add(Number(plId));
-    }
-
-    let plantillas = meta?.plantillas || [];
-    let informes = meta?.informes || [];
-
-    if (plantillaIdsConPuntos.size > 0) {
-      plantillas = plantillas.filter((pl) =>
-        plantillaIdsConPuntos.has(Number(pl.id))
-      );
-    } else {
-      plantillas = [];
-    }
-
-    if (informeIdsConPuntos.size > 0) {
-      informes = informes.filter((it) => informeIdsConPuntos.has(Number(it.id)));
-    } else {
-      informes = [];
-    }
-
-    const safe = { map: metaMap, plantillas, informes };
-    if (mountedRef.current) setFiltroData(safe);
-    return safe;
+    return () => {
+      cancelled = true;
+      try {
+        ac.abort();
+      } catch {}
+    };
   }, [pid, ensureInformesMeta, fetchGeoJSON]);
 
   const reportChartsAvailability = useCallback(
@@ -1438,9 +1470,9 @@ export default function ModuloInformes({
 
     markersRef.current.forEach((mk) => {
       if (!mk) return;
-      setMarkerMap(mk, enabled ? m : null);
+      setMarkerMap(mk, enabled && pointsVisible ? m : null);
     });
-  }, [enabled, map]);
+  }, [enabled, pointsVisible, map]);
 
   const openPointPanel = useCallback(
     (props) => {
@@ -1521,6 +1553,12 @@ export default function ModuloInformes({
 
     return m;
   }, [pid, count]);
+
+  useEffect(() => {
+    if (!enabled) {
+      setPointsVisible(false);
+    }
+  }, [enabled]);
 
   const puntosList = useMemo(() => {
     const feats = lastFeaturesRef.current || [];
@@ -1726,16 +1764,19 @@ export default function ModuloInformes({
     const q = String(busqQ || "").trim();
     const searching = q.length >= 2;
 
-    if (!enabled) {
+    // 🔹 si el módulo está apagado o los puntos están ocultos, esconder todo
+    if (!enabled || !pointsVisible) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, null));
       return;
     }
 
+    // 🔹 si no se aplica la búsqueda al mapa, mostrar normalmente
     if (!busqApplyToMap) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
       return;
     }
 
+    // 🔹 si no hay búsqueda, mostrar normalmente
     if (!searching) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
       return;
@@ -1754,32 +1795,15 @@ export default function ModuloInformes({
       const visible = ids.has(idInf);
       setMarkerMap(mk, visible ? map : null);
     });
-  }, [busqQ, busqResults, busqLoading, busqApplyToMap, enabled, map]);
-
-  const loadPreguntasOptions = useCallback(async () => {
-    if (!pid) return [];
-    try {
-      const url = `${API_URL}/informes/proyecto/${pid}/preguntas`;
-      const resp = await fetch(url, { headers: { ...authHeaders() } });
-      if (handle401(resp)) return [];
-
-      const data = await resp.json().catch(() => null);
-      const items = (Array.isArray(data?.items) && data.items) || [];
-
-      const opts = items
-        .map((x) => ({
-          id: Number(x.id_pregunta),
-          etiqueta: x.etiqueta || `Pregunta #${x.id_pregunta}`,
-        }))
-        .filter((x) => x.id);
-
-      setPreguntasOptions(opts);
-      return opts;
-    } catch {
-      setPreguntasOptions([]);
-      return [];
-    }
-  }, [pid]);
+  }, [
+    busqQ,
+    busqResults,
+    busqLoading,
+    busqApplyToMap,
+    enabled,
+    pointsVisible,
+    map,
+  ]);
 
   const flyToItem = (item) => {
     if (!map || !item) return;
@@ -1959,8 +1983,14 @@ export default function ModuloInformes({
     [tramoFilter, doesInformeMatchTramo]
   );
 
-  const loadInformesPoints = useCallback(async () => {
+  const loadInformesPoints = useCallback(async (overrideFilters = {}) => {
     if (!google || !map || !pid) return;
+
+    const nextFiltroInformeId =
+      overrideFilters.filtroInformeId ?? filtroInformeId;
+
+    const nextFiltroPlantillaId =
+      overrideFilters.filtroPlantillaId ?? filtroPlantillaId;
 
     const seq = ++loadSeqRef.current;
 
@@ -1976,40 +2006,36 @@ export default function ModuloInformes({
     try {
       clearMarkers();
 
-      // ✅ Guard de primer arranque: asegurar que el mapa tenga tiles cargados
-      // antes de instanciar AdvancedMarkerElement con mapId.
-      //
-      // Problema en F5: el primer load de informes puede ocurrir antes de que
-      // el mapa procese internamente su mapId. A diferencia de `idle` (que puede
-      // haber disparado ya antes de adjuntar el listener), aquí:
-      //   1. Verificamos getBounds() → si no es null, el mapa ya está listo.
-      //   2. Si no está listo, esperamos el primero de: tilesloaded, idle, o 4s.
-      // `addListenerOnce` + flag `done` garantizan idempotencia.
-      // Recargar omite este guard (didLoadRef.current === true).
       if (!didLoadRef.current) {
         const mapHasBounds = () => {
-          try { return !!map?.getBounds?.(); } catch { return false; }
+          try {
+            return !!map?.getBounds?.();
+          } catch {
+            return false;
+          }
         };
 
         if (!mapHasBounds()) {
           await new Promise((resolve) => {
             let done = false;
-            const finish = () => { if (!done) { done = true; resolve(); } };
+            const finish = () => {
+              if (!done) {
+                done = true;
+                resolve();
+              }
+            };
             try {
               google.maps.event.addListenerOnce(map, "tilesloaded", finish);
               google.maps.event.addListenerOnce(map, "idle", finish);
-              // Timeout de seguridad: 4s. Luego del timeout, getBounds puede
-              // seguir siendo null (mapa sin proyección), pero procedemos igual.
               setTimeout(finish, 4000);
             } catch {
               resolve();
             }
           });
-          // Verificar que la carga sigue siendo válida tras la espera
+
           if (ac.signal.aborted || seq !== loadSeqRef.current) return;
         }
       }
-
 
       let metaMap = {};
       if (informesMetaRef.current?.pid === pid) {
@@ -2026,18 +2052,16 @@ export default function ModuloInformes({
             map: meta?.map || {},
             ts: Date.now(),
           };
-
-          setFiltroData({
-            map: meta?.map || {},
-            plantillas: meta?.plantillas || [],
-            informes: meta?.informes || [],
-          });
         })
         .catch(() => {});
 
       const qs = new URLSearchParams();
-      if (filtroInformeId !== "all") qs.set("informe", String(filtroInformeId));
-      if (filtroPlantillaId !== "all") qs.set("plantilla", String(filtroPlantillaId));
+      if (nextFiltroInformeId !== "all") {
+        qs.set("informe", String(nextFiltroInformeId));
+      }
+      if (nextFiltroPlantillaId !== "all") {
+        qs.set("plantilla", String(nextFiltroPlantillaId));
+      }
       qs.set("_ts", String(Date.now()));
 
       const url = `${API_URL}/informes/proyecto/${pid}/puntos?${qs.toString()}`;
@@ -2052,7 +2076,7 @@ export default function ModuloInformes({
       features = dedupePointFeatures(features);
 
       const infId =
-        filtroInformeId === "all" ? null : Number(filtroInformeId) || null;
+        nextFiltroInformeId === "all" ? null : Number(nextFiltroInformeId) || null;
 
       if (infId) {
         features = features.filter((f) => {
@@ -2092,9 +2116,12 @@ export default function ModuloInformes({
 
       const AdvancedMarker =
         markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
-      const caps = typeof map?.getMapCapabilities === "function"
-        ? map.getMapCapabilities?.()
-        : null;
+
+      const caps =
+        typeof map?.getMapCapabilities === "function"
+          ? map.getMapCapabilities?.()
+          : null;
+
       const advAvailable = caps?.isAdvancedMarkersAvailable;
       if (caps && advAvailable !== true) {
         throw new Error(
@@ -2105,16 +2132,12 @@ export default function ModuloInformes({
       if (!caps) {
         const mapId = map?.__e3a?.mapId || map?.mapId || null;
         if (!mapId) {
-          // API sin getMapCapabilities: continuar para no romper comportamiento antiguo.
+          // mantener compatibilidad
         }
       }
 
       const canUseAdvanced = !!AdvancedMarker;
 
-      // Política explícita:
-      // - Priorizar siempre advanced markers.
-      // - No usar legacy Marker (deprecado).
-      // - Si falla import y no hay advanced disponible, abortar carga (no fallback silencioso).
       if (!canUseAdvanced && markerImportError) {
         throw new Error(
           "No se pudo inicializar Google Advanced Marker en informes (import marker fallo)."
@@ -2162,8 +2185,8 @@ export default function ModuloInformes({
         const semaforoColorCss = getMarkerColorFromProps(props);
 
         const forcedPlantColor =
-          filtroPlantillaId !== "all"
-            ? plantillaColorOf(filtroPlantillaId)
+          nextFiltroPlantillaId !== "all"
+            ? plantillaColorOf(nextFiltroPlantillaId)
             : null;
 
         const markerColorCss =
@@ -2194,6 +2217,8 @@ export default function ModuloInformes({
             title,
             gmpClickable: true,
           });
+
+          markerPathStats.advContent += 1;
         } else {
           continue;
         }
@@ -2239,10 +2264,19 @@ export default function ModuloInformes({
       markersRef.current = created;
       setCount(created.length);
 
-      // Adjuntar los markers en una segunda pasada evita condiciones de carrera
-      // sutiles durante la construcción y montaje del AdvancedMarker.
-      for (const mk of created) {
-        setMarkerMap(mk, enabled ? map : null);
+      // 🔹 al terminar la carga inicial, ocultar como si se tocara "Ocultar puntos"
+      if (!initialHideDoneRef.current) {
+        initialHideDoneRef.current = true;
+
+        for (const mk of created) {
+          setMarkerMap(mk, null);
+        }
+
+        setPointsVisible(false);
+      } else {
+        for (const mk of created) {
+          setMarkerMap(mk, enabled && pointsVisible ? map : null);
+        }
       }
 
       if (TRACE_INF_MARKERS) {
@@ -2251,7 +2285,9 @@ export default function ModuloInformes({
           created: created.length,
           pointCount,
           markerImportOk: !markerImportError,
-          markerImportError: markerImportError ? String(markerImportError?.message || markerImportError) : null,
+          markerImportError: markerImportError
+            ? String(markerImportError?.message || markerImportError)
+            : null,
           paths: markerPathStats,
         });
       }
@@ -2281,6 +2317,7 @@ export default function ModuloInformes({
     map,
     pid,
     enabled,
+    pointsVisible,
     fetchGeoJSON,
     openPointPanel,
     clearMarkers,
@@ -2292,6 +2329,59 @@ export default function ModuloInformes({
     filterFeaturesByTramoSelection,
     ensureInformesMeta,
   ]);
+
+  const handleQuickPlantillaFilter = useCallback(async (plantillaId) => {
+    const nextPlantillaId = String(plantillaId);
+
+    autoFitEnabledRef.current = true;
+    didLoadRef.current = false;
+
+    setSelectedPoint(null);
+    setRightOpen(false);
+    setVerInformeOpen(false);
+    setDetalleData(null);
+    setDetalleError(null);
+    setDetalleIdInforme(null);
+
+    setFiltroInformeId("all");
+    setFiltroPlantillaId(nextPlantillaId);
+    setPointsVisible(true);
+
+    try {
+      await loadInformesPoints({
+        filtroInformeId: "all",
+        filtroPlantillaId: nextPlantillaId,
+      });
+    } catch (e) {
+      console.error("Error al aplicar filtro rápido de plantilla:", e);
+    }
+  }, [loadInformesPoints]);
+
+  const clearQuickPlantillaFilter = useCallback(() => {
+    autoFitEnabledRef.current = true;
+    didLoadRef.current = false;
+
+    setSelectedPoint(null);
+    setRightOpen(false);
+    setVerInformeOpen(false);
+    setDetalleData(null);
+    setDetalleError(null);
+    setDetalleIdInforme(null);
+
+    setFiltroInformeId("all");
+    setFiltroPlantillaId("all");
+    setPointsVisible(false);
+
+    clearMarkers();
+  }, [clearMarkers]);
+
+  const floatingVisiblePlantillas = useMemo(() => {
+    const start = floatingPage * 5;
+    return floatingPlantillas.slice(start, start + 5);
+  }, [floatingPlantillas, floatingPage]);
+
+  const floatingHasPrev = floatingPage > 0;
+  const floatingHasNext = (floatingPage + 1) * 5 < floatingPlantillas.length;
 
   useEffect(() => {
     autoFitEnabledRef.current = true;
@@ -2330,9 +2420,6 @@ export default function ModuloInformes({
 
     setFiltroInformeId("all");
     setFiltroPlantillaId("all");
-    setFiltrosOpen(false);
-
-    setFiltroData({ map: {}, plantillas: [], informes: [] });
   }, [pid, clearMarkers]);
 
   const tramoReloadKey = `${tramoFilter?.enabled ? 1 : 0}|${getActiveTramoKeyFromFilter(tramoFilter)}`;
@@ -2346,10 +2433,10 @@ export default function ModuloInformes({
 
     didLoadRef.current = false;
     autoFitEnabledRef.current = true;
-    setSelectedPoint(null);
+    
     setRightOpen(false);
     setVerInformeOpen(false);
-    setDetalleData(null);
+    setDetalleData(null);setSelectedPoint(null);
     setDetalleError(null);
     setDetalleIdInforme(null);
     setBusqResults([]);
@@ -2501,27 +2588,6 @@ export default function ModuloInformes({
     setChartsOpen(true);
   };
 
-  const plantillasOptions = useMemo(() => filtroData.plantillas || [], [filtroData]);
-
-  const informesOptions = useMemo(() => {
-    let arr = filtroData.informes || [];
-    const selPlant =
-      filtroPlantillaId === "all" ? null : Number(filtroPlantillaId) || null;
-    if (selPlant) arr = arr.filter((x) => Number(x.plantillaId) === selPlant);
-    return arr.slice().sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
-  }, [filtroData, filtroPlantillaId]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    if (!panelOpen) return;
-    (async () => {
-      try {
-        await loadFiltroData();
-        await loadPreguntasOptions();
-      } catch {}
-    })();
-  }, [enabled, panelOpen, loadFiltroData, loadPreguntasOptions]);
-
   if (!enabled) return null;
 
   return (
@@ -2561,7 +2627,10 @@ export default function ModuloInformes({
                 {tramoFilter?.enabled && getActiveTramoKeyFromFilter(tramoFilter) ? (
                   <>
                     {" · "}
-                    <b>{tramoFilter?.activeTramoLabel || `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}</b>
+                    <b>
+                      {tramoFilter?.activeTramoLabel ||
+                        `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}
+                    </b>
                   </>
                 ) : null}
               </div>
@@ -2611,9 +2680,10 @@ export default function ModuloInformes({
                 onClick={() => {
                   autoFitEnabledRef.current = false;
                   setMenuOpen(false);
-                  if (typeof onDisable === "function") onDisable();
+                  setPointsVisible(false);
+                  clearMarkers();
                 }}
-                title="Ocultar puntos (apagar)"
+                title="Ocultar puntos"
                 style={{ ...btnIconStyle, fontWeight: 900 }}
               >
                 ⦿
@@ -2719,173 +2789,10 @@ export default function ModuloInformes({
                 }}
               >
                 Filtro por tramo activo:{" "}
-                {tramoFilter?.activeTramoLabel || `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}
+                {tramoFilter?.activeTramoLabel ||
+                  `Tramo ${getActiveTramoKeyFromFilter(tramoFilter)}`}
               </div>
             ) : null}
-
-            <div style={{ marginBottom: 10 }}>
-              <button
-                type="button"
-                onClick={async () => {
-                  setFiltrosOpen((v) => !v);
-                  autoFitEnabledRef.current = false;
-                  try {
-                    await loadFiltroData();
-                    await loadPreguntasOptions();
-                  } catch {}
-                }}
-                style={{ ...btnGhostStyle, width: "100%" }}
-                title="Filtrar puntos por plantilla o por informe"
-              >
-                🧩 Filtro de puntos {filtrosOpen ? "▾" : "▸"}
-              </button>
-
-              {filtrosOpen ? (
-                <div
-                  style={{
-                    marginTop: 8,
-                    border: "1px solid #eef2f7",
-                    borderRadius: 12,
-                    padding: 10,
-                    background: "#fff",
-                  }}
-                >
-                  <Form.Label style={{ fontSize: 12, fontWeight: 900, marginBottom: 4 }}>
-                    Plantilla (color por plantilla)
-                  </Form.Label>
-
-                  <Form.Select
-                    size="sm"
-                    value={filtroPlantillaId}
-                    onChange={(e) => {
-                      setFiltroPlantillaId(e.target.value);
-                      setFiltroInformeId("all");
-                      autoFitEnabledRef.current = false;
-                    }}
-                    style={{ borderRadius: 10, marginBottom: 8 }}
-                  >
-                    <option value="all">Todas</option>
-                    {plantillasOptions.map((p) => (
-                      <option key={p.id} value={String(p.id)}>
-                        {p.nombre}
-                      </option>
-                    ))}
-                  </Form.Select>
-
-                  <Form.Label style={{ fontSize: 12, fontWeight: 900, marginBottom: 4 }}>
-                    Informe
-                  </Form.Label>
-
-                  <Form.Select
-                    size="sm"
-                    value={filtroInformeId}
-                    onChange={(e) => {
-                      setFiltroInformeId(e.target.value);
-                      autoFitEnabledRef.current = false;
-                    }}
-                    style={{ borderRadius: 10, marginBottom: 10 }}
-                  >
-                    <option value="all">Todos</option>
-                    {informesOptions.map((it) => (
-                      <option key={it.id} value={String(it.id)}>
-                        {it.titulo} (#{it.id})
-                      </option>
-                    ))}
-                  </Form.Select>
-
-                  <div className="d-flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="dark"
-                      onClick={async () => {
-                        autoFitEnabledRef.current = true;
-                        didLoadRef.current = false;
-                        await loadInformesPoints();
-                      }}
-                      style={{ borderRadius: 10, fontWeight: 900, flex: 1 }}
-                      disabled={loading}
-                    >
-                      ✅ Aplicar
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      variant="outline-secondary"
-                      onClick={async () => {
-                        setFiltroPlantillaId("all");
-                        setFiltroInformeId("all");
-                        autoFitEnabledRef.current = true;
-                        didLoadRef.current = false;
-                        await loadInformesPoints();
-                      }}
-                      style={{ borderRadius: 10, fontWeight: 900 }}
-                      disabled={loading}
-                    >
-                      ↩︎ Reset
-                    </Button>
-                  </div>
-
-                  {plantillasOptions.length ? (
-                    <div style={{ marginTop: 10 }}>
-                      <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>
-                        Leyenda
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {plantillasOptions.slice(0, 10).map((p) => (
-                          <span
-                            key={p.id}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 6,
-                              border: "1px solid #e5e7eb",
-                              borderRadius: 999,
-                              padding: "3px 8px",
-                              fontSize: 11,
-                              fontWeight: 800,
-                              background: "#fff",
-                            }}
-                            title={p.nombre}
-                          >
-                            <span
-                              style={{
-                                width: 10,
-                                height: 10,
-                                borderRadius: 999,
-                                background: p.color || "#999",
-                                border: "1px solid rgba(0,0,0,.12)",
-                              }}
-                            />
-                            <span
-                              style={{
-                                maxWidth: 190,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {p.nombre}
-                            </span>
-                          </span>
-                        ))}
-                        {plantillasOptions.length > 10 ? (
-                          <span style={{ fontSize: 11, color: "#6b7280" }}>
-                            +{plantillasOptions.length - 10} más…
-                          </span>
-                        ) : null}
-                      </div>
-                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>
-                        *Si un punto trae color de <b>Semáforo</b>, ese color tiene prioridad.
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 11, color: "#6b7280", marginTop: 8 }}>
-                      No se detectaron plantillas (todavía).
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
 
             {listOpen ? (
               <>
@@ -3119,6 +3026,187 @@ export default function ModuloInformes({
               </>
             ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {Number(pid) > 0 && (floatingLoading || floatingPlantillas.length > 0) ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 14,
+            left: panelOpen ? 370 : 14,
+            right: rightOpen ? 440 : 14,
+            zIndex: 1199,
+            display: "flex",
+            flexWrap: "nowrap",
+            gap: 8,
+            pointerEvents: "auto",
+            alignItems: "center",
+          }}
+        >
+          <button
+            type="button"
+            onClick={clearQuickPlantillaFilter}
+            style={{
+              border: "1px solid rgba(255,255,255,.35)",
+              background:
+                filtroPlantillaId === "all"
+                  ? "rgba(15,23,42,.72)"
+                  : "rgba(255,255,255,.14)",
+              color: "#fff",
+              backdropFilter: "blur(10px)",
+              WebkitBackdropFilter: "blur(10px)",
+              borderRadius: 999,
+              padding: "8px 14px",
+              fontSize: 12,
+              fontWeight: 800,
+              cursor: "pointer",
+              boxShadow: "0 4px 14px rgba(0,0,0,.18)",
+              flex: "0 0 auto",
+            }}
+          >
+            Ocultar
+          </button>
+
+          {floatingHasPrev ? (
+            <button
+              type="button"
+              onClick={() => setFloatingPage((p) => Math.max(0, p - 1))}
+              style={{
+                border: "1px solid rgba(255,255,255,.35)",
+                background: "rgba(0,0,0,.18)",
+                color: "#fff",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                borderRadius: 999,
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(0,0,0,.16)",
+                flex: "0 0 auto",
+              }}
+              title="Ver anteriores"
+            >
+              ←
+            </button>
+          ) : null}
+
+          {floatingLoading ? (
+            <div
+              style={{
+                color: "#fff",
+                fontSize: 12,
+                fontWeight: 800,
+                padding: "8px 12px",
+                borderRadius: 999,
+                background: "rgba(0,0,0,.18)",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Spinner size="sm" />
+              Cargando…
+            </div>
+          ) : (
+            floatingVisiblePlantillas.map((pl) => {
+              const active = String(filtroPlantillaId) === String(pl.id);
+              const chipColor = pl.color || plantillaColorOf(pl.id) || "#2563eb";
+
+              return (
+                <button
+                  key={pl.id}
+                  type="button"
+                  onClick={() => handleQuickPlantillaFilter(pl.id)}
+                  title={`${pl.nombre} (${pl.count || 0})`}
+                  style={{
+                    border: active
+                      ? `2px solid ${chipColor}`
+                      : "1px solid rgba(255,255,255,.35)",
+                    background: active
+                      ? "rgba(255,255,255,.22)"
+                      : "rgba(0,0,0,.18)",
+                    color: "#fff",
+                    backdropFilter: "blur(10px)",
+                    WebkitBackdropFilter: "blur(10px)",
+                    borderRadius: 999,
+                    padding: "8px 14px",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    boxShadow: active
+                      ? `0 0 0 2px ${chipColor}33, 0 6px 18px rgba(0,0,0,.22)`
+                      : "0 4px 14px rgba(0,0,0,.16)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    maxWidth: 240,
+                    flex: "0 0 auto",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: "50%",
+                      background: chipColor,
+                      flex: "0 0 auto",
+                    }}
+                  />
+                  <span
+                    style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: 140,
+                    }}
+                  >
+                    {pl.nombre}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      opacity: 0.9,
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    ({pl.count || 0})
+                  </span>
+                </button>
+              );
+            })
+          )}
+
+          {floatingHasNext ? (
+            <button
+              type="button"
+              onClick={() =>
+                setFloatingPage((p) =>
+                  (p + 1) * 5 < floatingPlantillas.length ? p + 1 : p
+                )
+              }
+              style={{
+                border: "1px solid rgba(255,255,255,.35)",
+                background: "rgba(0,0,0,.18)",
+                color: "#fff",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                borderRadius: 999,
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(0,0,0,.16)",
+                flex: "0 0 auto",
+              }}
+              title="Ver siguientes"
+            >
+              →
+            </button>
+          ) : null}
         </div>
       ) : null}
 
