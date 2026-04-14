@@ -51,8 +51,10 @@ async function crearContrato({ id_proyecto, fecha_inicio, fecha_fin, titulo, obs
 
   const { rows } = await pool.query(
     `
-    INSERT INTO ema.regencia_contratos (id_proyecto, fecha_inicio, fecha_fin, estado, titulo, observacion, creado_por)
-    VALUES ($1, $2, $3, 'ACTIVO', $4, $5, $6)
+    INSERT INTO ema.regencia_contratos
+      (id_proyecto, fecha_inicio, fecha_fin, estado, titulo, observacion, creado_por)
+    VALUES
+      ($1, $2, $3, 'ACTIVO', $4, $5, $6)
     RETURNING *
     `,
     [
@@ -325,7 +327,7 @@ async function setResponsables(id_actividad, lista = []) {
 /* =========================
    ALERTAS y QUEUE
    ========================= */
-async function crearAlertaYQueue({ id_actividad, modo="AUTO", offset_min, canal="IN_APP", activo=true }) {
+async function crearAlertaYQueue({ id_actividad, modo = "AUTO", offset_min, canal = "IN_APP", activo = true }) {
   const { rows: alertRows } = await pool.query(
     `
     INSERT INTO ema.regencia_alertas (id_actividad, modo, offset_min, canal, activo)
@@ -420,21 +422,32 @@ function lastDayOfMonth(year, monthIndex0) {
   return new Date(year, monthIndex0 + 1, 0).getDate();
 }
 
-function buildMonthlyDate(baseISO, monthOffset, hour = 9, minute = 0) {
-  const base = new Date(baseISO + "T00:00:00");
-  const baseDay = base.getDate();
+function firstDayOfMonth(year, monthIndex0) {
+  return new Date(year, monthIndex0, 1);
+}
 
-  const y = base.getFullYear();
-  const m = base.getMonth();
+function getDateForWeekdayOfMonth(year, monthIndex0, weekOfMonth, dayOfWeek) {
+  const first = firstDayOfMonth(year, monthIndex0);
+  const firstWeekday = first.getDay(); // 0=Dom ... 6=Sab
 
-  const targetMonth = m + monthOffset;
-  const target = new Date(y, targetMonth, 1, hour, minute, 0, 0);
+  const offset = (dayOfWeek - firstWeekday + 7) % 7;
+  const firstOccurrenceDay = 1 + offset;
+  const dayOfMonth = firstOccurrenceDay + (weekOfMonth - 1) * 7;
 
-  const maxDay = lastDayOfMonth(target.getFullYear(), target.getMonth());
-  const day = Math.min(baseDay, maxDay);
+  const maxDay = lastDayOfMonth(year, monthIndex0);
+  if (dayOfMonth > maxDay) return null;
 
-  target.setDate(day);
-  return target;
+  return new Date(year, monthIndex0, dayOfMonth);
+}
+
+function sameDateTime(a, b) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate() &&
+    a.getHours() === b.getHours() &&
+    a.getMinutes() === b.getMinutes()
+  );
 }
 
 /* =========================
@@ -442,15 +455,22 @@ function buildMonthlyDate(baseISO, monthOffset, hour = 9, minute = 0) {
    ========================= */
 async function generarVisitasMensualesDesdeContrato({
   id_contrato,
-  seed_date,
+  titulo,
+  descripcion = null,
+  tipo = "VISITA",
   hour = 9,
   minute = 0,
   months_ahead = 12,
   business_days_only = true,
   shift_if_weekend = "NEXT_BUSINESS_DAY",
+  ocurrencias = [],
   creado_por = "Sistema",
 }) {
   if (!id_contrato) throw new Error("Falta id_contrato");
+  if (!titulo || !String(titulo).trim()) throw new Error("Falta titulo");
+  if (!Array.isArray(ocurrencias) || ocurrencias.length === 0) {
+    throw new Error("Faltan ocurrencias");
+  }
 
   const { rows: cRows } = await pool.query(
     `
@@ -461,89 +481,204 @@ async function generarVisitasMensualesDesdeContrato({
     `,
     [id_contrato]
   );
+
   const contrato = cRows[0];
   if (!contrato) throw new Error("Contrato no encontrado");
-  if (contrato.estado !== "ACTIVO") return { created: 0, skipped: 0 };
+  if (String(contrato.estado || "").toUpperCase() !== "ACTIVO") {
+    return { created: 0, skipped: 0, items: [] };
+  }
 
   const contratoInicioISO = toDateOnlyISO(contrato.fecha_inicio) || null;
   const contratoFinISO = toDateOnlyISO(contrato.fecha_fin);
   if (!contratoFinISO) throw new Error("Contrato sin fecha_fin");
 
   const hoyISO = new Date().toISOString().slice(0, 10);
-  const seedISO = toDateOnlyISO(seed_date) || hoyISO;
-
-  const startISO = [hoyISO, contratoInicioISO, seedISO].filter(Boolean).sort().slice(-1)[0];
+  const startISO = [hoyISO, contratoInicioISO].filter(Boolean).sort().slice(-1)[0];
 
   const startDate = new Date(startISO + "T00:00:00");
   const endDate = new Date(contratoFinISO + "T23:59:59");
 
   let created = 0;
   let skipped = 0;
+  const items = [];
+
+  const startYear = startDate.getFullYear();
+  const startMonth = startDate.getMonth();
 
   for (let i = 0; i < months_ahead; i++) {
-    let dt = buildMonthlyDate(seedISO, i, hour, minute);
+    const baseMonthDate = new Date(startYear, startMonth + i, 1);
+    const y = baseMonthDate.getFullYear();
+    const m = baseMonthDate.getMonth();
 
-    if (business_days_only) {
-      dt = shiftToBusinessDay(dt, shift_if_weekend);
-    }
+    const usadosEnMes = [];
 
-    if (dt < startDate) {
-      skipped++;
-      continue;
-    }
-    if (dt > endDate) {
-      break;
-    }
+    for (const occ of ocurrencias) {
+      const week_of_month = Number(occ.week_of_month);
+      const day_of_week = Number(occ.day_of_week);
 
-    const inicio_at = dt;
-    const fin_at = null;
+      if (
+        !Number.isInteger(week_of_month) ||
+        week_of_month < 1 ||
+        week_of_month > 5 ||
+        !Number.isInteger(day_of_week) ||
+        day_of_week < 0 ||
+        day_of_week > 6
+      ) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "ocurrencia_invalida",
+          ocurrencia: occ,
+        });
+        continue;
+      }
 
-    const { rows: ins } = await pool.query(
-      `
-      INSERT INTO ema.regencia_actividades
-        (id_proyecto, id_contrato, origen, titulo, descripcion, tipo, inicio_at, fin_at, estado, regla_recurrencia, creado_por)
-      VALUES
-        ($1, $2, 'AUTO', $3, $4, 'VISITA', $5, $6, 'PENDIENTE', $7, $8)
-      ON CONFLICT (id_contrato, inicio_at, tipo)
-        WHERE (origen = 'AUTO')
-      DO NOTHING
-      RETURNING id
-      `,
-      [
-        contrato.id_proyecto,
-        id_contrato,
-        "Visita mensual de regencia",
-        `Visita programada automáticamente (${dt.toLocaleString()}).`,
-        inicio_at,
-        fin_at,
-        {
-          kind: "MONTHLY",
-          seed_date: seedISO,
-          months_ahead,
-          business_days_only,
-          shift_if_weekend,
-          hour,
-          minute,
-        },
-        creado_por || null,
-      ]
-    );
+      let fechaBase = getDateForWeekdayOfMonth(y, m, week_of_month, day_of_week);
+      if (!fechaBase) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "fecha_no_existe_en_mes",
+          ocurrencia: occ,
+        });
+        continue;
+      }
 
-    if (ins.length === 0) {
-      skipped++;
-      continue;
-    }
+      let dt = new Date(
+        fechaBase.getFullYear(),
+        fechaBase.getMonth(),
+        fechaBase.getDate(),
+        hour,
+        minute,
+        0,
+        0
+      );
 
-    created++;
+      if (business_days_only) {
+        dt = shiftToBusinessDay(dt, shift_if_weekend);
+      }
 
-    try {
-      await generarAlertasEstandar(ins[0].id);
-    } catch (e) {
-      console.warn("[Regencia] No se pudieron generar alertas estándar:", e.message);
+      if (dt < startDate) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "antes_de_inicio",
+          ocurrencia: occ,
+          fecha: dt,
+        });
+        continue;
+      }
+
+      if (dt > endDate) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "fuera_de_contrato",
+          ocurrencia: occ,
+          fecha: dt,
+        });
+        continue;
+      }
+
+      const duplicadaEnMemoria = usadosEnMes.some((x) => sameDateTime(x, dt));
+      if (duplicadaEnMemoria) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "duplicada_en_mes",
+          ocurrencia: occ,
+          fecha: dt,
+        });
+        continue;
+      }
+
+      const regla_recurrencia = {
+        kind: "MONTHLY_BY_WEEKDAY",
+        titulo,
+        descripcion,
+        tipo,
+        hour,
+        minute,
+        months_ahead,
+        business_days_only,
+        shift_if_weekend,
+        ocurrencias,
+        generated_month: `${y}-${String(m + 1).padStart(2, "0")}`,
+      };
+
+      const { rows: ins } = await pool.query(
+        `
+        INSERT INTO ema.regencia_actividades
+          (
+            id_proyecto,
+            id_contrato,
+            origen,
+            titulo,
+            descripcion,
+            tipo,
+            inicio_at,
+            fin_at,
+            estado,
+            regla_recurrencia,
+            creado_por
+          )
+        VALUES
+          ($1, $2, 'AUTO', $3, $4, $5, $6, $7, 'PENDIENTE', $8, $9)
+        ON CONFLICT (id_contrato, inicio_at, tipo)
+          WHERE (origen = 'AUTO')
+        DO NOTHING
+        RETURNING id, inicio_at
+        `,
+        [
+          contrato.id_proyecto,
+          id_contrato,
+          titulo,
+          descripcion,
+          tipo,
+          dt,
+          null,
+          regla_recurrencia,
+          creado_por || null,
+        ]
+      );
+
+      if (ins.length === 0) {
+        skipped++;
+        items.push({
+          month: `${y}-${String(m + 1).padStart(2, "0")}`,
+          ok: false,
+          reason: "ya_existia",
+          ocurrencia: occ,
+          fecha: dt,
+        });
+        continue;
+      }
+
+      usadosEnMes.push(dt);
+      created++;
+
+      items.push({
+        month: `${y}-${String(m + 1).padStart(2, "0")}`,
+        ok: true,
+        id: ins[0].id,
+        ocurrencia: occ,
+        fecha: dt,
+      });
+
+      try {
+        await generarAlertasEstandar(ins[0].id);
+      } catch (e) {
+        console.warn("[Regencia] No se pudieron generar alertas estándar:", e.message);
+      }
     }
   }
 
-  return { created, skipped };
+  return { created, skipped, items };
 }
 
 module.exports = {

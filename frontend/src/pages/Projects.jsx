@@ -239,6 +239,9 @@ export default function ProyectosList() {
   /* ===== permisos ===== */
   const canCreateProyecto = hasUserPerm(usuario, 'proyectos.create');
   const canReadProyecto = hasUserPerm(usuario, 'proyectos.read');
+  const canSeePanel = hasUserPerm(usuario, 'informes.read') || 
+                      hasUserPerm(usuario, 'expedientes.read') || 
+                      hasUserPerm(usuario, 'quejas_reclamos.read');
   const canExportProyecto = canReadProyecto;
   const canVerMapa = canReadProyecto;
 
@@ -465,13 +468,15 @@ export default function ProyectosList() {
                     <MapIcon className="ico" /> Ver mapa
                   </button>
                 )}
-                <button
-                  className="pc-btn pc-btn-outline pc-btn-small"
-                  onClick={() => navigate(`/project-home/${p.gid}`)}
-                  title="Ver panel del proyecto"
-                >
-                  Panel
-                </button>
+                {canSeePanel && (
+                  <button
+                    className="pc-btn pc-btn-outline pc-btn-small"
+                    onClick={() => navigate(`/project-home/${p.gid}`)}
+                    title="Ver panel del proyecto"
+                  >
+                    Panel
+                  </button>
+                )}
 
                 <ModalComponent proyecto={p}>
                   <button className="pc-btn pc-btn-light pc-btn-small pc-btn-more">

@@ -54,6 +54,9 @@ const limitItems = (items, maxItems) => {
   ];
 };
 
+const formatHoverSummary = (label, count, pct, baseLabel = "de la base") =>
+  `${label}\nCantidad: ${count.toLocaleString()}\n${pct}% ${baseLabel}`;
+
 const polarToCartesian = (cx, cy, radius, angleInDegrees) => {
   const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180.0;
   return {
@@ -95,6 +98,9 @@ const ProjectHomeKpiChart = ({
   compact = false,
   emptyLabel = "Sin indicador disponible",
   variant = "default",
+  hideSelector = true,
+  showHeader = true,
+  modern = false,
 }) => {
   const [chartType, setChartType] = useState(defaultType);
 
@@ -104,15 +110,17 @@ const ProjectHomeKpiChart = ({
 
   const normalizedItems = useMemo(() => normalizeItems(summary?.items), [summary?.items]);
   const limitedItems = useMemo(() => {
-    const maxItems = compact ? 6 : 8;
+    let maxItems = compact ? 6 : 8;
+    if (variant === "primary") maxItems = 5;
+    if (variant === "secondary") maxItems = 6;
     return limitItems(normalizedItems, maxItems);
-  }, [normalizedItems, compact]);
+  }, [normalizedItems, compact, variant]);
   const total = useMemo(
     () => limitedItems.reduce((acc, item) => acc + (item.count || 0), 0),
     [limitedItems]
   );
-  const technicalLabel = useMemo(() => buildTechnicalLabel(summary), [summary]);
-  const baseLabel = "Base del indicador";
+  const technicalLabel = ""; // No mostrar metadata técnica
+  const baseLabel = "Base";
 
   if (!summary) {
     return (
@@ -138,20 +146,7 @@ const ProjectHomeKpiChart = ({
     );
   }
 
-  const renderSelector = () => (
-    <div className="ph-kpi-selector">
-      {CHART_TYPES.map((type) => (
-        <button
-          key={type.key}
-          type="button"
-          className={`ph-kpi-selector-btn ${chartType === type.key ? "active" : ""}`}
-          onClick={() => setChartType(type.key)}
-        >
-          {type.label}
-        </button>
-      ))}
-    </div>
-  );
+  const renderSelector = () => null; // Eliminado por decisión de producto
 
   const renderDonut = () => {
     const donutItems = limitItems(limitedItems, compact ? 5 : 6);
@@ -213,7 +208,15 @@ const ProjectHomeKpiChart = ({
                 fill={segment.color}
                 stroke="#ffffff"
                 strokeWidth={1.5}
-              />
+              >
+                <title>
+                  {formatHoverSummary(
+                    segment.label,
+                    segment.count,
+                    ((segment.count / totalValue) * 100).toFixed(0)
+                  )}
+                </title>
+              </path>
             ))}
           </svg>
         </div>
@@ -227,6 +230,40 @@ const ProjectHomeKpiChart = ({
 
   const renderBars = () => {
     const maxValue = Math.max(...limitedItems.map((item) => item.count || 0), 1);
+    
+    // Si es primario o secundario en modo moderno, usamos barras verticales
+    if (modern && (variant === "primary" || variant === "secondary")) {
+      return (
+        <div className="ph-kpi-v-bars-container">
+          {limitedItems.map((item, idx) => {
+            const pctVal = total > 0 ? ((item.count / total) * 100).toFixed(0) : "0";
+            // Usamos 'total' como denominador para escala absoluta, no 'maxValue'
+            const heightPct = Math.max(4, Math.min(100, (item.count / (total || 1)) * 100));
+            const color = getItemColor(idx, item.color_hex, item.isOther);
+            const hoverSummary = formatHoverSummary(item.label, item.count, pctVal);
+            return (
+              <div key={`vbar-${idx}`} className="ph-kpi-v-bar-item">
+                <div className="ph-kpi-v-bar-percentage">{pctVal}%</div>
+                <div 
+                  className="ph-kpi-v-bar-wrapper" 
+                  title={hoverSummary}
+                >
+                  <div 
+                    className="ph-kpi-v-bar-fill" 
+                    style={{ height: `${heightPct}%`, background: color }}
+                  />
+                </div>
+                <div className="ph-kpi-v-bar-label" title={item.label}>
+                  {item.label.length > 14 ? `${item.label.substring(0, 14)}...` : item.label}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // Fallback barras horizontales (compact/resumen)
     return (
       <div className="ph-kpi-bars">
         {limitedItems.map((item, idx) => {
@@ -269,30 +306,68 @@ const ProjectHomeKpiChart = ({
       })}
     </ul>
   );
+  const predominantItem = useMemo(() => {
+    if (!limitedItems.length) return null;
+    return [...limitedItems].sort((a, b) => b.count - a.count)[0];
+  }, [limitedItems]);
+
+  const predominantPct = useMemo(() => {
+    if (!predominantItem || total <= 0) return 0;
+    return Math.round((predominantItem.count / total) * 100);
+  }, [predominantItem, total]);
+
+  if (modern && variant === "primary") {
+    return (
+      <div className="ph-card ph-kpi-hero-card">
+        <div className="ph-kpi-hero-header">
+          <div className="ph-kpi-hero-label">{summary.etiqueta}</div>
+          <div className="ph-kpi-hero-base">
+            Base: {total.toLocaleString()}
+          </div>
+        </div>
+        <div className="ph-kpi-hero-insight">
+          <div className="ph-kpi-hero-main-value">
+            {predominantItem?.label || "Sin datos"}
+          </div>
+          <div className="ph-kpi-hero-percentage">
+            {predominantPct}% de la base
+          </div>
+        </div>
+        <div className="ph-kpi-hero-chart-area">
+          <div className="ph-kpi-hero-donut">{renderDonut()}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
       <div
         className={`ph-card kpi-card ${compact ? "kpi-compact" : ""} ph-kpi-card--${variant}`}
       >
-      <header className="ph-kpi-v2-header">
-        <div className="ph-kpi-v2-header-row ph-kpi-v2-header-row--title">
-          <div className="ph-kpi-title">{summary.etiqueta}</div>
-          {technicalLabel ? (
-            <div className="ph-kpi-subtitle ph-kpi-v2-subtitle">{technicalLabel}</div>
-          ) : null}
-        </div>
-        <div className="ph-kpi-v2-header-row ph-kpi-v2-header-row--metrics">
-          <div className="ph-kpi-total-block">
-            <span className="ph-kpi-total-label">{baseLabel}</span>
-            <strong className="ph-kpi-total-value">
-              {total ? total.toLocaleString() : EMPTY_VALUE}
-            </strong>
+      {showHeader && (
+        <header className="ph-kpi-v2-header">
+          <div className="ph-kpi-v2-header-row ph-kpi-v2-header-row--title">
+            <div className="ph-kpi-title">{summary.etiqueta}</div>
+            {technicalLabel ? (
+              <div className="ph-kpi-subtitle ph-kpi-v2-subtitle">{technicalLabel}</div>
+            ) : null}
           </div>
-          <div className="ph-kpi-v2-selector-row">
-            <span className="ph-kpi-selector-label">Ver como</span>
-            {renderSelector()}
+          <div className="ph-kpi-v2-header-row ph-kpi-v2-header-row--metrics">
+            <div className="ph-kpi-total-block">
+              <span className="ph-kpi-total-label">{baseLabel}</span>
+              <strong className="ph-kpi-total-value">
+                {total ? total.toLocaleString() : EMPTY_VALUE}
+              </strong>
+            </div>
+            {!hideSelector && (
+              <div className="ph-kpi-v2-selector-row">
+                <span className="ph-kpi-selector-label">Ver como</span>
+                {renderSelector()}
+              </div>
+            )}
           </div>
-        </div>
-      </header>
+        </header>
+      )}
       <section className={`ph-kpi-v2-body ph-kpi-v2-body--${chartType} ${compact ? "compact" : ""}`}>
         {chartType === "donut" && renderDonut()}
         {chartType === "bar" && (

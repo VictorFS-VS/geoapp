@@ -12,6 +12,7 @@ import {
   InputGroup,
   ButtonGroup,
   Spinner,
+  Modal,
 } from "react-bootstrap";
 
 import {
@@ -21,6 +22,7 @@ import {
   crearActividad,
   actualizarActividad,
   listarResponsables,
+  generarVisitasMensuales,
 } from "@/services/regencia.service";
 
 import ModalActividad from "@/components/regencia/ModalActividad";
@@ -50,6 +52,24 @@ const ESTADOS = [
 ];
 
 const DAY_NAMES_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+const WEEK_OPTIONS = [
+  { value: 1, label: "Semana 1" },
+  { value: 2, label: "Semana 2" },
+  { value: 3, label: "Semana 3" },
+  { value: 4, label: "Semana 4" },
+  { value: 5, label: "Semana 5" },
+];
+
+const DOW_OPTIONS = [
+  { value: 1, label: "Lunes" },
+  { value: 2, label: "Martes" },
+  { value: 3, label: "Miércoles" },
+  { value: 4, label: "Jueves" },
+  { value: 5, label: "Viernes" },
+  { value: 6, label: "Sábado" },
+  { value: 0, label: "Domingo" },
+];
 
 function getUserFromStorage() {
   try {
@@ -256,6 +276,10 @@ function getViewTitle(viewMode) {
   return "Regencia · Listado de actividades";
 }
 
+function emptyAutoOccurrence() {
+  return { week_of_month: 1, day_of_week: 1 };
+}
+
 export default function Regencia() {
   const { id } = useParams();
   const id_proyecto = id;
@@ -278,6 +302,7 @@ export default function Regencia() {
   const [viewMode, setViewMode] = useState("mes");
   const [loading, setLoading] = useState(false);
   const [loadingContrato, setLoadingContrato] = useState(false);
+  const [loadingAuto, setLoadingAuto] = useState(false);
 
   const [rows, setRows] = useState([]);
   const [contratos, setContratos] = useState([]);
@@ -298,6 +323,19 @@ export default function Regencia() {
   const [fEstado, setFEstado] = useState("");
   const [fTipo, setFTipo] = useState("");
   const [q, setQ] = useState("");
+
+  const [openAutoModal, setOpenAutoModal] = useState(false);
+  const [autoForm, setAutoForm] = useState({
+    titulo: "Visita mensual",
+    descripcion: "",
+    tipo: "VISITA",
+    hour: 9,
+    minute: 0,
+    months_ahead: 12,
+    business_days_only: true,
+    shift_if_weekend: "NEXT_BUSINESS_DAY",
+    ocurrencias: [emptyAutoOccurrence()],
+  });
 
   const contratoSeleccionado = useMemo(() => {
     return contratos.find((c) => Number(c.id) === Number(id_contrato)) || null;
@@ -499,6 +537,122 @@ export default function Regencia() {
     setSelectedResponsables([]);
     setModalMode("crear");
     setOpenModal(true);
+  }
+
+  function resetAutoForm() {
+    setAutoForm({
+      titulo: "Visita mensual",
+      descripcion: "",
+      tipo: "VISITA",
+      hour: 9,
+      minute: 0,
+      months_ahead: 12,
+      business_days_only: true,
+      shift_if_weekend: "NEXT_BUSINESS_DAY",
+      ocurrencias: [emptyAutoOccurrence()],
+    });
+  }
+
+  function addAutoOccurrence() {
+    setAutoForm((prev) => ({
+      ...prev,
+      ocurrencias: [...prev.ocurrencias, emptyAutoOccurrence()],
+    }));
+  }
+
+  function removeAutoOccurrence(idx) {
+    setAutoForm((prev) => ({
+      ...prev,
+      ocurrencias:
+        prev.ocurrencias.length <= 1
+          ? prev.ocurrencias
+          : prev.ocurrencias.filter((_, i) => i !== idx),
+    }));
+  }
+
+  function updateAutoOccurrence(idx, patch) {
+    setAutoForm((prev) => ({
+      ...prev,
+      ocurrencias: prev.ocurrencias.map((item, i) =>
+        i === idx ? { ...item, ...patch } : item
+      ),
+    }));
+  }
+
+  async function handleGenerarMensuales() {
+    if (!id_contrato) {
+      alert("Seleccioná un contrato.");
+      return;
+    }
+
+    if (!hasContratoVigente) {
+      alert("El contrato seleccionado no está vigente.");
+      return;
+    }
+
+    if (!autoForm.titulo?.trim()) {
+      alert("El título es obligatorio.");
+      return;
+    }
+
+    if (!Array.isArray(autoForm.ocurrencias) || autoForm.ocurrencias.length === 0) {
+      alert("Debés agregar al menos una ocurrencia mensual.");
+      return;
+    }
+
+    const ocurrenciasNormalizadas = autoForm.ocurrencias.map((x) => ({
+      week_of_month: Number(x.week_of_month),
+      day_of_week: Number(x.day_of_week),
+    }));
+
+    const ocurrenciaInvalida = ocurrenciasNormalizadas.some(
+      (x) =>
+        !Number.isInteger(x.week_of_month) ||
+        x.week_of_month < 1 ||
+        x.week_of_month > 5 ||
+        !Number.isInteger(x.day_of_week) ||
+        x.day_of_week < 0 ||
+        x.day_of_week > 6
+    );
+
+    if (ocurrenciaInvalida) {
+      alert("Hay ocurrencias inválidas.");
+      return;
+    }
+
+    try {
+      setLoadingAuto(true);
+
+      const resp = await generarVisitasMensuales(id_contrato, {
+        titulo: autoForm.titulo.trim(),
+        descripcion: autoForm.descripcion?.trim() || null,
+        tipo: autoForm.tipo || "VISITA",
+        hour: Number(autoForm.hour),
+        minute: Number(autoForm.minute),
+        months_ahead: Number(autoForm.months_ahead),
+        business_days_only: !!autoForm.business_days_only,
+        shift_if_weekend: autoForm.shift_if_weekend,
+        ocurrencias: ocurrenciasNormalizadas,
+      });
+
+      setOpenAutoModal(false);
+      await load();
+
+      const cantidad =
+        resp?.creadas ??
+        resp?.inserted ??
+        resp?.total ??
+        resp?.rows?.length ??
+        0;
+
+      alert(`Generación completada. Actividades creadas: ${cantidad}`);
+      resetAutoForm();
+    } catch (e) {
+      console.error(e);
+      alert(e?.message || "No se pudieron generar las actividades");
+    } finally {
+      setLoadingAuto(false);
+    }
   }
 
   function movePeriod(step) {
@@ -715,6 +869,16 @@ export default function Regencia() {
               >
                 Contratos
               </Button>
+
+              {!isClientReadOnly && (
+                <Button
+                  variant="outline-primary"
+                  onClick={() => setOpenAutoModal(true)}
+                  disabled={!hasContratoVigente || !id_contrato}
+                >
+                  Generar mensuales
+                </Button>
+              )}
 
               {!isClientReadOnly && (
                 <Button
@@ -1286,6 +1450,215 @@ export default function Regencia() {
         }}
       />
 
+      <Modal
+        show={openAutoModal}
+        onHide={() => setOpenAutoModal(false)}
+        centered
+        size="lg"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>Generar actividades mensuales</Modal.Title>
+        </Modal.Header>
+
+        <Modal.Body>
+          <Row className="g-3">
+            <Col md={8}>
+              <Form.Label>Título</Form.Label>
+              <Form.Control
+                value={autoForm.titulo}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({ ...prev, titulo: e.target.value }))
+                }
+                placeholder="Ej: Visita de seguimiento"
+              />
+            </Col>
+
+            <Col md={4}>
+              <Form.Label>Tipo</Form.Label>
+              <Form.Select
+                value={autoForm.tipo}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({ ...prev, tipo: e.target.value }))
+                }
+              >
+                <option value="VISITA">Visita</option>
+                <option value="ENTREGA_INFORME">Entrega de informe</option>
+                <option value="AUDITORIA">Auditoría</option>
+                <option value="UNICA">Actividad única</option>
+              </Form.Select>
+            </Col>
+
+            <Col md={12}>
+              <Form.Label>Descripción</Form.Label>
+              <Form.Control
+                as="textarea"
+                rows={2}
+                value={autoForm.descripcion}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({ ...prev, descripcion: e.target.value }))
+                }
+                placeholder="Detalle opcional"
+              />
+            </Col>
+
+            <Col md={4}>
+              <Form.Label>Hora</Form.Label>
+              <Form.Control
+                type="number"
+                min={0}
+                max={23}
+                value={autoForm.hour}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({
+                    ...prev,
+                    hour: Number(e.target.value),
+                  }))
+                }
+              />
+            </Col>
+
+            <Col md={4}>
+              <Form.Label>Minuto</Form.Label>
+              <Form.Control
+                type="number"
+                min={0}
+                max={59}
+                value={autoForm.minute}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({
+                    ...prev,
+                    minute: Number(e.target.value),
+                  }))
+                }
+              />
+            </Col>
+
+            <Col md={4}>
+              <Form.Label>Meses a generar</Form.Label>
+              <Form.Control
+                type="number"
+                min={1}
+                max={36}
+                value={autoForm.months_ahead}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({
+                    ...prev,
+                    months_ahead: Number(e.target.value),
+                  }))
+                }
+              />
+            </Col>
+
+            <Col md={12}>
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <Form.Label className="mb-0">Ocurrencias por mes</Form.Label>
+                <Button size="sm" variant="outline-primary" onClick={addAutoOccurrence}>
+                  + Agregar ocurrencia
+                </Button>
+              </div>
+
+              <div className="d-flex flex-column gap-2">
+                {autoForm.ocurrencias.map((item, idx) => (
+                  <Row key={idx} className="g-2 align-items-end occurrence-row">
+                    <Col md={5}>
+                      <Form.Label>Semana del mes</Form.Label>
+                      <Form.Select
+                        value={item.week_of_month}
+                        onChange={(e) =>
+                          updateAutoOccurrence(idx, {
+                            week_of_month: Number(e.target.value),
+                          })
+                        }
+                      >
+                        {WEEK_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </Form.Select>
+                    </Col>
+
+                    <Col md={5}>
+                      <Form.Label>Día</Form.Label>
+                      <Form.Select
+                        value={item.day_of_week}
+                        onChange={(e) =>
+                          updateAutoOccurrence(idx, {
+                            day_of_week: Number(e.target.value),
+                          })
+                        }
+                      >
+                        {DOW_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </Form.Select>
+                    </Col>
+
+                    <Col md={2}>
+                      <Button
+                        variant="outline-danger"
+                        className="w-100"
+                        disabled={autoForm.ocurrencias.length === 1}
+                        onClick={() => removeAutoOccurrence(idx)}
+                      >
+                        Quitar
+                      </Button>
+                    </Col>
+                  </Row>
+                ))}
+              </div>
+            </Col>
+
+            <Col md={6}>
+              <Form.Label>Si cae sábado o domingo</Form.Label>
+              <Form.Select
+                value={autoForm.shift_if_weekend}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({
+                    ...prev,
+                    shift_if_weekend: e.target.value,
+                  }))
+                }
+              >
+                <option value="NEXT_BUSINESS_DAY">Mover al siguiente día hábil</option>
+                <option value="PREV_BUSINESS_DAY">Mover al día hábil anterior</option>
+                <option value="KEEP">Mantener la fecha</option>
+              </Form.Select>
+            </Col>
+
+            <Col md={6} className="d-flex align-items-end">
+              <Form.Check
+                type="switch"
+                id="business-days-only"
+                label="Solo días hábiles"
+                checked={autoForm.business_days_only}
+                onChange={(e) =>
+                  setAutoForm((prev) => ({
+                    ...prev,
+                    business_days_only: e.target.checked,
+                  }))
+                }
+              />
+            </Col>
+          </Row>
+        </Modal.Body>
+
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setOpenAutoModal(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleGenerarMensuales}
+            disabled={!id_contrato || !hasContratoVigente || loadingAuto}
+          >
+            {loadingAuto ? "Generando..." : "Generar"}
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
       <style>{`
         .dia-groups {
           display: flex;
@@ -1600,6 +1973,13 @@ export default function Regencia() {
           flex-direction: column;
           gap: 10px;
           min-height: 220px;
+        }
+
+        .occurrence-row {
+          padding: 10px;
+          border: 1px solid #ece7df;
+          border-radius: 12px;
+          background: #fafafa;
         }
 
         @media (max-width: 1200px) {

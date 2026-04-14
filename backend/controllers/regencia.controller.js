@@ -81,9 +81,7 @@ async function crearContrato(req, res) {
     }
 
     const creado_por =
-      req.user?.username || req.user?.email || req.user?.id
-        ? `user:${req.user?.id || ""}`
-        : "Sistema";
+      req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const row = await Reg.crearContrato({
       id_proyecto: parseInt(id_proyecto, 10),
@@ -163,7 +161,7 @@ async function crearActividad(req, res) {
       return res.status(400).json({ message: "id_proyecto inválido" });
     }
 
-    const tipo = body.tipo;
+    const tipo = String(body.tipo || "").toUpperCase();
 
     const id_contrato =
       body.id_contrato !== undefined && body.id_contrato !== null && body.id_contrato !== ""
@@ -178,12 +176,11 @@ async function crearActividad(req, res) {
     if (!check.ok) return res.status(409).json({ message: check.message });
 
     const creado_por =
-      req.user?.username || req.user?.email || req.user?.id
-        ? `user:${req.user?.id || ""}`
-        : "Sistema";
+      req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const row = await Reg.crearActividad({
       ...body,
+      tipo,
       id_proyecto,
       id_contrato,
       creado_por,
@@ -191,7 +188,9 @@ async function crearActividad(req, res) {
     });
 
     const lista =
-      Array.isArray(body.responsables) ? body.responsables : body.responsables?.responsables;
+      Array.isArray(body.responsables)
+        ? body.responsables
+        : body.responsables?.responsables;
 
     if (!Array.isArray(lista) || lista.length === 0) {
       if (req.user?.id) {
@@ -217,7 +216,7 @@ async function actualizarActividad(req, res) {
     const act = await Reg.getActividad(id);
     if (!act) return res.status(404).json({ message: "Actividad no encontrada" });
 
-    const nuevoTipo = req.body?.tipo ? req.body.tipo : act.tipo;
+    const nuevoTipo = req.body?.tipo ? String(req.body.tipo).toUpperCase() : act.tipo;
     const id_proyecto = act.id_proyecto;
 
     const check = await validarContratoParaRegencia({
@@ -226,7 +225,22 @@ async function actualizarActividad(req, res) {
     });
     if (!check.ok) return res.status(409).json({ message: check.message });
 
-    const row = await Reg.actualizarActividad(id, req.body || {});
+    const row = await Reg.actualizarActividad(id, {
+      ...req.body,
+      tipo: nuevoTipo,
+    });
+
+    const lista =
+      Array.isArray(req.body?.responsables)
+        ? req.body.responsables
+        : Array.isArray(req.body)
+        ? req.body
+        : null;
+
+    if (Array.isArray(lista)) {
+      await Reg.setResponsables(id, lista);
+    }
+
     return res.json(row);
   } catch (e) {
     console.error("actualizarActividad:", e);
@@ -324,34 +338,74 @@ async function generarAlertasEstandar(req, res) {
 async function generarVisitasMensuales(req, res) {
   try {
     const id_contrato = parseInt(req.params.id, 10);
-    if (!id_contrato) return res.status(400).json({ message: "id contrato inválido" });
-
-    const body = req.body || {};
-    const seed_date = body.seed_date;
-    if (!seed_date) {
-      return res.status(400).json({ message: "seed_date es obligatorio (YYYY-MM-DD)" });
+    if (!Number.isFinite(id_contrato)) {
+      return res.status(400).json({ message: "id contrato inválido" });
     }
 
-    const created_by =
-      req.user?.username || req.user?.email || req.user?.id
-        ? `user:${req.user?.id || ""}`
-        : "Sistema";
+    const body = req.body || {};
+
+    if (!body.titulo || !String(body.titulo).trim()) {
+      return res.status(400).json({ message: "titulo es obligatorio" });
+    }
+
+    const ocurrencias = Array.isArray(body.ocurrencias) ? body.ocurrencias : [];
+    if (ocurrencias.length === 0) {
+      return res.status(400).json({
+        message: "ocurrencias es obligatorio y debe tener al menos un elemento",
+      });
+    }
+
+    const ocurrenciasNormalizadas = ocurrencias.map((x) => ({
+      week_of_month: Number(x.week_of_month),
+      day_of_week: Number(x.day_of_week),
+    }));
+
+    const hayOcurrenciaInvalida = ocurrenciasNormalizadas.some(
+      (x) =>
+        !Number.isInteger(x.week_of_month) ||
+        x.week_of_month < 1 ||
+        x.week_of_month > 5 ||
+        !Number.isInteger(x.day_of_week) ||
+        x.day_of_week < 0 ||
+        x.day_of_week > 6
+    );
+
+    if (hayOcurrenciaInvalida) {
+      return res.status(400).json({
+        message:
+          "Hay ocurrencias inválidas. week_of_month debe estar entre 1 y 5, y day_of_week entre 0 y 6.",
+      });
+    }
+
+    const creado_por =
+      req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const result = await Reg.generarVisitasMensualesDesdeContrato({
       id_contrato,
-      seed_date,
+      titulo: String(body.titulo).trim(),
+      descripcion: body.descripcion ? String(body.descripcion).trim() : null,
+      tipo: body.tipo ? String(body.tipo).trim().toUpperCase() : "VISITA",
       hour: Number.isFinite(+body.hour) ? +body.hour : 9,
       minute: Number.isFinite(+body.minute) ? +body.minute : 0,
       months_ahead: Number.isFinite(+body.months_ahead) ? +body.months_ahead : 12,
       business_days_only: body.business_days_only !== false,
       shift_if_weekend: body.shift_if_weekend || "NEXT_BUSINESS_DAY",
-      creado_por: created_by,
+      ocurrencias: ocurrenciasNormalizadas,
+      creado_por,
     });
 
-    return res.json(result);
+    return res.json({
+      ok: true,
+      creadas: result.created ?? 0,
+      omitidas: result.skipped ?? 0,
+      total: (result.created ?? 0) + (result.skipped ?? 0),
+      detalle: result.items || [],
+    });
   } catch (e) {
     console.error("generarVisitasMensuales:", e);
-    return res.status(500).json({ message: "Error generando visitas mensuales" });
+    return res.status(500).json({
+      message: e?.message || "Error generando visitas mensuales",
+    });
   }
 }
 

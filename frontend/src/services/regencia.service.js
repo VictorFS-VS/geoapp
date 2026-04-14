@@ -39,10 +39,19 @@ async function apiFetch(url, options = {}) {
 /* =========================
    ACTIVIDADES
    ========================= */
-export function listarActividades({ id_proyecto, id_contrato, estado, tipo, q, desde, hasta }) {
+export function listarActividades({
+  id_proyecto,
+  id_contrato,
+  estado,
+  tipo,
+  q,
+  desde,
+  hasta,
+}) {
   const params = new URLSearchParams();
+
   if (id_proyecto) params.set("id_proyecto", String(id_proyecto));
-  if (id_contrato) params.set("id_contrato", String(id_contrato)); // ✅ filtro por contrato
+  if (id_contrato) params.set("id_contrato", String(id_contrato));
   if (estado) params.set("estado", estado);
   if (tipo) params.set("tipo", tipo);
   if (q) params.set("q", q);
@@ -54,7 +63,6 @@ export function listarActividades({ id_proyecto, id_contrato, estado, tipo, q, d
 }
 
 export function crearActividad(payload) {
-  // payload debe incluir id_proyecto e id_contrato
   return apiFetch(`${API_URL}/regencia/actividades`, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -69,7 +77,6 @@ export function actualizarActividad(id, payload) {
 }
 
 export function cambiarEstadoActividad(id, estado) {
-  // ✅ backend típico: PUT (no PATCH)
   return apiFetch(`${API_URL}/regencia/actividades/${id}/estado`, {
     method: "PUT",
     body: JSON.stringify({ estado }),
@@ -80,7 +87,6 @@ export function cambiarEstadoActividad(id, estado) {
    CONTRATOS
    ========================= */
 export function obtenerContratoActivo(id_proyecto) {
-  // ✅ tu backend usa: /contratos/:id/activo
   return apiFetch(`${API_URL}/regencia/contratos/${id_proyecto}/activo`);
 }
 
@@ -98,6 +104,13 @@ export function crearContrato(payload) {
 export function actualizarContrato(id, payload) {
   return apiFetch(`${API_URL}/regencia/contratos/${id}`, {
     method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function generarVisitasMensuales(id_contrato, payload) {
+  return apiFetch(`${API_URL}/regencia/contratos/${id_contrato}/generar-visitas`, {
+    method: "POST",
     body: JSON.stringify(payload),
   });
 }

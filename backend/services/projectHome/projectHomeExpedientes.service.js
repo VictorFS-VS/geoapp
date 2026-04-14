@@ -55,20 +55,7 @@ async function getProjectHomeExpedientesResumen({ _req, id_proyecto }) {
             OR ${geomOkSql}
           )
         )::int AS con_geo,
-        COUNT(*) FILTER (
-          WHERE (
-            EXISTS (
-              SELECT 1
-              FROM jsonb_each(COALESCE(e.carpeta_mejora, '{}'::jsonb)) jm(key, value)
-              WHERE COALESCE(jm.value->>'ok','false') = 'true'
-            )
-            OR EXISTS (
-              SELECT 1
-              FROM jsonb_each(COALESCE(e.carpeta_terreno, '{}'::jsonb)) jt(key, value)
-              WHERE COALESCE(jt.value->>'ok','false') = 'true'
-            )
-          )
-        )::int AS con_avance
+        COUNT(*)::int AS con_avance
       FROM ema.expedientes e
       WHERE e.id_proyecto = $1
     `;

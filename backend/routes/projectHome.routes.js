@@ -13,7 +13,7 @@ router.use(verifyToken);
 // GET /api/project-home/resumen?id_proyecto=...&id_plantilla=...
 router.get(
   "/resumen",
-  requireAny(["informes.read", "expedientes.read"]),
+  requireAny(["informes.read", "expedientes.read", "quejas_reclamos.read"]),
   projectHomeCtrl.getResumen
 );
 

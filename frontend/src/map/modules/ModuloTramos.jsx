@@ -6,6 +6,8 @@
 // ✅ Filtra progresivas por cercanía al tramo activo
 // ✅ Oculta labels con zoom bajo
 // ✅ Mucho más estable
+// ✅ NUEVO: mini leyenda por tramo usando el campo Uso
+// ✅ NUEVO: leyenda siempre activa, estética y pequeña
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Spinner, Button, Form, Badge } from "react-bootstrap";
@@ -26,6 +28,12 @@ const PROG_DISTANCE_METERS = 120;
 const PROG_SAMPLE_STEP = 6;
 const PROG_LABEL_OFFSET_X = 14;
 const PROG_LABEL_OFFSET_Y = -8;
+
+/* =========================
+   Config mini leyenda tramos
+========================= */
+const TRAMO_LABEL_MIN_ZOOM = 0; // siempre visible
+const TRAMO_LABEL_OFFSET_Y = 0;
 
 function authHeaders() {
   const token =
@@ -444,6 +452,12 @@ function getUsoValue(props) {
   return String(props?.uso ?? props?.USO ?? props?.Uso ?? "").trim();
 }
 
+function getUsoText(props = {}) {
+  const uso = String(props?.uso ?? props?.USO ?? props?.Uso ?? "").trim();
+  if (!uso) return "Sin uso";
+  return uso;
+}
+
 function getUsoCategory(props) {
   const usoRaw = getUsoValue(props);
   const u = norm(usoRaw);
@@ -483,6 +497,44 @@ function isCamino(props) {
   return getUsoCategory(props) === "camino";
 }
 
+function buildTramoMiniLabelHtml({ label, uso }) {
+  const div = document.createElement("div");
+  div.className = "tramo-mini-label";
+
+  div.innerHTML = `
+    <div style="
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      max-width:160px;
+      padding:3px 7px;
+      border-radius:999px;
+      background:rgba(20,20,24,.68);
+      border:1px solid rgba(255,255,255,.10);
+      color:#fff;
+      font-size:10px;
+      font-weight:800;
+      line-height:1.1;
+      white-space:nowrap;
+      box-shadow:0 2px 8px rgba(0,0,0,.16);
+      backdrop-filter:blur(4px);
+      pointer-events:none;
+      user-select:none;
+    ">
+      <span style="
+        overflow:hidden;
+        text-overflow:ellipsis;
+      ">${esc(label || "Tramo")}</span>
+      <span style="
+        opacity:.8;
+        font-weight:600;
+      ">· ${esc(uso || "Sin uso")}</span>
+    </div>
+  `;
+
+  return div;
+}
+
 /* =========================
    COMPONENTE
 ========================= */
@@ -507,6 +559,7 @@ export default function ModuloTramos({
 
   const tramosLayerRef = useRef(null);
   const progresivasEntriesRef = useRef([]); // [{ marker, textMarker, position, feature, name }]
+  const tramoLabelsRef = useRef([]); // [{ marker, id_tramo }]
   const iwRef = useRef(null);
   const progFilterRafRef = useRef(0);
 
@@ -675,6 +728,36 @@ export default function ModuloTramos({
     progresivasEntriesRef.current = [];
   }, []);
 
+  const clearTramoLabels = useCallback(() => {
+    for (const entry of tramoLabelsRef.current) {
+      try {
+        if ("map" in (entry.marker || {})) entry.marker.map = null;
+        else entry.marker?.setMap?.(null);
+      } catch {}
+    }
+    tramoLabelsRef.current = [];
+  }, []);
+
+  const applyTramoLabelsFilterNow = useCallback(() => {
+    if (!map) return;
+
+    const zoom = Number(map.getZoom?.() ?? 0);
+    const showByZoom = zoom >= TRAMO_LABEL_MIN_ZOOM;
+
+    for (const entry of tramoLabelsRef.current) {
+      let visible = !!enabledRef.current && showByZoom;
+
+      if (visible && soloRef.current && activeRef.current) {
+        visible = String(entry.id_tramo) === String(activeRef.current);
+      }
+
+      try {
+        if ("map" in (entry.marker || {})) entry.marker.map = visible ? map : null;
+        else entry.marker?.setMap?.(visible ? map : null);
+      } catch {}
+    }
+  }, [map]);
+
   const applyProgresivasFilterNow = useCallback(() => {
     if (!map) return;
 
@@ -687,8 +770,8 @@ export default function ModuloTramos({
     const showLabels = zoom >= PROG_LABEL_MIN_ZOOM;
     const showMarkersNoSelection = zoom >= PROG_MARKER_MIN_ZOOM;
 
-      for (const entry of progresivasEntriesRef.current) {
-        let visible = false;
+    for (const entry of progresivasEntriesRef.current) {
+      let visible = false;
 
       if (!enabledProgRef.current) {
         visible = false;
@@ -720,6 +803,70 @@ export default function ModuloTramos({
       applyProgresivasFilterNow();
     });
   }, [applyProgresivasFilterNow]);
+
+  const renderTramoLabels = useCallback(
+    async (list, boundsMap) => {
+      if (!google || !map) return false;
+
+      clearTramoLabels();
+
+      if (!Array.isArray(list) || !list.length) return false;
+
+      let markerLib = null;
+      try {
+        markerLib = await google.maps.importLibrary("marker");
+      } catch {}
+
+      const AdvancedMarker =
+        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
+
+      if (!AdvancedMarker) return false;
+
+      const entries = [];
+
+      for (const tramo of list) {
+        const idt = String(tramo?.id_tramo || "").trim();
+        if (!idt) continue;
+
+        const b = boundsMap.get(idt);
+        if (!b || b.isEmpty?.()) continue;
+
+        const c = b.getCenter?.();
+        if (!c) continue;
+
+        const pos = { lat: c.lat(), lng: c.lng() };
+        const html = buildTramoMiniLabelHtml({
+          label: tramo?.label || `Tramo ${idt}`,
+          uso: tramo?.uso || "Sin uso",
+        });
+
+        try {
+          html.style.transform = `translateY(${TRAMO_LABEL_OFFSET_Y}px)`;
+        } catch {}
+
+        const marker = new AdvancedMarker({
+          map: null,
+          position: pos,
+          content: html,
+        });
+
+        try {
+          marker.zIndex = 2200;
+        } catch {}
+
+        entries.push({
+          marker,
+          id_tramo: idt,
+        });
+      }
+
+      tramoLabelsRef.current = entries;
+      applyTramoLabelsFilterNow();
+
+      return entries.length > 0;
+    },
+    [google, map, clearTramoLabels, applyTramoLabelsFilterNow]
+  );
 
   const renderProgresivas = useCallback(
     async (fc) => {
@@ -816,7 +963,6 @@ export default function ModuloTramos({
 
         if (!marker || !textMarker) continue;
         if (AdvancedMarker) {
-          // ensure label marker does not intercept clicks
           try {
             if (textMarker?.content) textMarker.content.style.pointerEvents = "none";
           } catch {}
@@ -889,11 +1035,13 @@ export default function ModuloTramos({
 
       const label = getLabelTramo(props) || `Tramo ${idt}`;
       const key = String(idt);
+      const uso = getUsoText(props);
 
       const prev = mapCounts.get(key);
       mapCounts.set(key, {
         id_tramo: key,
         label,
+        uso: prev?.uso || uso,
         count: (prev?.count || 0) + 1,
       });
 
@@ -1035,6 +1183,7 @@ export default function ModuloTramos({
           setTramosVisibility(false);
           setEnabledTramos(false);
           enabledRef.current = false;
+          clearTramoLabels();
         }
         return hadBefore;
       }
@@ -1075,6 +1224,8 @@ export default function ModuloTramos({
       tramoBoundsMapRef.current = boundsMap;
       tramoSamplesMapRef.current = samplesMap;
 
+      await renderTramoLabels(list, boundsMap);
+
       const has = list.length > 0;
       onHasDataRef.current?.(has);
       onHasChartsRef.current?.(false);
@@ -1089,6 +1240,7 @@ export default function ModuloTramos({
         setTramosVisibility(true);
 
         applyFilterNow(soloRef.current, activeRef.current);
+        applyTramoLabelsFilterNow();
 
         if (soloRef.current && activeRef.current) notifyParentSelect(activeRef.current);
       }
@@ -1115,9 +1267,12 @@ export default function ModuloTramos({
     buildGroupsFromLayer,
     setTramosVisibility,
     applyFilterNow,
+    applyTramoLabelsFilterNow,
     buildFeatureMapFromFC,
     notifyParentSelect,
     scheduleApplyProgresivasFilter,
+    renderTramoLabels,
+    clearTramoLabels,
   ]);
 
   const loadProgresivasGeojson = useCallback(async () => {
@@ -1189,15 +1344,18 @@ export default function ModuloTramos({
         if (hasAny) {
           setTramosVisibility(true);
           applyFilterNow(soloRef.current, activeRef.current);
+          applyTramoLabelsFilterNow();
 
           if (soloRef.current && activeRef.current) {
             notifyParentSelect(activeRef.current);
           }
         } else {
           setTramosVisibility(false);
+          clearTramoLabels();
         }
       } else {
         setTramosVisibility(false);
+        clearTramoLabels();
         ensureInfoWindow()?.close?.();
       }
 
@@ -1205,6 +1363,8 @@ export default function ModuloTramos({
     },
     [
       applyFilterNow,
+      applyTramoLabelsFilterNow,
+      clearTramoLabels,
       ensureInfoWindow,
       loadTramosGeojson,
       setTramosVisibility,
@@ -1238,7 +1398,11 @@ export default function ModuloTramos({
   useEffect(() => {
     if (!map || !google) return;
 
-    const onZoomChanged = () => scheduleApplyProgresivasFilter();
+    const onZoomChanged = () => {
+      scheduleApplyProgresivasFilter();
+      applyTramoLabelsFilterNow();
+    };
+
     const zoomListener = map.addListener("zoom_changed", onZoomChanged);
     const idleListener = map.addListener("idle", onZoomChanged);
 
@@ -1250,11 +1414,15 @@ export default function ModuloTramos({
         google.maps.event.removeListener(idleListener);
       } catch {}
     };
-  }, [map, google, scheduleApplyProgresivasFilter]);
+  }, [map, google, scheduleApplyProgresivasFilter, applyTramoLabelsFilterNow]);
 
   useEffect(() => {
     scheduleApplyProgresivasFilter();
   }, [enabledProgresivas, soloActivo, activeIdTramo, scheduleApplyProgresivasFilter]);
+
+  useEffect(() => {
+    applyTramoLabelsFilterNow();
+  }, [enabledTramos, soloActivo, activeIdTramo, applyTramoLabelsFilterNow]);
 
   useEffect(() => {
     if (!uiRef) return;
@@ -1312,6 +1480,7 @@ export default function ModuloTramos({
     } catch {}
 
     clearProgresivas();
+    clearTramoLabels();
 
     boundsAllRef.current = null;
     tramoBoundsMapRef.current = new Map();
@@ -1326,7 +1495,7 @@ export default function ModuloTramos({
         setTramosVisibility(false);
       }
     })();
-  }, [pid, google, map, loadTramosGeojson, setTramosVisibility, clearProgresivas]);
+  }, [pid, google, map, loadTramosGeojson, setTramosVisibility, clearProgresivas, clearTramoLabels]);
 
   useEffect(() => {
     if (!enabledTramos) return;
@@ -1348,6 +1517,7 @@ export default function ModuloTramos({
       } catch {}
 
       clearProgresivas();
+      clearTramoLabels();
 
       try {
         iwRef.current?.close?.();
@@ -1362,7 +1532,7 @@ export default function ModuloTramos({
       tramoFeatureMapRef.current = new Map();
       tramoSamplesMapRef.current = new Map();
     };
-  }, [clearProgresivas]);
+  }, [clearProgresivas, clearTramoLabels]);
 
   if (!visible || !google || !map || !pid) return null;
 
@@ -1459,6 +1629,7 @@ export default function ModuloTramos({
                       enabledRef.current = true;
                       setTramosVisibility(true);
                       applyFilterNow(soloRef.current, activeRef.current);
+                      applyTramoLabelsFilterNow();
 
                       if (soloRef.current && activeRef.current) {
                         notifyParentSelect(activeRef.current);
@@ -1531,6 +1702,7 @@ export default function ModuloTramos({
                     }
 
                     if (enabledRef.current) applyFilterNow(next, activeRef.current);
+                    applyTramoLabelsFilterNow();
                     scheduleApplyProgresivasFilter();
                   }}
                   disabled={!tramoCount}
@@ -1645,6 +1817,8 @@ export default function ModuloTramos({
                               soloRef.current = true;
 
                               applyFilterNow(true, idt);
+                              applyTramoLabelsFilterNow();
+
                               requestAnimationFrame(() => {
                                 centrarTramo(idt);
                                 scheduleApplyProgresivasFilter();
@@ -1663,6 +1837,7 @@ export default function ModuloTramos({
                             <div style={{ fontWeight: 900 }}>{t.label || `Tramo ${t.id_tramo}`}</div>
                             <div style={{ fontSize: 12, opacity: 0.75 }}>
                               <b>id_tramo:</b> {t.id_tramo}
+                              {t.uso ? <> · <b>Uso:</b> {t.uso}</> : null}
                               {Number(t.count) > 0 ? <> · features: {t.count}</> : null}
                             </div>
                           </button>
@@ -1681,6 +1856,7 @@ export default function ModuloTramos({
                       setSoloActivo(false);
                       soloRef.current = false;
                       applyFilterNow(false, activeRef.current);
+                      applyTramoLabelsFilterNow();
 
                       onSelectTramoRef.current?.("", null);
                       onClearTramoRef.current?.();
@@ -1705,4 +1881,3 @@ export default function ModuloTramos({
     </>
   );
 }
-

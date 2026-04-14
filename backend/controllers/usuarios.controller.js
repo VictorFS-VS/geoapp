@@ -1,5 +1,5 @@
 // controllers/usuarios.controller.js
-// EMA Group – Usuarios + Avatares + Cartera (✅ RBAC multi-roles friendly)
+// EMA Group – Usuarios + Avatares + Cartera (RBAC multi-roles friendly)
 // - NO pisa roles (users_groups) en crear/actualizar
 // - Roles se gestionan SOLO por /api/rbac/users/:id/roles
 // - tipo_usuario queda como "rol principal" por compat (columna legacy)
@@ -27,6 +27,7 @@ function pickStatusFromError(err, fallback = 500) {
   ) return 400;
   return fallback;
 }
+
 function sendHttpError(res, err, fallbackMsg = "Error interno") {
   const status = pickStatusFromError(err, 500);
   const payload = { error: err?.message || fallbackMsg };
@@ -36,7 +37,7 @@ function sendHttpError(res, err, fallbackMsg = "Error interno") {
 }
 
 /* =========================
-   ✅ IDs reales según public.groups (tu screenshot)
+   IDs reales según public.groups
    ========================= */
 const GROUPS = {
   ADMIN: 1,
@@ -48,20 +49,20 @@ const GROUPS = {
   CLIENTE_VIAL: 10,
   ADMIN_CLIENTE: 11,
   CLIENTE_MAPS: 12,
-  BASE: 13,            // (en tu tabla dice BASE, ojo: acá lo dejamos por compat)
+  BASE: 13,
   CONSULTOR_VIAL: 14,
   CONSULTOR_VIP: 15,
 };
 
-// ✅ “Consultor-like”: roles que deben comportarse igual que consultor para cartera/proyectos
+// Roles que deben comportarse como consultor para cartera/proyectos
 const CONSULTOR_LIKE = new Set([
   GROUPS.CONSULTOR_SAAP,
   GROUPS.CONSULTOR_VIAL,
   GROUPS.CONSULTOR_VIP,
-  GROUPS.BASE, // si BASE también debe ver por cartera, dejalo; si NO, sacalo
+  GROUPS.BASE, // si BASE no debe comportarse así, sacalo
 ]);
 
-// ✅ “Cliente-like”: roles que se comportan como cliente (solo ver su usuario)
+// Roles que se comportan como cliente
 const CLIENTE_LIKE = new Set([
   GROUPS.CLIENTE_SAAP,
   GROUPS.CLIENTE_VIAL,
@@ -72,8 +73,9 @@ const CLIENTE_LIKE = new Set([
 /* =========================
    Tablas de cartera
    ========================= */
-const TABLE_CARTERA_ADMIN = "ema.cliente_admin_miembro";      // (admin_id, miembro_id)
-const TABLE_CARTERA_CONS  = "ema.consultor_cliente_miembro";  // (consultor_id, miembro_id)
+const TABLE_CARTERA_ADMIN   = "ema.cliente_admin_miembro";      // (admin_id, miembro_id)
+const TABLE_CARTERA_CONS    = "ema.consultor_cliente_miembro";  // (consultor_id, miembro_id)
+const TABLE_CARTERA_CLIENTE = "ema.cliente_cartera_miembro";    // (cliente_id, miembro_id)
 
 /* =========================
    Helpers genéricos
@@ -101,6 +103,7 @@ async function existeCliente(idCliente) {
   );
   return rows.length > 0;
 }
+
 async function existeConsultor(idConsultor) {
   if (!idConsultor) return false;
   const { rows } = await pool.query(
@@ -109,12 +112,25 @@ async function existeConsultor(idConsultor) {
   );
   return rows.length > 0;
 }
+
 async function existeGrupo(groupId) {
   const { rows } = await pool.query(
     "SELECT 1 FROM public.groups WHERE id = $1 LIMIT 1",
     [groupId]
   );
   return rows.length > 0;
+}
+
+async function validarMiembrosCliente(miembros = []) {
+  for (const m of miembros) {
+    const id = parseInt(m, 10);
+    if (!Number.isFinite(id)) {
+      throw new Error(`Miembro de cartera inválido: ${m}`);
+    }
+    if (!(await existeCliente(id))) {
+      throw new Error(`El cliente ${id} no existe`);
+    }
+  }
 }
 
 /* =========================
@@ -131,11 +147,16 @@ async function getUserRoleIds(clientOrPool, userId) {
    ========================= */
 async function upsertCarteraAdmin(client, adminClienteId, miembros) {
   await client.query(`DELETE FROM ${TABLE_CARTERA_ADMIN} WHERE admin_id = $1`, [adminClienteId]);
-  const validos = (miembros || []).map((v) => parseInt(v, 10)).filter(Number.isFinite);
+
+  const validos = (miembros || [])
+    .map((v) => parseInt(v, 10))
+    .filter(Number.isFinite);
+
   if (!validos.length) return;
 
   const values = [];
   const params = [adminClienteId];
+
   validos.forEach((mid, i) => {
     values.push(`($1, $${i + 2})`);
     params.push(mid);
@@ -151,11 +172,16 @@ async function upsertCarteraAdmin(client, adminClienteId, miembros) {
 
 async function upsertCarteraConsultor(client, consultorId, miembros) {
   await client.query(`DELETE FROM ${TABLE_CARTERA_CONS} WHERE consultor_id = $1`, [consultorId]);
-  const validos = (miembros || []).map((v) => parseInt(v, 10)).filter(Number.isFinite);
+
+  const validos = (miembros || [])
+    .map((v) => parseInt(v, 10))
+    .filter(Number.isFinite);
+
   if (!validos.length) return;
 
   const values = [];
   const params = [consultorId];
+
   validos.forEach((mid, i) => {
     values.push(`($1, $${i + 2})`);
     params.push(mid);
@@ -169,11 +195,39 @@ async function upsertCarteraConsultor(client, consultorId, miembros) {
   await client.query(sql, params);
 }
 
+async function upsertCarteraCliente(client, clienteId, miembros) {
+  await client.query(`DELETE FROM ${TABLE_CARTERA_CLIENTE} WHERE cliente_id = $1`, [clienteId]);
+
+  const validos = (miembros || [])
+    .map((v) => parseInt(v, 10))
+    .filter((v) => Number.isFinite(v) && v !== parseInt(clienteId, 10));
+
+  if (!validos.length) return;
+
+  const values = [];
+  const params = [clienteId];
+
+  validos.forEach((mid, i) => {
+    values.push(`($1, $${i + 2})`);
+    params.push(mid);
+  });
+
+  const sql = `
+    INSERT INTO ${TABLE_CARTERA_CLIENTE} (cliente_id, miembro_id)
+    VALUES ${values.join(", ")}
+    ON CONFLICT (cliente_id, miembro_id) DO NOTHING
+  `;
+  await client.query(sql, params);
+}
+
 /* =========================
    AVATAR helpers
    ========================= */
 const AVATARS_DIR = path.join(__dirname, "..", "uploads", "avatars");
-function ensureDir(p) { if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true }); }
+
+function ensureDir(p) {
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
 ensureDir(AVATARS_DIR);
 
 function defaultColorByGroup(gid) {
@@ -192,6 +246,7 @@ function defaultColorByGroup(gid) {
     default:                        return "#adb5bd";
   }
 }
+
 function initials(u) {
   const base = [u.first_name, u.last_name].filter(Boolean).join(" ").trim();
   if (base) {
@@ -201,9 +256,10 @@ function initials(u) {
   }
   return (u.username?.[0] || "U").toUpperCase();
 }
+
 function svgAvatar(userRow) {
   const color = defaultColorByGroup(userRow?.tipo_usuario);
-  const text  = initials(userRow || {});
+  const text = initials(userRow || {});
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="160" height="160" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg">
   <rect width="160" height="160" rx="80" fill="${color}"/>
@@ -211,14 +267,17 @@ function svgAvatar(userRow) {
         font-family="Arial, Helvetica, sans-serif" font-size="64" fill="#fff" font-weight="700">${text}</text>
 </svg>`;
 }
+
 function blankSvg(fill = "#adb5bd") {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="160" height="160" viewBox="0 0 160 160" xmlns="http://www.w3.org/2000/svg">
   <rect width="160" height="160" rx="80" fill="${fill}"/>
 </svg>`;
 }
+
 function absoluteAvatarPath(filename) {
   if (!filename) return null;
+
   const clean = String(filename).trim().replace(/[\r\n]+/g, "");
   let base = path.basename(clean);
 
@@ -233,6 +292,7 @@ function absoluteAvatarPath(filename) {
     }
     return null;
   };
+
   const withExt = ensureWithExt(base);
   if (withExt) return withExt;
 
@@ -240,6 +300,7 @@ function absoluteAvatarPath(filename) {
     const alt = "u" + base;
     full = path.join(AVATARS_DIR, alt);
     if (fs.existsSync(full)) return full;
+
     const withExt2 = ensureWithExt(alt);
     if (withExt2) return withExt2;
   }
@@ -248,6 +309,7 @@ function absoluteAvatarPath(filename) {
     base.replace(/\.[^.]+$/, ""),
     (!/^u/i.test(base) ? "u" + base : base).replace(/\.[^.]+$/, "")
   ];
+
   try {
     const files = fs.readdirSync(AVATARS_DIR);
     for (const pref of prefixList) {
@@ -258,6 +320,7 @@ function absoluteAvatarPath(filename) {
       }
     }
   } catch (_) {}
+
   return null;
 }
 
@@ -281,6 +344,7 @@ async function getAvatar(req, res) {
       "SELECT id, username, first_name, last_name, tipo_usuario, avatar FROM public.users WHERE id=$1",
       [id]
     );
+
     if (!rows.length) {
       res.set("Content-Type", "image/svg+xml; charset=utf-8");
       return res.send(wantBlank ? blankSvg() : svgAvatar({ tipo_usuario: null, username: "U" }));
@@ -288,6 +352,7 @@ async function getAvatar(req, res) {
 
     const u = rows[0];
     const full = absoluteAvatarPath(u.avatar);
+
     if (full) {
       const type = mime.lookup(full) || "image/png";
       res.setHeader("Content-Type", type);
@@ -306,19 +371,23 @@ async function getAvatar(req, res) {
 async function uploadAvatar(req, res) {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+
   try {
     const { rows } = await pool.query("SELECT avatar FROM public.users WHERE id=$1", [id]);
     if (!rows.length) return res.status(404).json({ error: "Usuario no encontrado" });
     if (!req.file) return res.status(400).json({ error: 'Debe adjuntar un archivo "avatar"' });
 
     const prev = absoluteAvatarPath(rows[0].avatar);
-    if (prev) { try { fs.unlinkSync(prev); } catch {} }
+    if (prev) {
+      try { fs.unlinkSync(prev); } catch {}
+    }
 
     const filename = req.file.filename;
     await pool.query(
       "UPDATE public.users SET avatar=$1, fecha_actualizacion=now() WHERE id=$2",
       [filename, id]
     );
+
     res.json({ success: true, message: "Avatar actualizado", filename });
   } catch (e) {
     console.error("uploadAvatar:", e);
@@ -329,14 +398,21 @@ async function uploadAvatar(req, res) {
 async function deleteAvatar(req, res) {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "id inválido" });
+
   try {
     const { rows } = await pool.query("SELECT avatar FROM public.users WHERE id=$1", [id]);
     if (!rows.length) return res.status(404).json({ error: "Usuario no encontrado" });
 
     const prev = absoluteAvatarPath(rows[0].avatar);
-    if (prev) { try { fs.unlinkSync(prev); } catch {} }
+    if (prev) {
+      try { fs.unlinkSync(prev); } catch {}
+    }
 
-    await pool.query("UPDATE public.users SET avatar=NULL, fecha_actualizacion=now() WHERE id=$1", [id]);
+    await pool.query(
+      "UPDATE public.users SET avatar=NULL, fecha_actualizacion=now() WHERE id=$1",
+      [id]
+    );
+
     res.json({ success: true, message: "Avatar eliminado" });
   } catch (e) {
     console.error("deleteAvatar:", e);
@@ -351,8 +427,6 @@ async function deleteAvatar(req, res) {
 // GET /api/usuarios?page=1&limit=10&search=...
 const obtenerUsuarios = async (req, res) => {
   const userId = req.user.id;
-
-  // compat: tomamos el "rol principal" desde token (group_id/tipo_usuario)
   const myPrimaryGroupId = normalizeInt(req.user.tipo_usuario) ?? normalizeInt(req.user.group_id);
 
   const page = parseInt(req.query.page, 10) || 1;
@@ -364,7 +438,6 @@ const obtenerUsuarios = async (req, res) => {
     let filtros = "";
     let valores = [];
 
-    // ✅ Cliente-like (rol principal) solo ve su usuario
     if (CLIENTE_LIKE.has(myPrimaryGroupId)) {
       filtros = `WHERE id = $1`;
       valores = [userId];
@@ -397,7 +470,7 @@ const obtenerUsuarios = async (req, res) => {
       data: result.rows,
       page,
       totalPages: Math.ceil(total / limit),
-      totalItems: total
+      totalItems: total,
     });
   } catch (error) {
     console.error("Error al obtener usuarios:", error);
@@ -408,11 +481,9 @@ const obtenerUsuarios = async (req, res) => {
 const obtenerUsuarioPorId = async (req, res) => {
   const { id } = req.params;
   const requesterId = req.user.id;
-
   const myPrimaryGroupId = normalizeInt(req.user.tipo_usuario) ?? normalizeInt(req.user.group_id);
 
   try {
-    // ✅ Solo admin puede ver cualquier usuario; otros solo su propio id
     if (parseInt(id, 10) !== requesterId && myPrimaryGroupId !== GROUPS.ADMIN) {
       return res.status(403).json({ error: "Acceso denegado" });
     }
@@ -443,6 +514,7 @@ const obtenerUsuarioPorId = async (req, res) => {
 
 const crearUsuario = async (req, res) => {
   const client = await pool.connect();
+
   try {
     let {
       ip_address = "",
@@ -460,17 +532,11 @@ const crearUsuario = async (req, res) => {
       last_name = "",
       company = "",
       phone = "",
-
-      // rol inicial (solo para crear)
       group_id,
       tipo_usuario,
-
-      // vínculos
       id_cliente,
       id_consultor,
-
-      // cartera (opcional)
-      miembros_cliente
+      miembros_cliente,
     } = req.body;
 
     if (!username || !email || !password) {
@@ -478,19 +544,26 @@ const crearUsuario = async (req, res) => {
     }
 
     const initialRoleId = normalizeInt(group_id) ?? normalizeInt(tipo_usuario);
-    if (!initialRoleId) return res.status(400).json({ error: "Debe especificar group_id (o tipo_usuario) válido" });
-    if (!(await existeGrupo(initialRoleId))) return res.status(400).json({ error: `group_id ${initialRoleId} no existe` });
+    if (!initialRoleId) {
+      return res.status(400).json({ error: "Debe especificar group_id (o tipo_usuario) válido" });
+    }
+
+    if (!(await existeGrupo(initialRoleId))) {
+      return res.status(400).json({ error: `group_id ${initialRoleId} no existe` });
+    }
 
     const idClienteInt = normalizeInt(id_cliente);
     const idConsultorInt = normalizeInt(id_consultor);
 
-    // ✅ Validaciones mínimas según rol inicial
     if (initialRoleId === GROUPS.ADMIN_CLIENTE) {
-      if (!idClienteInt) return res.status(400).json({ error: "Para ADMIN_CLIENTE es obligatorio id_cliente" });
-      if (!(await existeCliente(idClienteInt))) return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      if (!idClienteInt) {
+        return res.status(400).json({ error: "Para ADMIN_CLIENTE es obligatorio id_cliente" });
+      }
+      if (!(await existeCliente(idClienteInt))) {
+        return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      }
     }
 
-    // ✅ CONSULTOR-like: 8/14/15 (y BASE si lo dejaste) con cartera ⇒ requiere id_consultor
     if (CONSULTOR_LIKE.has(initialRoleId)) {
       if (idConsultorInt && !(await existeConsultor(idConsultorInt))) {
         return res.status(400).json({ error: `id_consultor ${idConsultorInt} no existe` });
@@ -498,6 +571,19 @@ const crearUsuario = async (req, res) => {
       if (Array.isArray(miembros_cliente) && miembros_cliente.length > 0 && !idConsultorInt) {
         return res.status(400).json({ error: "Para CONSULTOR con cartera es obligatorio id_consultor" });
       }
+    }
+
+    if (CLIENTE_LIKE.has(initialRoleId)) {
+      if (!idClienteInt) {
+        return res.status(400).json({ error: "Para CLIENTE con cartera es obligatorio id_cliente" });
+      }
+      if (!(await existeCliente(idClienteInt))) {
+        return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      }
+    }
+
+    if (Array.isArray(miembros_cliente)) {
+      await validarMiembrosCliente(miembros_cliente);
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -524,6 +610,7 @@ const crearUsuario = async (req, res) => {
       )
       RETURNING id
     `;
+
     const { rows: userRows } = await client.query(insertUserSql, [
       ip_address,
       username,
@@ -541,14 +628,13 @@ const crearUsuario = async (req, res) => {
       last_name,
       company,
       phone,
-      initialRoleId,   // compat legacy (rol principal inicial)
+      initialRoleId,
       idClienteInt,
-      idConsultorInt
+      idConsultorInt,
     ]);
 
     const newUserId = userRows[0]?.id;
 
-    // ✅ asignación multi-roles real (NO pisa nada, solo inserta el inicial)
     await client.query(
       `
       INSERT INTO public.users_groups (user_id, group_id)
@@ -558,12 +644,16 @@ const crearUsuario = async (req, res) => {
       [newUserId, initialRoleId]
     );
 
-    // ✅ cartera según rol inicial
     if (initialRoleId === GROUPS.ADMIN_CLIENTE && Array.isArray(miembros_cliente)) {
       await upsertCarteraAdmin(client, idClienteInt, miembros_cliente);
     }
+
     if (CONSULTOR_LIKE.has(initialRoleId) && Array.isArray(miembros_cliente)) {
       await upsertCarteraConsultor(client, idConsultorInt, miembros_cliente);
+    }
+
+    if (CLIENTE_LIKE.has(initialRoleId) && Array.isArray(miembros_cliente)) {
+      await upsertCarteraCliente(client, idClienteInt, miembros_cliente);
     }
 
     await client.query("COMMIT");
@@ -586,12 +676,12 @@ const actualizarUsuario = async (req, res) => {
   const myPrimaryGroupId = normalizeInt(req.user.tipo_usuario) ?? normalizeInt(req.user.group_id);
   const requesterId = req.user.id;
 
-  // ✅ Consultor-like solo se puede editar a sí mismo (8/14/15)
   if (CONSULTOR_LIKE.has(myPrimaryGroupId) && requesterId !== targetId) {
     return res.status(403).json({ error: "No tiene permiso para editar este usuario" });
   }
 
   const client = await pool.connect();
+
   try {
     const { rows } = await client.query("SELECT * FROM public.users WHERE id = $1", [targetId]);
     if (!rows.length) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -599,7 +689,6 @@ const actualizarUsuario = async (req, res) => {
 
     const targetRoles = await getUserRoleIds(client, targetId);
 
-    // NO se cambian roles acá
     let finalTipoUsuario = existente.tipo_usuario;
 
     let {
@@ -620,13 +709,12 @@ const actualizarUsuario = async (req, res) => {
       phone = existente.phone,
       id_cliente = existente.id_cliente,
       id_consultor = existente.id_consultor,
-      miembros_cliente
+      miembros_cliente,
     } = req.body;
 
     const selfEdit = requesterId === targetId;
     const isAdminRequester = myPrimaryGroupId === GROUPS.ADMIN;
 
-    // ✅ Cliente-like editándose: sólo email/phone/password
     if (CLIENTE_LIKE.has(myPrimaryGroupId) && selfEdit) {
       email = req.body.email ?? existente.email;
       phone = req.body.phone ?? existente.phone;
@@ -642,8 +730,7 @@ const actualizarUsuario = async (req, res) => {
       id_consultor = existente.id_consultor;
     }
 
-    // ACTIVE
-    const requestedActive = (Object.prototype.hasOwnProperty.call(req.body, "active"))
+    const requestedActive = Object.prototype.hasOwnProperty.call(req.body, "active")
       ? to01(req.body.active, existente.active)
       : existente.active;
 
@@ -656,7 +743,6 @@ const actualizarUsuario = async (req, res) => {
       }
     }
 
-    // PASSWORD: sólo si cambiarPassword=true
     let newPassword = existente.password;
     const cambiarPassword =
       req.body &&
@@ -665,21 +751,22 @@ const actualizarUsuario = async (req, res) => {
         req.body.cambiarPassword === 1);
 
     if (cambiarPassword && Object.prototype.hasOwnProperty.call(req.body, "password")) {
-      const raw = (typeof req.body.password === "string") ? req.body.password.trim() : "";
+      const raw = typeof req.body.password === "string" ? req.body.password.trim() : "";
       if (raw) newPassword = await bcrypt.hash(raw, 10);
     }
 
-    // Validaciones vínculos según roles reales del usuario objetivo
     const idClienteInt = normalizeInt(id_cliente);
     const idConsultorInt = normalizeInt(id_consultor);
 
-    // Si TIENE rol ADMIN_CLIENTE => id_cliente obligatorio
     if (targetRoles.includes(GROUPS.ADMIN_CLIENTE)) {
-      if (!idClienteInt) return res.status(400).json({ error: "Para rol ADMIN_CLIENTE es obligatorio id_cliente" });
-      if (!(await existeCliente(idClienteInt))) return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      if (!idClienteInt) {
+        return res.status(400).json({ error: "Para rol ADMIN_CLIENTE es obligatorio id_cliente" });
+      }
+      if (!(await existeCliente(idClienteInt))) {
+        return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      }
     }
 
-    // Si TIENE cualquier rol consultor-like => validar consultor/cartera
     const targetIsConsultorLike = targetRoles.some((r) => CONSULTOR_LIKE.has(r));
     if (targetIsConsultorLike) {
       if (idConsultorInt && !(await existeConsultor(idConsultorInt))) {
@@ -688,6 +775,20 @@ const actualizarUsuario = async (req, res) => {
       if (Array.isArray(miembros_cliente) && miembros_cliente.length > 0 && !idConsultorInt) {
         return res.status(400).json({ error: "Para CONSULTOR con cartera es obligatorio id_consultor" });
       }
+    }
+
+    const targetIsClienteLike = targetRoles.some((r) => CLIENTE_LIKE.has(r));
+    if (targetIsClienteLike) {
+      if (!idClienteInt) {
+        return res.status(400).json({ error: "Para CLIENTE con cartera es obligatorio id_cliente" });
+      }
+      if (!(await existeCliente(idClienteInt))) {
+        return res.status(400).json({ error: `id_cliente ${idClienteInt} no existe` });
+      }
+    }
+
+    if (Array.isArray(miembros_cliente)) {
+      await validarMiembrosCliente(miembros_cliente);
     }
 
     await client.query("BEGIN");
@@ -720,20 +821,24 @@ const actualizarUsuario = async (req, res) => {
         last_name,
         company,
         phone,
-        finalTipoUsuario, // no cambia acá
+        finalTipoUsuario,
         idClienteInt,
         idConsultorInt,
-        targetId
+        targetId,
       ]
     );
 
-    // CARTERA: solo si viene miembros_cliente
     if (Array.isArray(miembros_cliente)) {
-      if (targetRoles.includes(GROUPS.ADMIN_CLIENTE)) {
+      if (targetRoles.includes(GROUPS.ADMIN_CLIENTE) && idClienteInt) {
         await upsertCarteraAdmin(client, idClienteInt, miembros_cliente);
       }
-      if (targetIsConsultorLike) {
+
+      if (targetIsConsultorLike && idConsultorInt) {
         await upsertCarteraConsultor(client, idConsultorInt, miembros_cliente);
+      }
+
+      if (targetIsClienteLike && idClienteInt) {
+        await upsertCarteraCliente(client, idClienteInt, miembros_cliente);
       }
     }
 
@@ -751,6 +856,7 @@ const actualizarUsuario = async (req, res) => {
 
 const eliminarUsuario = async (req, res) => {
   const { id } = req.params;
+
   try {
     const result = await pool.query("DELETE FROM public.users WHERE id = $1", [id]);
     if (!result.rowCount) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -791,7 +897,10 @@ const obtenerUsuarioActual = async (req, res) => {
     const base = result.rows[0];
 
     const perms = Array.isArray(req.user?.perms) ? req.user.perms : [];
-    const permsScope = req.user?.permsScope && typeof req.user.permsScope === "object" ? req.user.permsScope : {};
+    const permsScope =
+      req.user?.permsScope && typeof req.user.permsScope === "object"
+        ? req.user.permsScope
+        : {};
 
     const role_ids =
       Array.isArray(req.user?.role_ids) ? req.user.role_ids :
@@ -812,7 +921,11 @@ const obtenerUsuarioActual = async (req, res) => {
 async function guardarTokenFcm(req, res) {
   const userId = req.user?.id;
   const { token_fcm } = req.body;
-  if (!token_fcm) return res.status(400).json({ message: "Token FCM es requerido" });
+
+  if (!token_fcm) {
+    return res.status(400).json({ message: "Token FCM es requerido" });
+  }
+
   try {
     await pool.query(
       `UPDATE public.users SET token_fcm = $1, fecha_actualizacion = now() WHERE id = $2`,
@@ -825,7 +938,7 @@ async function guardarTokenFcm(req, res) {
   }
 }
 
-// GET /api/usuarios/:id/cartera  (unificada multi-roles)
+// GET /api/usuarios/:id/cartera
 const obtenerCarteraAdmin = async (req, res) => {
   const userId = parseInt(req.params.id, 10);
   if (!Number.isFinite(userId)) return res.status(400).json({ error: "id inválido" });
@@ -842,19 +955,24 @@ const obtenerCarteraAdmin = async (req, res) => {
 
     const cartera = new Set();
 
-    // ADMIN_CLIENTE -> cartera por admin_id = id_cliente
     if (roles.includes(GROUPS.ADMIN_CLIENTE) && u.id_cliente) {
       const q = `SELECT miembro_id FROM ${TABLE_CARTERA_ADMIN} WHERE admin_id = $1 ORDER BY miembro_id`;
       const { rows: r2 } = await pool.query(q, [u.id_cliente]);
       r2.forEach((x) => cartera.add(x.miembro_id));
     }
 
-    // Consultor-like -> cartera por consultor_id = id_consultor
     const isConsultorLike = roles.some((r) => CONSULTOR_LIKE.has(r));
     if (isConsultorLike && u.id_consultor) {
       const q = `SELECT miembro_id FROM ${TABLE_CARTERA_CONS} WHERE consultor_id = $1 ORDER BY miembro_id`;
       const { rows: r3 } = await pool.query(q, [u.id_consultor]);
       r3.forEach((x) => cartera.add(x.miembro_id));
+    }
+
+    const isClienteLike = roles.some((r) => CLIENTE_LIKE.has(r));
+    if (isClienteLike && u.id_cliente) {
+      const q = `SELECT miembro_id FROM ${TABLE_CARTERA_CLIENTE} WHERE cliente_id = $1 ORDER BY miembro_id`;
+      const { rows: r4 } = await pool.query(q, [u.id_cliente]);
+      r4.forEach((x) => cartera.add(x.miembro_id));
     }
 
     return res.json({ data: Array.from(cartera).sort((a, b) => a - b) });

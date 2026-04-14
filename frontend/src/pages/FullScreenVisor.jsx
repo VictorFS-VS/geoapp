@@ -333,7 +333,7 @@ export default function FullScreenVisor() {
     if (!puntosEnabled) {
       userDisabledPuntosRef.current = false;
       setPuntosEnabled(true);
-      setPuntosPanelOpen(true);
+      setPuntosPanelOpen(false);
       return;
     }
 
@@ -434,13 +434,15 @@ export default function FullScreenVisor() {
     const has = !!v;
 
     setHasData((p) => ({ ...p, puntos: has }));
+
     if (!has) {
       setPuntosEnabled(false);
       setPuntosPanelOpen(false);
       return;
     }
-    if (userDisabledPuntosRef.current) return;
+
     setPuntosEnabled(true);
+    setPuntosPanelOpen(false);
   }, []);
 
   const setHasCapas = useCallback((v) => {
@@ -466,10 +468,11 @@ export default function FullScreenVisor() {
 
     setHasData((p) => ({ ...p, tramos: has || hasTramosStickyRef.current }));
 
-    if (has) {
-      setPuntosEnabled(false);
-      setPuntosPanelOpen(false);
-    }
+    // ❌ ya no apagar puntos automáticamente cuando cargan tramos
+    // if (has) {
+    //   setPuntosEnabled(false);
+    //   setPuntosPanelOpen(false);
+    // }
 
     requestAnimationFrame(() => {
       const ui = tramosUIRef.current;
