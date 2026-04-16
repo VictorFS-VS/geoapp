@@ -14,16 +14,33 @@ const HOST_BASE = BASE.replace(/\/api\/?$/i, "");
 
 // ✅ default actual (si NO hay semáforo)
 const DEFAULT_POINT_COLOR = "#db1732ff";
-const TRACE_INF_MARKERS = false;
+const TRACE_INF_MARKERS = false; // ← activado temporalmente para validación
 
 /* =========================================================
    ✅ Paleta estable para colores por plantilla
    ========================================================= */
+/*const PLANTILLA_COLORS = [
+  "#2563eb",
+  "#16a34a",
+  "#f97316",
+  "#a855f7",
+  "#0ea5e9",
+  "#ef4444",
+  "#14b8a6",
+  "#f59e0b",
+  "#84cc16",
+  "#db2777",
+  "#64748b",
+  "#7c3aed",
+]; */
+
 function plantillaColorOf(id) {
   const n = Number(id);
   if (!Number.isFinite(n) || !n) return null;
 
   const hue = (n * 137.508) % 360;
+
+  // Más contraste para mapa satelital
   const sat = 78;
   const light = 48;
 
@@ -35,7 +52,6 @@ const authHeaders = () => {
     localStorage.getItem("token") ||
     localStorage.getItem("access_token") ||
     localStorage.getItem("jwt");
-
   const headers = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
@@ -49,7 +65,6 @@ function handle401(resp) {
       localStorage.removeItem("jwt");
       localStorage.removeItem("user");
     } catch {}
-
     if (!String(window.location.pathname || "").includes("/login")) {
       window.location.replace("/login");
     }
@@ -189,6 +204,8 @@ const SEMAFORO_NAME_TO_HEX = {
   amarillo: "#FACC15",
   naranja: "#FB923C",
   rojo: "#EF4444",
+
+  // compatibilidad adicional por niveles
   bajo: "#58FD6C",
   medio: "#FACC15",
   alto: "#EF4444",
@@ -233,6 +250,7 @@ function normColorName(s) {
    ========================================================= */
 function parseJsonIfNeeded(val) {
   if (val == null) return null;
+
   if (typeof val === "object") return val;
 
   const s = String(val).trim();
@@ -254,14 +272,14 @@ function isSemaforoType(props) {
 
   const t = String(
     p.tipo ??
-      p.tipo_pregunta ??
-      p.tipoPregunta ??
-      p.field_type ??
-      p.fieldType ??
-      p.tipo_campo ??
-      p.tipoCampo ??
-      p.input_type ??
-      ""
+    p.tipo_pregunta ??
+    p.tipoPregunta ??
+    p.field_type ??
+    p.fieldType ??
+    p.tipo_campo ??
+    p.tipoCampo ??
+    p.input_type ??
+    ""
   )
     .trim()
     .toLowerCase();
@@ -269,27 +287,37 @@ function isSemaforoType(props) {
   return t === "semaforo";
 }
 
+/* =========================================================
+   ✅ Parser flexible de semáforo
+   ========================================================= */
 function parseSemaforoAny(x) {
   if (x == null) return null;
 
+  // string simple
   if (typeof x === "string") {
     const s = x.trim();
     if (!s) return null;
 
+    // si es JSON string, intentar parsear
     if (s.startsWith("{") || s.startsWith("[")) {
       try {
         return parseSemaforoAny(JSON.parse(s));
-      } catch {}
+      } catch {
+        // sigue abajo como string normal
+      }
     }
 
+    // si ya es hex
     const hx = normalizeHexColor(s);
     if (hx) return { nombre: null, hex: hx };
 
+    // si es nombre de color / nivel
     const key = normColorName(s);
     const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
     return hx2 ? { nombre: s, hex: hx2 } : null;
   }
 
+  // objeto
   if (typeof x === "object" && !Array.isArray(x)) {
     const nombre =
       x.nombre ??
@@ -322,24 +350,35 @@ function parseSemaforoAny(x) {
     if (nombre) {
       const key = normColorName(nombre);
       const hx2 = SEMAFORO_NAME_TO_HEX[key] || null;
-      return hx2 ? { nombre: String(nombre).trim(), hex: hx2 } : null;
+      return hx2
+        ? { nombre: String(nombre).trim(), hex: hx2 }
+        : null;
     }
   }
 
   return null;
 }
 
+/* =========================================================
+   ✅ Obtiene semáforo desde props
+   Nueva lógica:
+   1) Si el tipo es semáforo => prioriza hex de valor_json
+   2) Luego semaforo_json
+   3) Luego semaforo
+   4) Luego campos alternativos
+   ========================================================= */
 function getSemaforoFromProps(props) {
   const p = props || {};
 
+  // -----------------------------------------------------
+  // 1) Si es tipo semáforo, priorizar valor_json -> hex
+  // -----------------------------------------------------
   if (isSemaforoType(p)) {
     const valorObj = parseJsonIfNeeded(p.valor_json ?? p.valorJson ?? null);
     let s = parseSemaforoAny(valorObj);
     if (s?.hex) return s;
 
-    const semJsonObj = parseJsonIfNeeded(
-      p.semaforo_json ?? p.semaforoJson ?? null
-    );
+    const semJsonObj = parseJsonIfNeeded(p.semaforo_json ?? p.semaforoJson ?? null);
     s = parseSemaforoAny(semJsonObj);
     if (s?.hex) return s;
 
@@ -347,6 +386,9 @@ function getSemaforoFromProps(props) {
     if (s?.hex) return s;
   }
 
+  // -----------------------------------------------------
+  // 2) Compatibilidad general
+  // -----------------------------------------------------
   let s = parseSemaforoAny(p.semaforo);
   if (s?.hex) return s;
 
@@ -393,7 +435,7 @@ function createDropMarkerElement(color, { selected = false } = {}) {
   wrap.style.alignItems = "center";
   wrap.style.justifyContent = "center";
   wrap.style.transform = selected ? "translateY(-4px)" : "translateY(-2px)";
-  wrap.style.pointerEvents = "none";
+  wrap.style.pointerEvents = "none"; // ✅ importante
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 32");
@@ -401,7 +443,7 @@ function createDropMarkerElement(color, { selected = false } = {}) {
   svg.setAttribute("height", selected ? "38" : "28");
   svg.style.display = "block";
   svg.style.overflow = "visible";
-  svg.style.pointerEvents = "none";
+  svg.style.pointerEvents = "none"; // ✅ importante
 
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute(
@@ -495,7 +537,6 @@ const computeBoundsFromPoints = (google, features) => {
   try {
     const b = new google.maps.LatLngBounds();
     let has = false;
-
     for (const f of features || []) {
       if (f?.geometry?.type !== "Point") continue;
       const [lng, lat] = f.geometry.coordinates || [];
@@ -505,7 +546,6 @@ const computeBoundsFromPoints = (google, features) => {
       has = true;
       b.extend(new google.maps.LatLng(la, ln));
     }
-
     return has ? b : null;
   } catch {
     return null;
@@ -559,7 +599,6 @@ function buildChartStatsFromRows(rows = []) {
       stats.vacio += 1;
       continue;
     }
-
     if (
       v === "Sí" ||
       v === "Si" ||
@@ -569,7 +608,6 @@ function buildChartStatsFromRows(rows = []) {
       stats.si += 1;
       continue;
     }
-
     if (v === "No" || v.toLowerCase() === "no") {
       stats.no += 1;
       continue;
@@ -698,9 +736,8 @@ function parseValorJson(v) {
 function formatRespuestaValue(r) {
   if (!r) return "";
 
-  if (r.valor_bool !== null && r.valor_bool !== undefined) {
+  if (r.valor_bool !== null && r.valor_bool !== undefined)
     return r.valor_bool ? "Sí" : "No";
-  }
 
   if (r.valor_json != null && r.valor_json !== "") {
     const parsed = parseValorJson(r.valor_json);
@@ -738,7 +775,6 @@ export default function ModuloInformes({
   onHasCharts,
   onChartsInfo,
   tramoFilter,
-  onZoomToActiveTramo,
 }) {
   const pid = Number(idProyecto);
   const loadSeqRef = useRef(0);
@@ -754,8 +790,6 @@ export default function ModuloInformes({
   const detalleTramoCacheRef = useRef(new Map());
   const initialHideDoneRef = useRef(false);
 
-  const tramoVisibleIdsCacheRef = useRef(new Map());
-
   const [loading, setLoading] = useState(false);
   const [count, setCount] = useState(0);
 
@@ -763,6 +797,8 @@ export default function ModuloInformes({
   const [floatingLoading, setFloatingLoading] = useState(false);
   const [floatingPlantillas, setFloatingPlantillas] = useState([]);
   const [floatingPage, setFloatingPage] = useState(0);
+
+
 
   const [listOpen, setListOpen] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState(null);
@@ -865,20 +901,6 @@ export default function ModuloInformes({
 
   useEffect(() => {
     initialHideDoneRef.current = false;
-    markersBuiltRef.current = false;
-
-    puntosCacheRef.current = {
-      pid: null,
-      features: [],
-      ts: 0,
-    };
-
-    informesMetaRef.current = { pid: null, map: {}, ts: 0 };
-    detalleTramoCacheRef.current = new Map();
-
-    // 🔥 AGREGAR ESTA LÍNEA
-    tramoVisibleIdsCacheRef.current = new Map();
-
   }, [pid]);
 
   function pickMetaFromInformeDetail(data) {
@@ -925,7 +947,7 @@ export default function ModuloInformes({
     return { plantillaId, plantillaNombre, titulo };
   }
 
-    const fetchGeoJSON = useCallback(async (url, parentSignal) => {
+  const fetchGeoJSON = useCallback(async (url, parentSignal) => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 25000);
 
@@ -940,9 +962,7 @@ export default function ModuloInformes({
         signal: ctrl.signal,
       });
 
-      if (handle401(resp)) {
-        throw new Error("Sesión expirada. Iniciá sesión de nuevo.");
-      }
+      if (handle401(resp)) throw new Error("Sesión expirada. Iniciá sesión de nuevo.");
 
       const ct = resp.headers.get("content-type") || "";
       const isJson =
@@ -972,418 +992,6 @@ export default function ModuloInformes({
       } catch {}
     }
   }, []);
-
-  const puntosCacheRef = useRef({
-    pid: null,
-    features: [],
-    ts: 0,
-  });
-
-  const markersBuiltRef = useRef(false);
-
-  const getCachedBaseFeatures = useCallback(() => {
-    if (puntosCacheRef.current.pid !== pid) return [];
-    return Array.isArray(puntosCacheRef.current.features)
-      ? puntosCacheRef.current.features
-      : [];
-  }, [pid]);
-
-  const fetchPuntosBase = useCallback(
-    async (force = false, signal) => {
-      if (!pid) return [];
-
-      const now = Date.now();
-
-      if (
-        !force &&
-        puntosCacheRef.current.pid === pid &&
-        Array.isArray(puntosCacheRef.current.features) &&
-        puntosCacheRef.current.features.length &&
-        now - (puntosCacheRef.current.ts || 0) < 60_000
-      ) {
-        return puntosCacheRef.current.features;
-      }
-
-      const url = `${API_URL}/informes/proyecto/${pid}/puntos`;
-      const data = await fetchGeoJSON(url, signal);
-
-      if (data?.ok === false) {
-        throw new Error(data?.error || "No se pudieron cargar los puntos.");
-      }
-
-      const features = dedupePointFeatures(
-        Array.isArray(data?.features) ? data.features : []
-      );
-
-      puntosCacheRef.current = {
-        pid,
-        features,
-        ts: now,
-      };
-
-      return features;
-    },
-    [pid, fetchGeoJSON]
-  );
-
-  const fetchInformeRowsLite = useCallback(async (idInforme, parentSignal) => {
-    if (!idInforme) return [];
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-
-    const onAbort = () => ctrl.abort();
-    try {
-      parentSignal?.addEventListener?.("abort", onAbort, { once: true });
-    } catch {}
-
-    try {
-      const resp = await fetch(`${API_URL}/informes/${idInforme}`, {
-        headers: { ...authHeaders() },
-        signal: ctrl.signal,
-      });
-
-      if (handle401(resp)) return [];
-
-      const ct = resp.headers.get("content-type") || "";
-      const isJson = ct.includes("application/json");
-      const data = isJson ? await resp.json() : null;
-
-      if (!resp.ok || data?.ok === false) return [];
-
-      if (Array.isArray(data?.rows)) return data.rows;
-      if (Array.isArray(data?.data?.rows)) return data.data.rows;
-
-      const preguntas = data?.preguntas || data?.data?.preguntas || [];
-      const respuestas = data?.respuestas || data?.data?.respuestas || [];
-
-      const mapResp = new Map();
-      for (const r of respuestas) {
-        const idp = r?.id_pregunta;
-        if (!idp) continue;
-        const v = formatRespuestaValue(r);
-        mapResp.set(idp, v || "");
-      }
-
-      return preguntas.map((p) => ({
-        id_pregunta: p.id_pregunta,
-        etiqueta: p.etiqueta || `Pregunta ${p.id_pregunta}`,
-        valor: mapResp.get(p.id_pregunta) || "-",
-      }));
-    } catch (e) {
-      if (String(e?.name) === "AbortError") return [];
-      return [];
-    } finally {
-      clearTimeout(timer);
-      try {
-        parentSignal?.removeEventListener?.("abort", onAbort);
-      } catch {}
-    }
-  }, []);
-
-  const doesInformeMatchTramo = useCallback(
-    async (idInforme, props, signal) => {
-      if (!tramoFilter?.enabled) return true;
-
-      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
-      if (!activeKey) return true;
-
-      const idInf = Number(idInforme) || null;
-      if (!idInf) return false;
-
-      const cacheKey = `${idInf}|${activeKey}`;
-      if (detalleTramoCacheRef.current.has(cacheKey)) {
-        return !!detalleTramoCacheRef.current.get(cacheKey);
-      }
-
-      const directCandidates = [
-        props?.tramo,
-        props?.TRAMO,
-        props?.subtramo,
-        props?.sub_tramo,
-        props?.subTramo,
-        props?.tramos,
-        props?.subtramos,
-        props?.label_tramo,
-        props?.tramo_label,
-        props?.nombre_tramo,
-        props?.descripcion_tramo,
-      ].filter((x) => x != null && x !== "");
-
-      for (const candidate of directCandidates) {
-        const keys = extractTramoKeysFromText(candidate);
-        if (keys.includes(activeKey)) {
-          detalleTramoCacheRef.current.set(cacheKey, true);
-          return true;
-        }
-      }
-
-      const rows = await fetchInformeRowsLite(idInf, signal);
-      const ok = informeRowsMatchTramo(rows, tramoFilter);
-
-      detalleTramoCacheRef.current.set(cacheKey, !!ok);
-      return !!ok;
-    },
-    [tramoFilter, fetchInformeRowsLite]
-  );
-
-  const getVisibleIdsByTramo = useCallback(
-    async (signal) => {
-      const activeTramoKey = getActiveTramoKeyFromFilter(tramoFilter);
-      if (!tramoFilter?.enabled || !activeTramoKey) return null;
-
-      const cacheKey = `${pid}|${activeTramoKey}`;
-      if (tramoVisibleIdsCacheRef.current.has(cacheKey)) {
-        return tramoVisibleIdsCacheRef.current.get(cacheKey);
-      }
-
-      const pointFeatures = getCachedBaseFeatures().filter(
-        (f) => f?.geometry?.type === "Point"
-      );
-
-      const visibleIds = new Set();
-      const featureByInformeId = new Map();
-
-      for (const f of pointFeatures) {
-        const p = f.properties || {};
-        const idInf =
-          Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-        if (idInf && !featureByInformeId.has(idInf)) {
-          featureByInformeId.set(idInf, f);
-        }
-      }
-
-      const ids = Array.from(featureByInformeId.keys());
-      const CONC = 2;
-      let cursor = 0;
-
-      async function worker() {
-        while (cursor < ids.length) {
-          if (signal?.aborted) return;
-
-          const idx = cursor++;
-          const idInf = ids[idx];
-          const feature = featureByInformeId.get(idInf);
-          const props = feature?.properties || {};
-
-          try {
-            const ok = await doesInformeMatchTramo(idInf, props, signal);
-            if (ok) visibleIds.add(idInf);
-          } catch (e) {
-            console.warn("getVisibleIdsByTramo error:", idInf, e);
-          }
-        }
-      }
-
-      await Promise.all(
-        Array.from({ length: Math.min(CONC, ids.length) }, () => worker())
-      );
-
-      tramoVisibleIdsCacheRef.current.set(cacheKey, visibleIds);
-      return visibleIds;
-    },
-    [pid, tramoFilter, getCachedBaseFeatures, doesInformeMatchTramo]
-  );
-
-  const filterFeaturesByTramoSelection = useCallback(
-    async (features, signal) => {
-      if (!tramoFilter?.enabled) return features;
-
-      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
-      if (!activeKey) return features;
-
-      const pointFeatures = (features || []).filter(
-        (f) => f?.geometry?.type === "Point"
-      );
-
-      if (!pointFeatures.length) return [];
-
-      const featureByInformeId = new Map();
-
-      for (const f of pointFeatures) {
-        const p = f.properties || {};
-        const idInf =
-          Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-
-        if (idInf && !featureByInformeId.has(idInf)) {
-          featureByInformeId.set(idInf, f);
-        }
-      }
-
-      const ids = Array.from(featureByInformeId.keys());
-      if (!ids.length) return [];
-
-      const resultMap = new Map();
-      const CONC = 4;
-      let cursor = 0;
-
-      async function worker() {
-        while (cursor < ids.length) {
-          if (signal?.aborted) return;
-
-          const idx = cursor++;
-          const idInf = ids[idx];
-          const feature = featureByInformeId.get(idInf);
-          const props = feature?.properties || {};
-
-          try {
-            const ok = await doesInformeMatchTramo(idInf, props, signal);
-            resultMap.set(idInf, !!ok);
-          } catch (e) {
-            console.warn("doesInformeMatchTramo error:", idInf, e);
-            resultMap.set(idInf, true);
-          }
-        }
-      }
-
-      await Promise.all(
-        Array.from({ length: Math.min(CONC, ids.length) }, () => worker())
-      );
-
-      return pointFeatures.filter((f) => {
-        const p = f.properties || {};
-        const idInf =
-          Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-        return !!resultMap.get(idInf);
-      });
-    },
-    [tramoFilter, doesInformeMatchTramo]
-  );
-
-  const buildVisibleFeatures = useCallback(
-    async (baseFeatures, overrideFilters = {}, signal) => {
-      const nextFiltroInformeId =
-        overrideFilters.filtroInformeId ?? filtroInformeId;
-
-      const nextFiltroPlantillaId =
-        overrideFilters.filtroPlantillaId ?? filtroPlantillaId;
-
-      let features = Array.isArray(baseFeatures) ? [...baseFeatures] : [];
-
-      const infId =
-        nextFiltroInformeId === "all" ? null : Number(nextFiltroInformeId) || null;
-
-      if (infId) {
-        features = features.filter((f) => {
-          if (f?.geometry?.type !== "Point") return false;
-          const p = f.properties || {};
-          const idInf =
-            Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-          return idInf && Number(idInf) === Number(infId);
-        });
-      }
-
-      if (nextFiltroPlantillaId !== "all") {
-        const plantId = Number(nextFiltroPlantillaId) || null;
-
-        if (plantId) {
-          const metaMap = informesMetaRef.current?.map || {};
-
-          features = features.filter((f) => {
-            if (f?.geometry?.type !== "Point") return false;
-            const p = f.properties || {};
-            const idInf =
-              Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
-
-            const plantillaId = getPlantillaIdFromPointProps(p, metaMap, idInf);
-            return Number(plantillaId) === Number(plantId);
-          });
-        }
-      }
-
-      const tramoActivoKey = getActiveTramoKeyFromFilter(tramoFilter);
-
-      if (tramoFilter?.enabled && tramoActivoKey) {
-        try {
-          features = await filterFeaturesByTramoSelection(features, signal);
-        } catch {
-          features = [];
-        }
-      }
-
-      return features;
-    },
-    [filtroInformeId, filtroPlantillaId, tramoFilter, filterFeaturesByTramoSelection]
-  );
-
-  const applyMarkersVisibility = useCallback(
-    async (overrideFilters = {}) => {
-      if (!map) return;
-
-      // ✅ si todavía no existen markers, no hacer nada
-      if (!markersRef.current?.length) return;
-
-      const nextFiltroInformeId =
-        overrideFilters.filtroInformeId ?? filtroInformeId;
-
-      const nextFiltroPlantillaId =
-        overrideFilters.filtroPlantillaId ?? filtroPlantillaId;
-
-      const q = String(busqQ || "").trim();
-      const searching = q.length >= 2 && busqApplyToMap && !busqLoading;
-
-      let visibleIdsByBusqueda = null;
-      if (searching) {
-        visibleIdsByBusqueda = new Set(
-          (busqResults || [])
-            .map((r) => Number(r?.id_informe))
-            .filter((n) => Number.isFinite(n) && n > 0)
-        );
-      }
-
-      const activeTramoKey = getActiveTramoKeyFromFilter(tramoFilter);
-      let visibleIdsByTramo = null;
-
-      if (tramoFilter?.enabled && activeTramoKey) {
-        try {
-          visibleIdsByTramo = await getVisibleIdsByTramo();
-        } catch (e) {
-          console.warn("getVisibleIdsByTramo error:", e);
-          visibleIdsByTramo = new Set();
-        }
-      }
-
-      for (const mk of markersRef.current || []) {
-        if (!mk) continue;
-
-        const byEnabled = enabled && pointsVisible;
-
-        const byInforme =
-          nextFiltroInformeId === "all" ||
-          Number(mk.__idInforme) === Number(nextFiltroInformeId);
-
-        const byPlantilla =
-          nextFiltroPlantillaId === "all" ||
-          Number(mk.__plantillaId) === Number(nextFiltroPlantillaId);
-
-        const byBusqueda =
-          !visibleIdsByBusqueda ||
-          visibleIdsByBusqueda.has(Number(mk.__idInforme));
-
-        const byTramo =
-          !visibleIdsByTramo ||
-          visibleIdsByTramo.has(Number(mk.__idInforme));
-
-        const visible =
-          byEnabled && byInforme && byPlantilla && byBusqueda && byTramo;
-
-        setMarkerMap(mk, visible ? map : null);
-      }
-    },
-    [
-      map,
-      enabled,
-      pointsVisible,
-      filtroInformeId,
-      filtroPlantillaId,
-      busqQ,
-      busqApplyToMap,
-      busqLoading,
-      busqResults,
-      tramoFilter,
-      getVisibleIdsByTramo,
-    ]
-  );
 
   const fetchInformeIdsByProyecto = useCallback(async (pidIn) => {
     const p = Number(pidIn || 0);
@@ -1451,7 +1059,8 @@ export default function ModuloInformes({
         metaInf?.plantillaNombre ??
         `Plantilla #${plantillaId}`;
 
-      const color = metaInf?.plantillaColor || plantillaColorOf(plantillaId);
+      const color =
+        metaInf?.plantillaColor || plantillaColorOf(plantillaId);
 
       if (!acc.has(plantillaId)) {
         acc.set(plantillaId, {
@@ -1475,7 +1084,6 @@ export default function ModuloInformes({
 
   function buildPlantillasFromMetaMap(map) {
     const m = new Map();
-
     for (const it of Object.values(map || {})) {
       if (!it?.plantillaId) continue;
       const id = Number(it.plantillaId);
@@ -1487,7 +1095,6 @@ export default function ModuloInformes({
         });
       }
     }
-
     return Array.from(m.values()).sort((a, b) =>
       String(a.nombre || "").localeCompare(String(b.nombre || ""))
     );
@@ -1612,7 +1219,8 @@ export default function ModuloInformes({
     };
   }, [pid, fetchInformeIdsByProyecto]);
 
-  /*useEffect(() => {
+  useEffect(() => {
+    //console.log("🔥 cargando botones flotantes", pid);
     if (!pid) return;
 
     let cancelled = false;
@@ -1626,8 +1234,14 @@ export default function ModuloInformes({
         if (cancelled) return;
 
         const metaMap = meta?.map || {};
-        const featuresAll = await fetchPuntosBase(false, ac.signal);
+
+        const urlPts = `${API_URL}/informes/proyecto/${pid}/puntos?_ts=${Date.now()}`;
+        const dataPts = await fetchGeoJSON(urlPts, ac.signal);
         if (cancelled) return;
+
+        const featuresAll = dedupePointFeatures(
+          Array.isArray(dataPts?.features) ? dataPts.features : []
+        );
 
         const ordered = buildPlantillasWithCounts(featuresAll, metaMap);
 
@@ -1651,44 +1265,7 @@ export default function ModuloInformes({
         ac.abort();
       } catch {}
     };
-  }, [pid, ensureInformesMeta, fetchPuntosBase]);*/
-
-  useEffect(() => {
-    if (!pid) return;
-
-    let cancelled = false;
-    const ac = new AbortController();
-
-    (async () => {
-      try {
-        setFloatingLoading(true);
-
-        const featuresAll = await fetchPuntosBase(false, ac.signal);
-        if (cancelled) return;
-
-        const ordered = buildPlantillasWithCounts(featuresAll, {});
-
-        if (!cancelled) {
-          setFloatingPlantillas(ordered);
-          setFloatingPage(0);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          console.warn("No se pudieron cargar botones flotantes:", e);
-          setFloatingPlantillas([]);
-        }
-      } finally {
-        if (!cancelled) setFloatingLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      try {
-        ac.abort();
-      } catch {}
-    };
-  }, [pid, fetchPuntosBase]);
+  }, [pid, ensureInformesMeta, fetchGeoJSON]);
 
   const reportChartsAvailability = useCallback(
     async (features) => {
@@ -1729,10 +1306,7 @@ export default function ModuloInformes({
       }
 
       const ac = new AbortController();
-      const { plantilla, plantillaId } = await tryGetPlantillaFromInformeIds(
-        ids,
-        ac.signal
-      );
+      const { plantilla, plantillaId } = await tryGetPlantillaFromInformeIds(ids, ac.signal);
 
       chartsPayloadRef.current = {
         ids,
@@ -1774,9 +1348,13 @@ export default function ModuloInformes({
 
   const checkHasPuntos = useCallback(async () => {
     if (!pid) return;
-
     try {
-      const features = await fetchPuntosBase(false);
+      const url = `${API_URL}/informes/proyecto/${pid}/puntos`;
+      const data = await fetchGeoJSON(url);
+
+      const features = dedupePointFeatures(
+        Array.isArray(data?.features) ? data.features : []
+      );
       const pointCount = features.filter((f) => f?.geometry?.type === "Point").length;
 
       if (typeof onHasData === "function") onHasData(pointCount > 0);
@@ -1791,7 +1369,7 @@ export default function ModuloInformes({
       console.warn("checkHasPuntos error:", e);
       if (typeof onHasData === "function") onHasData(true);
     }
-  }, [pid, fetchPuntosBase, onHasData, reportChartsAvailability]);
+  }, [pid, fetchGeoJSON, onHasData, reportChartsAvailability]);
 
   useEffect(() => {
     if (!pid) return;
@@ -1887,10 +1465,14 @@ export default function ModuloInformes({
   );
 
   useEffect(() => {
-    applyMarkersVisibility().catch((e) => {
-      console.warn("applyMarkersVisibility error:", e);
+    const m = map;
+    if (!m) return;
+
+    markersRef.current.forEach((mk) => {
+      if (!mk) return;
+      setMarkerMap(mk, enabled && pointsVisible ? m : null);
     });
-  }, [applyMarkersVisibility, enabled, pointsVisible, map]);
+  }, [enabled, pointsVisible, map]);
 
   const openPointPanel = useCallback(
     (props) => {
@@ -2051,19 +1633,6 @@ export default function ModuloInformes({
     [map]
   );
 
-  const zoomToActiveTramoPolygon = useCallback(() => {
-    try {
-      if (typeof onZoomToActiveTramo === "function") {
-        autoFitEnabledRef.current = false;
-        const ok = onZoomToActiveTramo();
-        return !!ok;
-      }
-    } catch (e) {
-      console.warn("zoomToActiveTramoPolygon error:", e);
-    }
-    return false;
-  }, [onZoomToActiveTramo]);
-
   const focusSearchResult = useCallback(
     (item) => {
       if (!item) return;
@@ -2095,130 +1664,6 @@ export default function ModuloInformes({
     [openPointPanel, zoomToPoint]
   );
 
-  const onClickVerInforme = useCallback(async () => {
-    const idInf = Number(selectedPoint?.id_informe);
-    if (!idInf) return;
-
-    autoFitEnabledRef.current = false;
-
-    // cerrar si ya está abierto sobre el mismo informe
-    if (verInformeOpen && detalleIdInforme === idInf) {
-      setVerInformeOpen(false);
-      return;
-    }
-
-    setVerInformeOpen(true);
-    setDetalleLoading(true);
-    setDetalleError(null);
-    setDetalleIdInforme(idInf);
-
-    try {
-      const resp = await fetch(`${API_URL}/informes/${idInf}`, {
-        headers: { ...authHeaders() },
-      });
-
-      if (handle401(resp)) return;
-
-      const ct = resp.headers.get("content-type") || "";
-      const isJson = ct.includes("application/json");
-      const data = isJson ? await resp.json() : null;
-
-      if (!resp.ok || data?.ok === false) {
-        throw new Error(data?.error || data?.message || `Error ${resp.status}`);
-      }
-
-      const root = data?.data ?? data ?? {};
-      const preguntas = root?.preguntas || [];
-      const respuestas = root?.respuestas || [];
-      const fotos = root?.fotos || [];
-
-      const mapResp = new Map();
-      for (const r of respuestas) {
-        const idp = r?.id_pregunta;
-        if (!idp) continue;
-        mapResp.set(idp, formatRespuestaValue(r) || "-");
-      }
-
-      const rows = preguntas.map((p) => ({
-        id_pregunta: p.id_pregunta,
-        etiqueta: p.etiqueta || `Pregunta ${p.id_pregunta}`,
-        valor: mapResp.get(p.id_pregunta) || "-",
-      }));
-
-      setDetalleData({
-        raw: root,
-        preguntas,
-        respuestas,
-        rows,
-        fotos,
-        fotosByPregunta: groupFotosByPregunta(fotos),
-        fotosCount: Array.isArray(fotos) ? fotos.length : 0,
-      });
-    } catch (e) {
-      setDetalleError(e?.message || "No se pudo cargar el informe.");
-      setDetalleData(null);
-    } finally {
-      if (mountedRef.current) {
-        setDetalleLoading(false);
-      }
-    }
-  }, [
-    selectedPoint,
-    verInformeOpen,
-    detalleIdInforme,
-  ]);
-
-  const onClickVerFotos = useCallback(async () => {
-    const idInf = Number(selectedPoint?.id_informe);
-    if (!idInf) return;
-
-    autoFitEnabledRef.current = false;
-
-    if (!detalleData && !detalleLoading) {
-      await onClickVerInforme();
-    }
-
-    setFotosModalOpen(true);
-  }, [selectedPoint, detalleData, detalleLoading, onClickVerInforme]);
-
-  const onClickVerCharts = useCallback(async () => {
-    const idInf = Number(selectedPoint?.id_informe);
-    if (!idInf) return;
-
-    autoFitEnabledRef.current = false;
-
-    if (!detalleData && !detalleLoading) {
-      await onClickVerInforme();
-    }
-
-    const rows = (detalleData?.rows || []).length
-      ? detalleData.rows
-      : [];
-
-    const stats = buildChartStatsFromRows(rows);
-
-    setChartsStats(stats);
-    setChartsError(null);
-    setChartsOpen(true);
-
-    if (typeof onChartsInfo === "function") {
-      onChartsInfo({
-        open: true,
-        titulo:
-          selectedPoint?.titulo ||
-          selectedPoint?.nombre ||
-          `Informe #${idInf}`,
-        informeIds: [idInf],
-      });
-    }
-  }, [
-    selectedPoint,
-    detalleData,
-    detalleLoading,
-    onClickVerInforme,
-    onChartsInfo,
-  ]);
-
   const buscarRespuestas = useCallback(async () => {
     const q = String(busqQ || "").trim();
     if (q.length < 2) {
@@ -2230,7 +1675,6 @@ export default function ModuloInformes({
     try {
       busqAbortRef.current?.abort?.();
     } catch {}
-
     busqAbortRef.current = new AbortController();
     const signal = busqAbortRef.current.signal;
 
@@ -2245,11 +1689,7 @@ export default function ModuloInformes({
       qs.set("_ts", String(Date.now()));
 
       const url = `${API_URL}/informes/proyecto/${pid}/buscar-respuestas?${qs.toString()}`;
-      const resp = await fetch(url, {
-        headers: { ...authHeaders() },
-        signal,
-      });
-
+      const resp = await fetch(url, { headers: { ...authHeaders() }, signal });
       if (handle401(resp)) return;
 
       const data = await resp.json().catch(() => null);
@@ -2275,7 +1715,8 @@ export default function ModuloInformes({
             (idInf ? `Informe #${idInf}` : ""),
           id_pregunta: idPregunta,
           etiqueta:
-            it.etiqueta || (idPregunta ? `Pregunta #${idPregunta}` : ""),
+            it.etiqueta ||
+            (idPregunta ? `Pregunta #${idPregunta}` : ""),
           valor: it.valor ?? "",
           lat: found?.lat ?? null,
           lng: found?.lng ?? null,
@@ -2317,22 +1758,25 @@ export default function ModuloInformes({
     };
   }, [busqQ, busqPreguntaId, buscarRespuestas]);
 
-  /*useEffect(() => {
+  useEffect(() => {
     if (!map) return;
 
     const q = String(busqQ || "").trim();
     const searching = q.length >= 2;
 
+    // 🔹 si el módulo está apagado o los puntos están ocultos, esconder todo
     if (!enabled || !pointsVisible) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, null));
       return;
     }
 
+    // 🔹 si no se aplica la búsqueda al mapa, mostrar normalmente
     if (!busqApplyToMap) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
       return;
     }
 
+    // 🔹 si no hay búsqueda, mostrar normalmente
     if (!searching) {
       (markersRef.current || []).forEach((mk) => setMarkerMap(mk, map));
       return;
@@ -2359,283 +1803,538 @@ export default function ModuloInformes({
     enabled,
     pointsVisible,
     map,
-  ]);*/
-
-  useEffect(() => {
-    applyMarkersVisibility().catch((e) => {
-      console.warn("applyMarkersVisibility error:", e);
-    });
-  }, [
-    applyMarkersVisibility,
-    busqQ,
-    busqResults,
-    busqLoading,
-    busqApplyToMap,
-    enabled,
-    pointsVisible,
-    map,
-    tramoFilter,
-    filtroInformeId,
-    filtroPlantillaId,
   ]);
 
   const flyToItem = (item) => {
     if (!map || !item) return;
     if (item.lat == null || item.lng == null) return;
-
     map.panTo({ lat: item.lat, lng: item.lng });
     map.setZoom(Math.max(map.getZoom() || 7, 16));
     openPointPanel(item.props);
     autoFitEnabledRef.current = false;
   };
 
-  const loadInformesPoints = useCallback(
-    async (overrideFilters = {}, options = {}) => {
-      if (!google || !map || !pid) return;
+  const fetchInformeRowsLite = useCallback(async (idInforme, parentSignal) => {
+    if (!idInforme) return [];
 
-      const { forceBaseReload = false, rebuildMarkers = false } = options;
-      const seq = ++loadSeqRef.current;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
 
+    const onAbort = () => ctrl.abort();
+    try {
+      parentSignal?.addEventListener?.("abort", onAbort, { once: true });
+    } catch {}
+
+    try {
+      const resp = await fetch(`${API_URL}/informes/${idInforme}`, {
+        headers: { ...authHeaders() },
+        signal: ctrl.signal,
+      });
+
+      if (handle401(resp)) return [];
+
+      const ct = resp.headers.get("content-type") || "";
+      const isJson = ct.includes("application/json");
+      const data = isJson ? await resp.json() : null;
+
+      if (!resp.ok || data?.ok === false) return [];
+
+      if (Array.isArray(data?.rows)) return data.rows;
+      if (Array.isArray(data?.data?.rows)) return data.data.rows;
+
+      const preguntas = data?.preguntas || data?.data?.preguntas || [];
+      const respuestas = data?.respuestas || data?.data?.respuestas || [];
+
+      const mapResp = new Map();
+      for (const r of respuestas) {
+        const idp = r?.id_pregunta;
+        if (!idp) continue;
+        const v = formatRespuestaValue(r);
+        mapResp.set(idp, v || "");
+      }
+
+      return preguntas.map((p) => ({
+        id_pregunta: p.id_pregunta,
+        etiqueta: p.etiqueta || `Pregunta ${p.id_pregunta}`,
+        valor: mapResp.get(p.id_pregunta) || "-",
+      }));
+    } catch (e) {
+      if (String(e?.name) === "AbortError") return [];
+      return [];
+    } finally {
+      clearTimeout(timer);
       try {
-        loadPointsAbortRef.current?.abort?.();
+        parentSignal?.removeEventListener?.("abort", onAbort);
       } catch {}
+    }
+  }, []);
 
-      const ac = new AbortController();
-      loadPointsAbortRef.current = ac;
+  const doesInformeMatchTramo = useCallback(
+    async (idInforme, props, signal) => {
+      if (!tramoFilter?.enabled) return true;
 
-      setLoading(true);
+      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
+      if (!activeKey) return true;
 
-      try {
-        // ⏳ esperar a que el mapa esté listo (solo primera vez)
-        if (!didLoadRef.current) {
-          const mapHasBounds = () => {
-            try {
-              return !!map?.getBounds?.();
-            } catch {
-              return false;
-            }
-          };
+      const idInf = Number(idInforme) || null;
+      if (!idInf) return false;
 
-          if (!mapHasBounds()) {
-            await new Promise((resolve) => {
-              let done = false;
-              const finish = () => {
-                if (!done) {
-                  done = true;
-                  resolve();
-                }
-              };
+      const cacheKey = `${idInf}|${activeKey}`;
+      if (detalleTramoCacheRef.current.has(cacheKey)) {
+        return !!detalleTramoCacheRef.current.get(cacheKey);
+      }
 
-              try {
-                google.maps.event.addListenerOnce(map, "tilesloaded", finish);
-                google.maps.event.addListenerOnce(map, "idle", finish);
-                setTimeout(finish, 4000);
-              } catch {
-                resolve();
-              }
-            });
+      const directCandidates = [
+        props?.tramo,
+        props?.TRAMO,
+        props?.subtramo,
+        props?.sub_tramo,
+        props?.subTramo,
+        props?.tramos,
+        props?.subtramos,
+        props?.label_tramo,
+        props?.tramo_label,
+        props?.nombre_tramo,
+        props?.descripcion_tramo,
+      ].filter((x) => x != null && x !== "");
 
-            if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-          }
-        }
-
-        let metaMap = {};
-        if (informesMetaRef.current?.pid === pid) {
-          metaMap = informesMetaRef.current.map || {};
-        }
-
-        // 📥 cargar base
-        const baseFeatures = await fetchPuntosBase(forceBaseReload, ac.signal);
-        if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-
-        // 🔎 aplicar filtros iniciales
-        const visibleFeatures = await buildVisibleFeatures(
-          baseFeatures,
-          overrideFilters,
-          ac.signal
-        );
-        if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-
-        lastFeaturesRef.current = visibleFeatures;
-
-        const pointCount = visibleFeatures.filter(
-          (f) => f?.geometry?.type === "Point"
-        ).length;
-
-        if (typeof onHasData === "function") onHasData(pointCount > 0);
-
-        // 📦 cargar librería de markers
-        let markerLib = null;
-        try {
-          markerLib = await google.maps.importLibrary("marker");
-        } catch (e) {
-          console.warn("[ModuloInformes] importLibrary('marker') fallo:", e);
-        }
-
-        const AdvancedMarker =
-          markerLib?.AdvancedMarkerElement ||
-          google?.maps?.marker?.AdvancedMarkerElement;
-
-        const canUseAdvanced = !!AdvancedMarker;
-
-        const mustBuildMarkers =
-          rebuildMarkers ||
-          !markersBuiltRef.current ||
-          !markersRef.current.length;
-
-        if (mustBuildMarkers) {
-          clearMarkers();
-
-          const created = [];
-          const featuresToBuild = Array.isArray(baseFeatures)
-            ? baseFeatures
-            : [];
-
-          for (const f of featuresToBuild) {
-            if (ac.signal.aborted || seq !== loadSeqRef.current) break;
-            if (f?.geometry?.type !== "Point") continue;
-
-            const [lng, lat] = f.geometry.coordinates || [];
-            const props = f.properties || {};
-
-            const pos = { lat: toNum(lat), lng: toNum(lng) };
-            if (pos.lat == null || pos.lng == null) continue;
-
-            const idInf =
-              Number(
-                props.id_informe ??
-                  props.idInforme ??
-                  props.id ??
-                  props.id_informe_fk
-              ) || null;
-
-            const title = idInf ? `Informe #${idInf}` : "Informe";
-
-            const plantillaId =
-              Number(
-                props?.id_plantilla ??
-                  props?.plantilla_id ??
-                  props?.plantillaId ??
-                  props?.idPlantilla
-              ) || null;
-
-            // ✅ color correcto sin ref extra
-            let markerColorCss =
-              getMarkerColorFromProps(props) ||
-              props?.color ||
-              props?.color_hex ||
-              props?.colorHex ||
-              null;
-
-            if (!markerColorCss && plantillaId) {
-              markerColorCss = plantillaColorOf(plantillaId);
-            }
-
-            markerColorCss =
-              hexToCssColor(markerColorCss) ||
-              markerColorCss ||
-              DEFAULT_POINT_COLOR;
-
-            let mk = null;
-
-            if (canUseAdvanced) {
-              const el = createDropMarkerElement(markerColorCss, {
-                selected: false,
-              });
-
-              mk = new AdvancedMarker({
-                map: null,
-                position: pos,
-                content: el,
-                title,
-                gmpClickable: true,
-              });
-            }
-
-            if (!mk) continue;
-
-            mk.__idInforme = idInf;
-            mk.__plantillaId = plantillaId;
-            mk.__markerColor = markerColorCss;
-            mk.__baseMap = map;
-
-            const handleMarkerClick = () => {
-              autoFitEnabledRef.current = false;
-              openPointPanel(props);
-            };
-
-            try {
-              if (typeof mk.addListener === "function") {
-                mk.addListener("gmp-click", handleMarkerClick);
-              }
-            } catch {}
-
-            created.push(mk);
-          }
-
-          if (ac.signal.aborted || seq !== loadSeqRef.current) return;
-
-          markersRef.current = created;
-          markersBuiltRef.current = true;
-          setCount(created.length);
-
-          // 🔥 solo ocultar primera vez
-          if (!initialHideDoneRef.current) {
-            initialHideDoneRef.current = true;
-            for (const mk of created) setMarkerMap(mk, null);
-            setPointsVisible(false);
-          }
-        }
-
-        // 👁 aplicar visibilidad rápida
-        await applyMarkersVisibility(overrideFilters);
-
-        // 🎯 zoom inteligente
-        const activeTramoKey = getActiveTramoKeyFromFilter(tramoFilter);
-
-        let didZoomToTramo = false;
-        if (tramoFilter?.enabled && activeTramoKey) {
-          didZoomToTramo = zoomToActiveTramoPolygon();
-        }
-
-        if (!didZoomToTramo) {
-          const b = computeBoundsFromPoints(google, visibleFeatures);
-          if (b && autoFitEnabledRef.current) {
-            map.fitBounds(b);
-          }
-        }
-
-        didLoadRef.current = true;
-      } catch (e) {
-        if (String(e?.name) === "AbortError") return;
-        console.error("loadInformesPoints error:", e);
-        alerts.toast.error(e?.message || "No se pudieron cargar los puntos.");
-        if (typeof onHasData === "function") onHasData(true);
-      } finally {
-        if (mountedRef.current && seq === loadSeqRef.current) {
-          setLoading(false);
+      for (const candidate of directCandidates) {
+        const keys = extractTramoKeysFromText(candidate);
+        if (keys.includes(activeKey)) {
+          detalleTramoCacheRef.current.set(cacheKey, true);
+          return true;
         }
       }
+
+      const rows = await fetchInformeRowsLite(idInf, signal);
+      const ok = informeRowsMatchTramo(rows, tramoFilter);
+
+      detalleTramoCacheRef.current.set(cacheKey, !!ok);
+      return !!ok;
     },
-    [
-      google,
-      map,
-      pid,
-      tramoFilter,
-      fetchPuntosBase,
-      buildVisibleFeatures,
-      applyMarkersVisibility,
-      clearMarkers,
-      openPointPanel,
-      onHasData,
-      zoomToActiveTramoPolygon,
-    ]
+    [tramoFilter, fetchInformeRowsLite]
   );
 
+  const filterFeaturesByTramoSelection = useCallback(
+    async (features, signal) => {
+      if (!tramoFilter?.enabled) return features;
+
+      const activeKey = getActiveTramoKeyFromFilter(tramoFilter);
+      if (!activeKey) return features;
+
+      const ids = Array.from(
+        new Set(
+          (features || [])
+            .filter((f) => f?.geometry?.type === "Point")
+            .map((f) => {
+              const p = f.properties || {};
+              return Number(
+                p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk
+              ) || null;
+            })
+            .filter(Boolean)
+        )
+      );
+
+      if (!ids.length) return [];
+
+      const resultMap = new Map();
+      const CONC = 3;
+      let cursor = 0;
+
+      async function worker() {
+        while (cursor < ids.length) {
+          if (signal?.aborted) return;
+
+          const idx = cursor++;
+          const idInf = ids[idx];
+
+          const feature = (features || []).find((f) => {
+            const p = f?.properties || {};
+            const n =
+              Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
+            return n === idInf;
+          });
+
+          const props = feature?.properties || {};
+
+          try {
+            const ok = await doesInformeMatchTramo(idInf, props, signal);
+            resultMap.set(idInf, !!ok);
+          } catch (e) {
+            console.warn("doesInformeMatchTramo error:", idInf, e);
+            resultMap.set(idInf, true);
+          }
+        }
+      }
+
+      await Promise.all(
+        Array.from({ length: Math.min(CONC, ids.length) }, () => worker())
+      );
+
+      return (features || []).filter((f) => {
+        if (f?.geometry?.type !== "Point") return false;
+        const p = f.properties || {};
+        const idInf =
+          Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
+        return !!resultMap.get(idInf);
+      });
+    },
+    [tramoFilter, doesInformeMatchTramo]
+  );
+
+  const loadInformesPoints = useCallback(async (overrideFilters = {}) => {
+    if (!google || !map || !pid) return;
+
+    const nextFiltroInformeId =
+      overrideFilters.filtroInformeId ?? filtroInformeId;
+
+    const nextFiltroPlantillaId =
+      overrideFilters.filtroPlantillaId ?? filtroPlantillaId;
+
+    const seq = ++loadSeqRef.current;
+
+    try {
+      loadPointsAbortRef.current?.abort?.();
+    } catch {}
+
+    const ac = new AbortController();
+    loadPointsAbortRef.current = ac;
+
+    setLoading(true);
+
+    try {
+      clearMarkers();
+
+      if (!didLoadRef.current) {
+        const mapHasBounds = () => {
+          try {
+            return !!map?.getBounds?.();
+          } catch {
+            return false;
+          }
+        };
+
+        if (!mapHasBounds()) {
+          await new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (!done) {
+                done = true;
+                resolve();
+              }
+            };
+            try {
+              google.maps.event.addListenerOnce(map, "tilesloaded", finish);
+              google.maps.event.addListenerOnce(map, "idle", finish);
+              setTimeout(finish, 4000);
+            } catch {
+              resolve();
+            }
+          });
+
+          if (ac.signal.aborted || seq !== loadSeqRef.current) return;
+        }
+      }
+
+      let metaMap = {};
+      if (informesMetaRef.current?.pid === pid) {
+        metaMap = informesMetaRef.current.map || {};
+      }
+
+      Promise.resolve()
+        .then(() => ensureInformesMeta())
+        .then((meta) => {
+          if (!mountedRef.current || !meta) return;
+
+          informesMetaRef.current = {
+            pid,
+            map: meta?.map || {},
+            ts: Date.now(),
+          };
+        })
+        .catch(() => {});
+
+      const qs = new URLSearchParams();
+      if (nextFiltroInformeId !== "all") {
+        qs.set("informe", String(nextFiltroInformeId));
+      }
+      if (nextFiltroPlantillaId !== "all") {
+        qs.set("plantilla", String(nextFiltroPlantillaId));
+      }
+      qs.set("_ts", String(Date.now()));
+
+      const url = `${API_URL}/informes/proyecto/${pid}/puntos?${qs.toString()}`;
+      const data = await fetchGeoJSON(url, ac.signal);
+      if (ac.signal.aborted || seq !== loadSeqRef.current) return;
+
+      if (data?.ok === false) {
+        throw new Error(data?.error || "No se pudieron cargar los puntos.");
+      }
+
+      let features = Array.isArray(data?.features) ? data.features : [];
+      features = dedupePointFeatures(features);
+
+      const infId =
+        nextFiltroInformeId === "all" ? null : Number(nextFiltroInformeId) || null;
+
+      if (infId) {
+        features = features.filter((f) => {
+          if (f?.geometry?.type !== "Point") return false;
+          const p = f.properties || {};
+          const idInf =
+            Number(p.id_informe ?? p.idInforme ?? p.id ?? p.id_informe_fk) || null;
+          return idInf && Number(idInf) === Number(infId);
+        });
+      }
+
+      const tramoActivoKey = getActiveTramoKeyFromFilter(tramoFilter);
+
+      if (tramoFilter?.enabled && tramoActivoKey) {
+        try {
+          features = await filterFeaturesByTramoSelection(features, ac.signal);
+        } catch {
+          features = [];
+        }
+      }
+
+      if (ac.signal.aborted || seq !== loadSeqRef.current) return;
+
+      lastFeaturesRef.current = features;
+
+      const pointCount = features.filter((f) => f?.geometry?.type === "Point").length;
+      if (typeof onHasData === "function") onHasData(pointCount > 0);
+
+      let markerLib = null;
+      let markerImportError = null;
+      try {
+        markerLib = await google.maps.importLibrary("marker");
+      } catch (e) {
+        markerImportError = e;
+        console.warn("[ModuloInformes] importLibrary('marker') fallo:", e);
+      }
+
+      const AdvancedMarker =
+        markerLib?.AdvancedMarkerElement || google?.maps?.marker?.AdvancedMarkerElement;
+
+      const caps =
+        typeof map?.getMapCapabilities === "function"
+          ? map.getMapCapabilities?.()
+          : null;
+
+      const advAvailable = caps?.isAdvancedMarkersAvailable;
+      if (caps && advAvailable !== true) {
+        throw new Error(
+          "AdvancedMarkerElement requires a mapId configured on the Google Map instance."
+        );
+      }
+
+      if (!caps) {
+        const mapId = map?.__e3a?.mapId || map?.mapId || null;
+        if (!mapId) {
+          // mantener compatibilidad
+        }
+      }
+
+      const canUseAdvanced = !!AdvancedMarker;
+
+      if (!canUseAdvanced && markerImportError) {
+        throw new Error(
+          "No se pudo inicializar Google Advanced Marker en informes (import marker fallo)."
+        );
+      }
+
+      const markerPathStats = {
+        advContent: 0,
+        legacy: 0,
+      };
+
+      const created = [];
+
+      for (const f of features) {
+        if (ac.signal.aborted || seq !== loadSeqRef.current) break;
+        if (f?.geometry?.type !== "Point") continue;
+
+        const [lng, lat] = f.geometry.coordinates || [];
+        const props = f.properties || {};
+
+        const pos = { lat: toNum(lat), lng: toNum(lng) };
+        if (pos.lat == null || pos.lng == null) continue;
+
+        const idInf =
+          Number(
+            props.id_informe ?? props.idInforme ?? props.id ?? props.id_informe_fk
+          ) || null;
+
+        const title = props.titulo || (idInf ? `Informe #${idInf}` : "Informe");
+
+        const plantillaId = getPlantillaIdFromPointProps(props, metaMap, idInf);
+        const metaInf = idInf ? metaMap[idInf] : null;
+
+        const plantillaNombre =
+          props?.nombre_plantilla ??
+          props?.plantilla_nombre ??
+          props?.plantilla ??
+          metaInf?.plantillaNombre ??
+          (plantillaId ? `Plantilla #${plantillaId}` : null);
+
+        const plantillaColor = plantillaId
+          ? metaInf?.plantillaColor || plantillaColorOf(plantillaId)
+          : null;
+
+        const semaforoColorCss = getMarkerColorFromProps(props);
+
+        const forcedPlantColor =
+          nextFiltroPlantillaId !== "all"
+            ? plantillaColorOf(nextFiltroPlantillaId)
+            : null;
+
+        const markerColorCss =
+          semaforoColorCss ||
+          forcedPlantColor ||
+          plantillaColor ||
+          hexToCssColor(DEFAULT_POINT_COLOR) ||
+          DEFAULT_POINT_COLOR;
+
+        const propsEnriched = {
+          ...props,
+          id_informe: idInf ?? props.id_informe,
+          __plantillaId: plantillaId,
+          __plantillaNombre: plantillaNombre,
+          __plantillaColor: plantillaColor,
+          __markerColor: markerColorCss,
+        };
+
+        let mk = null;
+
+        if (AdvancedMarker) {
+          const el = createDropMarkerElement(markerColorCss, { selected: false });
+
+          mk = new AdvancedMarker({
+            map: null,
+            position: pos,
+            content: el,
+            title,
+            gmpClickable: true,
+          });
+
+          markerPathStats.advContent += 1;
+        } else {
+          continue;
+        }
+
+        if (!mk) continue;
+
+        mk.__idInforme = idInf;
+        mk.__plantillaId = plantillaId;
+        mk.__markerColor = markerColorCss;
+        mk.__baseMap = map;
+
+        const handleMarkerClick = () => {
+          autoFitEnabledRef.current = false;
+          openPointPanel(propsEnriched);
+        };
+
+        try {
+          if (typeof mk.addListener === "function") {
+            mk.addListener("gmp-click", handleMarkerClick);
+          }
+        } catch (e) {
+          console.warn("[ModuloInformes] no se pudo enlazar gmp-click al marker:", e);
+        }
+
+        try {
+          if ("zIndex" in mk) mk.zIndex = 999999;
+          else if (typeof mk.setZIndex === "function") mk.setZIndex(999999);
+        } catch {}
+
+        created.push(mk);
+      }
+
+      if (ac.signal.aborted || seq !== loadSeqRef.current) {
+        for (const mk of created) {
+          try {
+            if ("map" in mk) mk.map = null;
+            else if (typeof mk.setMap === "function") mk.setMap(null);
+          } catch {}
+        }
+        return;
+      }
+
+      markersRef.current = created;
+      setCount(created.length);
+
+      // 🔹 al terminar la carga inicial, ocultar como si se tocara "Ocultar puntos"
+      if (!initialHideDoneRef.current) {
+        initialHideDoneRef.current = true;
+
+        for (const mk of created) {
+          setMarkerMap(mk, null);
+        }
+
+        setPointsVisible(false);
+      } else {
+        for (const mk of created) {
+          setMarkerMap(mk, enabled && pointsVisible ? map : null);
+        }
+      }
+
+      if (TRACE_INF_MARKERS) {
+        console.info("[ModuloInformes] marker tracing", {
+          seq,
+          created: created.length,
+          pointCount,
+          markerImportOk: !markerImportError,
+          markerImportError: markerImportError
+            ? String(markerImportError?.message || markerImportError)
+            : null,
+          paths: markerPathStats,
+        });
+      }
+
+      const b = computeBoundsFromPoints(google, features);
+      if (b && autoFitEnabledRef.current) map.fitBounds(b);
+
+      Promise.resolve()
+        .then(() => reportChartsAvailability(features))
+        .catch((e) => {
+          console.warn("reportChartsAvailability error:", e);
+        });
+
+      didLoadRef.current = true;
+    } catch (e) {
+      if (String(e?.name) === "AbortError") return;
+      console.error("loadInformesPoints error:", e);
+      alerts.toast.error(e?.message || "No se pudieron cargar los puntos.");
+      if (typeof onHasData === "function") onHasData(true);
+    } finally {
+      if (mountedRef.current && seq === loadSeqRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [
+    google,
+    map,
+    pid,
+    enabled,
+    pointsVisible,
+    fetchGeoJSON,
+    openPointPanel,
+    clearMarkers,
+    onHasData,
+    reportChartsAvailability,
+    filtroPlantillaId,
+    filtroInformeId,
+    tramoFilter,
+    filterFeaturesByTramoSelection,
+    ensureInformesMeta,
+  ]);
+
   const handleQuickPlantillaFilter = useCallback(async (plantillaId) => {
-    const nextPlantillaId = String(plantillaId || "all");
+    const nextPlantillaId = String(plantillaId);
 
     autoFitEnabledRef.current = true;
+    didLoadRef.current = false;
 
     setSelectedPoint(null);
     setRightOpen(false);
@@ -2646,35 +2345,21 @@ export default function ModuloInformes({
 
     setFiltroInformeId("all");
     setFiltroPlantillaId(nextPlantillaId);
-
-    // 🔥 importante
     setPointsVisible(true);
 
     try {
-      const hasBuiltMarkers =
-        markersBuiltRef.current && (markersRef.current || []).length > 0;
-
-      if (!hasBuiltMarkers) {
-        await loadInformesPoints(
-          {
-            filtroInformeId: "all",
-            filtroPlantillaId: nextPlantillaId,
-          },
-          { forceBaseReload: false, rebuildMarkers: true }
-        );
-      } else {
-        await applyMarkersVisibility({
-          filtroInformeId: "all",
-          filtroPlantillaId: nextPlantillaId,
-        });
-      }
+      await loadInformesPoints({
+        filtroInformeId: "all",
+        filtroPlantillaId: nextPlantillaId,
+      });
     } catch (e) {
       console.error("Error al aplicar filtro rápido de plantilla:", e);
     }
-  }, [loadInformesPoints, applyMarkersVisibility]);
+  }, [loadInformesPoints]);
 
-  const clearQuickPlantillaFilter = useCallback(async () => {
+  const clearQuickPlantillaFilter = useCallback(() => {
     autoFitEnabledRef.current = true;
+    didLoadRef.current = false;
 
     setSelectedPoint(null);
     setRightOpen(false);
@@ -2685,32 +2370,10 @@ export default function ModuloInformes({
 
     setFiltroInformeId("all");
     setFiltroPlantillaId("all");
+    setPointsVisible(false);
 
-    // 🔥 importante
-    setPointsVisible(true);
-
-    try {
-      const hasBuiltMarkers =
-        markersBuiltRef.current && (markersRef.current || []).length > 0;
-
-      if (!hasBuiltMarkers) {
-        await loadInformesPoints(
-          {
-            filtroInformeId: "all",
-            filtroPlantillaId: "all",
-          },
-          { forceBaseReload: false, rebuildMarkers: true }
-        );
-      } else {
-        await applyMarkersVisibility({
-          filtroInformeId: "all",
-          filtroPlantillaId: "all",
-        });
-      }
-    } catch (e) {
-      console.error("Error al limpiar filtro rápido de plantilla:", e);
-    }
-  }, [loadInformesPoints, applyMarkersVisibility]);
+    clearMarkers();
+  }, [clearMarkers]);
 
   const floatingVisiblePlantillas = useMemo(() => {
     const start = floatingPage * 5;
@@ -2719,34 +2382,6 @@ export default function ModuloInformes({
 
   const floatingHasPrev = floatingPage > 0;
   const floatingHasNext = (floatingPage + 1) * 5 < floatingPlantillas.length;
-
-  useEffect(() => {
-    if (!enabled || !google || !map || !pid) return;
-
-    setPointsVisible(true);
-
-    const hasBuiltMarkers =
-      markersBuiltRef.current && (markersRef.current || []).length > 0;
-
-    if (!hasBuiltMarkers) {
-      loadInformesPoints(
-        {
-          filtroInformeId,
-          filtroPlantillaId,
-        },
-        { forceBaseReload: false, rebuildMarkers: false }
-      ).catch((e) => {
-        console.warn("loadInformesPoints on enable error:", e);
-      });
-    } else {
-      applyMarkersVisibility({
-        filtroInformeId,
-        filtroPlantillaId,
-      }).catch((e) => {
-        console.warn("applyMarkersVisibility on enable error:", e);
-      });
-    }
-  }, [enabled, google, map, pid]);
 
   useEffect(() => {
     autoFitEnabledRef.current = true;
@@ -2787,10 +2422,171 @@ export default function ModuloInformes({
     setFiltroPlantillaId("all");
   }, [pid, clearMarkers]);
 
-  // ------------------------------
-  // ACÁ dejás tu RETURN actual tal como ya lo tenías
-  // No toques el JSX visual si ya te estaba sirviendo.
-  // ------------------------------
+  const tramoReloadKey = `${tramoFilter?.enabled ? 1 : 0}|${getActiveTramoKeyFromFilter(tramoFilter)}`;
+  const lastTramoReloadKeyRef = useRef("");
+
+  useEffect(() => {
+    if (!enabled || !google || !map || !pid) return;
+
+    if (lastTramoReloadKeyRef.current === tramoReloadKey) return;
+    lastTramoReloadKeyRef.current = tramoReloadKey;
+
+    didLoadRef.current = false;
+    autoFitEnabledRef.current = true;
+    
+    setRightOpen(false);
+    setVerInformeOpen(false);
+    setDetalleData(null);setSelectedPoint(null);
+    setDetalleError(null);
+    setDetalleIdInforme(null);
+    setBusqResults([]);
+
+    loadInformesPoints();
+  }, [enabled, google, map, pid, tramoReloadKey, loadInformesPoints]);
+
+  const loadDetalleInforme = useCallback(
+    async (idInforme) => {
+      if (!idInforme) return;
+      if (detalleIdInforme === idInforme && detalleData?.rows?.length) return;
+
+      const ac = new AbortController();
+
+      setDetalleLoading(true);
+      setDetalleError(null);
+      setDetalleData(null);
+
+      try {
+        const resp = await fetch(`${API_URL}/informes/${idInforme}`, {
+          headers: { ...authHeaders() },
+          signal: ac.signal,
+        });
+
+        if (handle401(resp)) return;
+
+        const ct = resp.headers.get("content-type") || "";
+        const isJson = ct.includes("application/json");
+        const data = isJson ? await resp.json() : null;
+
+        if (!resp.ok || data?.ok === false) {
+          const msg =
+            data?.error ||
+            data?.message ||
+            (isJson ? `Error ${resp.status}` : await resp.text());
+          throw new Error(msg || `Error ${resp.status}`);
+        }
+
+        const preguntas = data?.preguntas || data?.data?.preguntas || [];
+        const respuestas = data?.respuestas || data?.data?.respuestas || [];
+        const fotos = data?.fotos || data?.data?.fotos || [];
+
+        const preguntasById = new Map();
+        for (const p of preguntas) preguntasById.set(Number(p.id_pregunta), p);
+
+        const mapResp = new Map();
+        for (const r of respuestas) {
+          const idp = r?.id_pregunta;
+          if (!idp) continue;
+          const v = formatRespuestaValue(r);
+          mapResp.set(idp, v || "");
+        }
+
+        const rows = preguntas.map((p) => ({
+          id_pregunta: p.id_pregunta,
+          etiqueta: p.etiqueta || `Pregunta ${p.id_pregunta}`,
+          valor: mapResp.get(p.id_pregunta) || "-",
+        }));
+
+        const fotosByPregunta = groupFotosByPregunta(fotos);
+        const fotosCount = (fotos || []).length;
+
+        setDetalleIdInforme(idInforme);
+        setDetalleData({ rows, fotosByPregunta, preguntasById, fotosCount });
+      } catch (e) {
+        const msg = e?.message || "No se pudo cargar el detalle.";
+        setDetalleError(msg);
+        alerts.toast.error(msg);
+      } finally {
+        if (mountedRef.current) setDetalleLoading(false);
+      }
+
+      return () => ac.abort();
+    },
+    [detalleIdInforme, detalleData]
+  );
+
+  const onClickVerInforme = async () => {
+    const idInforme = selectedPoint?.id_informe;
+    if (!idInforme) return;
+
+    if (!verInformeOpen) {
+      setVerInformeOpen(true);
+      await loadDetalleInforme(idInforme);
+      return;
+    }
+    setVerInformeOpen(false);
+  };
+
+  const onClickVerFotos = async () => {
+    const idInforme = selectedPoint?.id_informe;
+    if (!idInforme) return;
+
+    if (!detalleData || detalleIdInforme !== idInforme) {
+      await loadDetalleInforme(idInforme);
+    }
+    setFotosModalOpen(true);
+  };
+
+  const onClickVerCharts = async () => {
+    const idInforme = selectedPoint?.id_informe;
+    if (!idInforme) return;
+
+    setChartsError(null);
+
+    if (!detalleData || detalleIdInforme !== idInforme) {
+      await loadDetalleInforme(idInforme);
+    }
+
+    const rows =
+      (detalleIdInforme === idInforme ? detalleData?.rows : null) ||
+      detalleData?.rows ||
+      [];
+    const stats = buildChartStatsFromRows(rows);
+
+    if (typeof onChartsInfo === "function") {
+      let ids = chartsPayloadRef.current?.ids || [];
+
+      const allIds = await fetchInformeIdsByProyecto(pid);
+      if (Array.isArray(allIds) && allIds.length) ids = allIds;
+
+      if (!ids.length)
+        ids = extractInformeIdsFromFeatures(lastFeaturesRef.current || []);
+
+      const pl = chartsPayloadRef.current?.plantilla ?? null;
+      const plId = chartsPayloadRef.current?.plantillaId ?? null;
+
+      try {
+        onChartsInfo({
+          open: true,
+          id_informe: idInforme,
+          titulo:
+            selectedPoint?.titulo ||
+            (idInforme ? `Informe #${idInforme}` : "Informe"),
+          informeIds: ids,
+          ids,
+          plantilla: pl,
+          plantillaId: plId,
+          rows,
+          stats,
+        });
+      } catch (e) {
+        console.warn("onChartsInfo error:", e);
+      }
+      return;
+    }
+
+    setChartsStats(stats);
+    setChartsOpen(true);
+  };
 
   if (!enabled) return null;
 
@@ -3269,7 +3065,7 @@ export default function ModuloInformes({
               flex: "0 0 auto",
             }}
           >
-            Todos
+            Ocultar
           </button>
 
           {floatingHasPrev ? (
@@ -3510,7 +3306,6 @@ export default function ModuloInformes({
                     size="sm"
                     variant={verInformeOpen ? "primary" : "outline-primary"}
                     onClick={onClickVerInforme}
-                    disabled={!selectedPoint?.id_informe}
                   >
                     {verInformeOpen ? "Cerrar informe" : "Ver informe"}
                   </Button>

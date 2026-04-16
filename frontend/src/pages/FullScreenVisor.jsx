@@ -1,4 +1,5 @@
-// src/pages/FullScreenVisor.jsx ✅ COMPLETO
+// src/pages/FullScreenVisor.jsx
+// ✅ COMPLETO
 // ✅ ModuloTramos pasa { id_tramo, label, feature } al padre
 // ✅ tramoFilter ahora incluye:
 //    - activeTramoId
@@ -7,6 +8,7 @@
 //    - activeTramoLabelNorm
 //    - feature
 // ✅ listo para que ModuloInformes filtre por pregunta/respuesta de tramo
+// ✅ ahora también pasa onZoomToActiveTramo a ModuloInformes
 
 import React, { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -41,12 +43,10 @@ function authHeaders() {
 const DBG = false;
 function log(...args) {
   if (!DBG) return;
-  // eslint-disable-next-line no-console
   console.log(...args);
 }
 function warn(...args) {
   if (!DBG) return;
-  // eslint-disable-next-line no-console
   console.warn(...args);
 }
 
@@ -290,8 +290,7 @@ export default function FullScreenVisor() {
       setReady(false);
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [API_KEY, MAP_ID]);
+  }, [API_KEY, MAP_ID, mapType]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -468,12 +467,6 @@ export default function FullScreenVisor() {
 
     setHasData((p) => ({ ...p, tramos: has || hasTramosStickyRef.current }));
 
-    // ❌ ya no apagar puntos automáticamente cuando cargan tramos
-    // if (has) {
-    //   setPuntosEnabled(false);
-    //   setPuntosPanelOpen(false);
-    // }
-
     requestAnimationFrame(() => {
       const ui = tramosUIRef.current;
       if (ui?.getEnabled) {
@@ -539,6 +532,56 @@ export default function FullScreenVisor() {
     activeTramoLabelNorm: normalizeTextLoose(activeTramoLabel),
     feature: activeTramoFeature,
   };
+
+  /* =========================
+     zoom al polígono del tramo activo
+  ========================= */
+  const handleZoomToActiveTramo = useCallback(() => {
+    try {
+      const map = mapRef.current;
+      const g = window.google;
+
+      if (!map || !g?.maps) return false;
+      if (!tramoFilter?.enabled) return false;
+
+      const feature = tramoFilter.feature;
+      const geom = feature?.geometry;
+
+      if (!geom?.coordinates) return false;
+
+      const bounds = new g.maps.LatLngBounds();
+
+      const extendCoords = (coords) => {
+        if (!Array.isArray(coords)) return;
+
+        if (
+          coords.length >= 2 &&
+          typeof coords[0] === "number" &&
+          typeof coords[1] === "number"
+        ) {
+          const lng = Number(coords[0]);
+          const lat = Number(coords[1]);
+
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            bounds.extend({ lat, lng });
+          }
+          return;
+        }
+
+        coords.forEach(extendCoords);
+      };
+
+      extendCoords(geom.coordinates);
+
+      if (bounds.isEmpty()) return false;
+
+      map.fitBounds(bounds, 40);
+      return true;
+    } catch (e) {
+      console.warn("handleZoomToActiveTramo error:", e);
+      return false;
+    }
+  }, [tramoFilter]);
 
   return (
     <div className="visor-full-page" style={{ height: "100vh", width: "100%" }}>
@@ -683,6 +726,7 @@ export default function FullScreenVisor() {
               onHasCharts={setHasInformeCharts}
               onChartsInfo={handleInformeChartsInfo}
               tramoFilter={tramoFilter}
+              onZoomToActiveTramo={handleZoomToActiveTramo}
             />
           </ErrorBoundary>
         )}
