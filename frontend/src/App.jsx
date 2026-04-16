@@ -49,6 +49,7 @@ import EditarActa from "./pages/EditarActa";
 import InformePlantillaBuilder from "./pages/InformePlantillaBuilder";
 import InformeDinamico from "./pages/InformeDinamico";
 import InformesProyecto from "./pages/InformesProyecto";
+import DiagnosticoProyecto from "./pages/DiagnosticoProyecto";
 import InformesProyectoPlantillas from "./pages/InformesProyectoPlantillas";
 
 import EncuestasPorCliente from "@/pages/EncuestasPorCliente";
@@ -938,6 +939,17 @@ function App() {
               <ProtectedRoute>
                 <RequirePerm anyOf={PERMS.INFORMES} redirectTo="/proyectos">
                   <InformesProyecto />
+                </RequirePerm>
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="proyectos/:idProyecto/diagnostico"
+            element={
+              <ProtectedRoute>
+                <RequirePerm anyOf={PERMS.INFORMES} redirectTo="/proyectos">
+                  <DiagnosticoProyecto />
                 </RequirePerm>
               </ProtectedRoute>
             }
