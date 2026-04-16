@@ -6058,8 +6058,13 @@ async function duplicarPlantilla(req, res) {
         FROM ema.informe i
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
         LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
-        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
-          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.formula_resultado fr ON fr.id_resultado = (
+          SELECT fr2.id_resultado 
+          FROM ema.formula_resultado fr2 
+          WHERE fr2.id_registro = ir.id_registro 
+          ORDER BY fr2.id_resultado DESC 
+          LIMIT 1
+        )
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
           AND pu.id_usuario = $${scope.userParamIndex}
@@ -6101,6 +6106,7 @@ async function duplicarPlantilla(req, res) {
           fr.fecha_recalculo,
           fr.fecha_manual_evaluacion,
           fr.fecha_revision_usuario,
+          fr.version_formula,
           CONCAT(u.first_name, ' ', u.last_name) AS evaluador_nombre,
           (
             SELECT jsonb_object_agg(q_vis.etiqueta, 
@@ -6123,8 +6129,13 @@ async function duplicarPlantilla(req, res) {
         FROM ema.informe i
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
         LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
-        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
-          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.formula_resultado fr ON fr.id_resultado = (
+          SELECT fr2.id_resultado 
+          FROM ema.formula_resultado fr2 
+          WHERE fr2.id_registro = ir.id_registro 
+          ORDER BY fr2.id_resultado DESC 
+          LIMIT 1
+        )
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
           AND pu.id_usuario = $${scope.userParamIndex}

@@ -1,5 +1,5 @@
 import React from "react";
-import { Table, Badge, Button } from "react-bootstrap";
+import { Table, Badge, Button, Form } from "react-bootstrap";
 
 const formatearFecha = (iso) => {
   if (!iso) return "-";
@@ -15,6 +15,10 @@ export default function InformesTableOperativo({
   descargarPdfInforme,
   puedeEditar,
   puedeEliminarAdmin,
+  selectedIds = [],
+  onToggleSelection,
+  onSelectAll,
+  allSelected = false,
 }) {
   // Columnas fijas:
   // ID (80px), Plantilla (150px), Identificador (220px), Fecha (140px), Usuario (160px), Acciones (240px)
@@ -27,7 +31,14 @@ export default function InformesTableOperativo({
       <Table hover size="sm" className="mb-0 bg-white" style={{ tableLayout: 'fixed', minWidth: '1000px' }}>
         <thead className="table-light text-uppercase text-muted" style={{ fontSize: '0.7rem', letterSpacing: '0.05em' }}>
           <tr>
-            <th style={{ width: '80px' }} className="ps-3 py-3">ID</th>
+            <th style={{ width: '40px' }} className="ps-3 py-3 text-center">
+              <Form.Check 
+                type="checkbox" 
+                checked={allSelected} 
+                onChange={onSelectAll} 
+              />
+            </th>
+            <th style={{ width: '80px' }} className="py-3">ID</th>
             <th style={{ width: '150px' }} className="py-3">Plantilla</th>
             <th style={{ width: '220px' }} className="py-3">Identificador</th>
             
@@ -45,8 +56,15 @@ export default function InformesTableOperativo({
             const resps = inf.respuestas_clave || {};
 
             return (
-              <tr key={inf.id_informe}>
-                <td className="ps-3 align-middle py-2">
+              <tr key={inf.id_informe} className={selectedIds.includes(inf.id_informe) ? "table-active" : ""}>
+                <td className="ps-3 align-middle text-center py-2">
+                  <Form.Check 
+                    type="checkbox" 
+                    checked={selectedIds.includes(inf.id_informe)} 
+                    onChange={() => onToggleSelection(inf.id_informe)} 
+                  />
+                </td>
+                <td className="align-middle py-2">
                   <Badge bg="secondary" className="fw-normal">#{inf.id_informe}</Badge>
                 </td>
                 <td className="text-truncate align-middle py-2" title={inf.nombre_plantilla}>
@@ -86,7 +104,7 @@ export default function InformesTableOperativo({
                     </Button>
 
                     {puedeEliminarAdmin && (
-                      <Button variant="outline-danger" size="sm" className="py-1 px-2 border-0" onClick={() => eliminarInforme(inf.id_informe)}>
+                      <Button variant="danger" size="sm" className="py-1 px-2 shadow-sm" onClick={() => eliminarInforme(inf.id_informe)} title="Eliminar Informe">
                         <i className="bi bi-trash"></i>
                       </Button>
                     )}

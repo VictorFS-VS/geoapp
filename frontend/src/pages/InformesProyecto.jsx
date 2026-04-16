@@ -275,7 +275,7 @@ const InformesProyecto = () => {
   const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
 
   // 👇 ya NO depende de admin
-  const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
+  const puedeEliminarAdmin = useMemo(() => esAdmin || puedeEliminar, [esAdmin, puedeEliminar]);
 
   // KMZ
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
@@ -606,6 +606,21 @@ const InformesProyecto = () => {
     } catch (err) {
       console.error("Error eliminando informe:", err);
       Toast.fire({ icon: "error", title: "No se pudo eliminar el informe." });
+    }
+  };
+
+
+
+  const toggleSelection = (id) => {
+    const n = Number(id);
+    setSelectedIds(prev => prev.includes(n) ? prev.filter(x => x !== n) : [...prev, n]);
+  };
+
+  const selectAll = () => {
+    if (allSelected) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(allIds);
     }
   };
 
@@ -945,6 +960,10 @@ const InformesProyecto = () => {
             puedeDescargarKmz={puedeDescargarKmz}
             downloadingKmzByInforme={downloadingKmzByInforme}
             anyDownloading={anyDownloading}
+            selectedIds={selectedIds}
+            onToggleSelection={toggleSelection}
+            onSelectAll={selectAll}
+            allSelected={allSelected}
           />
           <Pagination 
             page={meta?.page || 1} 

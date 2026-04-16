@@ -36,6 +36,21 @@ function hasPerm(auth, code) {
   return false;
 }
 
+function isAdminUser(auth) {
+  const raw = auth?.user;
+  const t = Number(raw?.tipo_usuario ?? raw?.group_id);
+  if (t === 1) return true;
+  try {
+    const s = localStorage.getItem("user");
+    if (!s) return false;
+    const u = JSON.parse(s);
+    const t2 = Number(u?.tipo_usuario ?? u?.group_id);
+    return t2 === 1;
+  } catch {
+    return false;
+  }
+}
+
 function getFilenameFromContentDisposition(cd) {
   if (!cd) return "";
   const m = cd.match(/filename\*=UTF-8''([^;]+)|filename="([^"]+)"/i);
@@ -91,6 +106,7 @@ export default function DiagnosticoProyecto() {
   const navigate = useNavigate();
 
   const auth = useAuth();
+  const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
 
   const [searchParams] = useSearchParams();
@@ -174,7 +190,6 @@ export default function DiagnosticoProyecto() {
     } catch(e) { console.error(e); }
   };
 
-  const [selectedIds, setSelectedIds] = useState([]);
   const [evaluando, setEvaluando] = useState(false);
   const [descargando, setDescargando] = useState(false);
   
@@ -185,11 +200,6 @@ export default function DiagnosticoProyecto() {
   // View Modal
   const [showViewModal, setShowViewModal] = useState(false);
   const [idInformeSel, setIdInformeSel] = useState(null);
-
-  const allIds = useMemo(
-    () => (informes || []).map((i) => Number(i.id_informe)).filter((n) => Number.isFinite(n) && n > 0),
-    [informes]
-  );
 
   const handleEjecutarEvaluacionMasiva = async () => {
     if (!idProyecto || !idPlantillaFiltro) return;
@@ -366,6 +376,7 @@ export default function DiagnosticoProyecto() {
               setIdInformeSel(id);
               setShowViewModal(true);
             }}
+            formulaActiva={formulaActiva}
           />
           <Pagination 
             page={meta?.page || 1} 
