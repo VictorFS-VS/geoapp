@@ -29,6 +29,14 @@ const Toast = Swal.mixin({
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const API_URL = BASE.endsWith("/api") ? BASE : `${BASE}/api`;
 
+
+function buildClientRequestId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
 /* ------------------------ Helpers ------------------------ */
 async function fetchJSON(url, options = {}) {
   const res = await fetch(url, options);
@@ -742,13 +750,13 @@ export default function PublicInforme() {
   };
 
   /* ------------------------ Cola Offline (IndexedDB) ------------------------ */
-  const enqueueLocalSubmit = async ({ titulo, respuestasObj, fotosObj }) => {
+  const enqueueLocalSubmit = async ({ titulo, respuestasObj, fotosObj, clientRequestId }) => {
     const count = await idbCountByToken(token);
     if (count >= MAX_PENDIENTES) {
       throw new Error(`Se alcanzó el máximo de formularios pendientes (${MAX_PENDIENTES}).`);
     }
 
-    const idLocal = `local_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const idLocal = clientRequestId || buildClientRequestId();
 
     const fotos = [];
     for (const [idPreg, arr] of Object.entries(fotosObj || {})) {
@@ -765,6 +773,7 @@ export default function PublicInforme() {
 
     const payload = {
       idLocal,
+      client_request_id: idLocal,
       token,
       createdAt: new Date().toISOString(),
       titulo: titulo || "",
@@ -780,6 +789,7 @@ export default function PublicInforme() {
 
   const sendQueuedItem = async (item) => {
     const hasPhotos = Array.isArray(item?.fotos) && item.fotos.length > 0;
+    const clientRequestId = item?.client_request_id || item?.idLocal || buildClientRequestId();
 
     if (!hasPhotos) {
       await fetchJSON(`${API_URL}/informes-public/${token}/enviar`, {
@@ -788,6 +798,7 @@ export default function PublicInforme() {
         body: JSON.stringify({
           titulo: item.titulo || null,
           respuestas: item.respuestas || {},
+          client_request_id: clientRequestId,
         }),
       });
       return;
@@ -796,6 +807,7 @@ export default function PublicInforme() {
     const formData = new FormData();
     formData.append("titulo", item.titulo || "");
     formData.append("respuestas", JSON.stringify(item.respuestas || {}));
+    formData.append("client_request_id", clientRequestId);
 
     for (const f of item.fotos) {
       const file = new File([f.blob], f.name || "foto.jpg", { type: f.type || "image/jpeg" });
@@ -881,6 +893,7 @@ export default function PublicInforme() {
     }
 
     const tituloEnvio = data?.share?.titulo || data?.plantilla?.nombre || null;
+    const clientRequestId = buildClientRequestId();
 
     // ✅ SOLO respuestas visibles
     const respuestasObj = {};
@@ -952,7 +965,7 @@ export default function PublicInforme() {
       setEnviando(true);
 
       if (!navigator.onLine) {
-        await enqueueLocalSubmit({ titulo: tituloEnvio, respuestasObj, fotosObj });
+        await enqueueLocalSubmit({ titulo: tituloEnvio, respuestasObj, fotosObj, clientRequestId });
         Toast.fire({ icon: "info", title: "Sin internet: guardado localmente. Se enviará al recuperar conexión." });
         resetFormUI(e.target);
         return;
@@ -962,7 +975,7 @@ export default function PublicInforme() {
         await fetchJSON(`${API_URL}/informes-public/${token}/enviar`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ titulo: tituloEnvio, respuestas: respuestasObj }),
+          body: JSON.stringify({ titulo: tituloEnvio, respuestas: respuestasObj, client_request_id: clientRequestId }),
         });
 
         Toast.fire({ icon: "success", title: "Formulario enviado correctamente" });
@@ -974,6 +987,7 @@ export default function PublicInforme() {
       formData.append("titulo", tituloEnvio || "");
       // ✅ backend espera req.body.respuestas (string JSON) o objeto
       formData.append("respuestas", JSON.stringify(respuestasObj));
+      formData.append("client_request_id", clientRequestId);
 
       Object.entries(fotosObj).forEach(([idPreg, archivos]) => {
         (archivos || []).forEach((file) => {
@@ -1019,7 +1033,7 @@ export default function PublicInforme() {
 
       // ✅ otros errores (red/500): guardar offline para no perder
       try {
-        await enqueueLocalSubmit({ titulo: tituloEnvio, respuestasObj, fotosObj });
+        await enqueueLocalSubmit({ titulo: tituloEnvio, respuestasObj, fotosObj, clientRequestId });
         Toast.fire({
           icon: "info",
           title: "No se pudo enviar: guardado localmente. Se enviará cuando vuelva la conexión.",

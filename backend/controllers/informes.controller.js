@@ -4043,12 +4043,15 @@ async function publicSubmitShareForm(req, res) {
         s.id_share,
         s.id_plantilla,
         s.id_proyecto,
+        s.token,
         s.titulo,
+        s.abierto_desde,
         s.expira_en,
+        s.cerrado_en,
+        s.cerrado_por,
         s.max_envios,
         s.envios_count,
-        s.cerrado_en,
-        COALESCE(s.activo, true) AS activo
+        s.creado_por
       FROM ema.informe_share_link s
       WHERE s.token = $1
       LIMIT 1
@@ -4062,11 +4065,6 @@ async function publicSubmitShareForm(req, res) {
     }
 
     const link = linkRes.rows[0];
-
-    if (!link.activo) {
-      await client.query("ROLLBACK");
-      return res.status(410).json({ ok: false, error: "El link ya no está activo" });
-    }
 
     if (link.cerrado_en) {
       await client.query("ROLLBACK");
@@ -4084,7 +4082,10 @@ async function publicSubmitShareForm(req, res) {
       Number(link.envios_count || 0) >= Number(link.max_envios)
     ) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ ok: false, error: "Se alcanzó el máximo de envíos permitido" });
+      return res.status(409).json({
+        ok: false,
+        error: "Se alcanzó el máximo de envíos permitido",
+      });
     }
 
     // 2) Idempotencia: si ya existe este mismo envío, devolver OK sin duplicar
@@ -4324,20 +4325,6 @@ async function publicSubmitShareForm(req, res) {
       [link.id_share]
     );
 
-    // =========================
-    // MOTOR DE SCORING (PUBLIC SUBMIT)
-    // =========================
-    try {
-      const regRes = await client.query(
-        `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
-        [idInforme]
-      );
-      const idRegistro = regRes.rows[0].id_registro;
-      await scoringEngine.runScoring(idRegistro, client);
-    } catch (scoringErr) {
-      console.error("[Scoring/Public] Error en submit:", scoringErr.message);
-    }
-
     await client.query("COMMIT");
 
     return res.status(201).json({
@@ -4376,8 +4363,6 @@ async function publicSubmitShareForm(req, res) {
     client.release();
   }
 }
-
-
 
 // 7) GET /api/informes/proyecto/:idProyecto/export/excel?plantilla=ID
 // Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
