@@ -4142,13 +4142,50 @@ async function publicSubmitShareForm(req, res) {
     const preguntas = qRes.rows || [];
     const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
 
-    // 4) Resolver preguntas visibles
+    // 3b) Mapeo etiquetas -> IDs para compatibilidad con mobile legacy
+    const labelToId = {};
+    for (const q of preguntas) {
+      const key = String(q.etiqueta || "").trim().toLowerCase();
+      if (key) labelToId[key] = Number(q.id_pregunta);
+    }
+
+    const answersForRules = {};
+    const rawR = respuestasObj || {};
+    for (const [k, v] of Object.entries(rawR)) {
+      let idNum = Number(k);
+      if (!Number.isFinite(idNum) || idNum <= 0) {
+        const key = String(k || "").trim().toLowerCase();
+        idNum = labelToId[key] || NaN;
+      }
+      if (Number.isFinite(idNum) && idNum > 0) {
+        answersForRules[idNum] = v;
+      }
+    }
+
+    // Helpers locales (reutilizados de crearInforme)
+    const isPreguntaImagenLike = (q) => {
+      const t = String(q?.tipo || "").trim().toLowerCase();
+      const e = String(q?.etiqueta || "").trim().toLowerCase();
+      return t === "imagen" || t === "image" || e.includes("foto") || e.includes("imagen");
+    };
+
+    const isNonEmptyImageLink = (val) => {
+      if (val === null || val === undefined) return false;
+      if (Array.isArray(val)) return val.some(x => isNonEmptyImageLink(x));
+      if (typeof val === "object") {
+        return !!(val.url?.trim() || val.ruta?.trim() || val.path?.trim());
+      }
+      if (typeof val === "string") return !!val.trim();
+      return false;
+    };
+
+    // 4) Resolver preguntas visibles (usar answersForRules)
     const visibleSet = new Set();
 
     for (const q of preguntas) {
-      const secVisible = evalCond(q.sec_visible_if, respuestasObj);
-      const qVisible = evalCond(q.visible_if, respuestasObj);
-      const qHidden = q.hide_if ? evalCond(q.hide_if, respuestasObj) : false;
+      const secVisible = evalCond(q.sec_visible_if, answersForRules);
+      const qVisible = evalCond(q.visible_if, answersForRules);
+      const qHidden = q.hide_if ? evalCond(q.hide_if, answersForRules) : false;
 
       if (secVisible && qVisible && !qHidden) {
         visibleSet.add(Number(q.id_pregunta));
@@ -4162,24 +4199,20 @@ async function publicSubmitShareForm(req, res) {
       const idPregunta = Number(q.id_pregunta);
       if (!visibleSet.has(idPregunta)) continue;
 
-      const requiredNow =
-        !!q.obligatorio || (q.required_if ? evalCond(q.required_if, respuestasObj) : false);
+      const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
+      const requiredNow = !!q.obligatorio || requiredByRule;
 
       if (!requiredNow) continue;
 
-      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      const raw = answersForRules[idPregunta];
       const val = normalizeAnswerForSaveByTipo(q.tipo, raw);
 
-      let fotosPregunta = req.files?.[`fotos_${idPregunta}`];
-      const fotosArr = Array.isArray(fotosPregunta)
-        ? fotosPregunta
-        : fotosPregunta
-        ? [fotosPregunta]
-        : [];
+      const field = `fotos_${idPregunta}`;
+      const hasFiles = !!(req.files?.[field]);
+      const hasLink = isNonEmptyImageLink(raw);
 
-      const esImagen = String(q.tipo || "").toLowerCase() === "imagen";
-      if (esImagen) {
-        if (!fotosArr.length) {
+      if (isPreguntaImagenLike(q)) {
+        if (!hasFiles && !hasLink) {
           faltantes.push({
             id_pregunta: idPregunta,
             etiqueta: q.etiqueta || `Pregunta ${idPregunta}`,
@@ -4234,7 +4267,7 @@ async function publicSubmitShareForm(req, res) {
       const idPregunta = Number(q.id_pregunta);
       if (!visibleSet.has(idPregunta)) continue;
 
-      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      const raw = answersForRules[idPregunta];
       if (raw === undefined) continue;
 
       const valorNormalizado = normalizeAnswerForSaveByTipo(q.tipo, raw);
