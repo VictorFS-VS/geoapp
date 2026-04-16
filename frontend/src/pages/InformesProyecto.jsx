@@ -5,8 +5,12 @@ import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstr
 import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
+import ScoringResultPanel from "@/modules/diagnostico/ScoringResultPanel";
 import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
 import { useAuth } from "@/auth/AuthContext";
+import { useInformesQuery } from "@/hooks/useInformesQuery";
+import InformesTableOperativo from "@/components/informes/InformesTableOperativo";
+import Pagination from "@/components/ui/Pagination";
 
 function normalizeApiBase(base) {
   const b = String(base || "").trim();
@@ -161,15 +165,22 @@ const InformesProyecto = () => {
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [plantillaParam]);
 
-  const [informes, setInformes] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(20);
+
+  const { informes, meta, loading, error, preguntasPlantilla, formulaActiva, cargarInformes } = useInformesQuery(idProyecto, idPlantillaFiltro, { search, page, limit });
+
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [idInformeSel, setIdInformeSel] = useState(null);
+  
+  // Scroring Modal
+  const [showScoringModal, setShowScoringModal] = useState(false);
+  const [idRegistroSel, setIdRegistroSel] = useState(null);
 
   const [downloading, setDownloading] = useState({
     pdf: false,
@@ -190,23 +201,65 @@ const InformesProyecto = () => {
 
   const kmzPickGlobalRef = useRef(null);
 
-  // ✅ Massive Import ZI
   const [showImportZip, setShowImportZip] = useState(false);
-  const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
+  const [evaluando, setEvaluando] = useState(false);
 
-  useEffect(() => {
-    if (idPlantillaFiltro) {
-      fetch(`${API_URL}/informes/plantillas/${idPlantillaFiltro}`, { headers: authHeaders() })
-        .then(r => r.json())
-        .then(d => {
-          const allPreguntas = d.secciones ? d.secciones.flatMap(s => s.preguntas || []) : [];
-          setPreguntasPlantilla(allPreguntas);
+  const handleEjecutarEvaluacionMasiva = async () => {
+    if (!idProyecto || !idPlantillaFiltro) return;
+
+    const result = await Swal.fire({
+      title: 'Evaluación de Fórmulas',
+      text: `¿Desea ejecutar la evaluación de la fórmula "${formulaActiva?.nombre}" (Versión ${formulaActiva?.version}) sobre todos los informes de este proyecto?`,
+      icon: 'info',
+      showCancelButton: true,
+      confirmButtonText: 'Sí, Ejecutar Ahora',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#0d6efd'
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setEvaluando(true);
+      const res = await fetch(`${API_URL}/diagnostico/evaluar-plantilla`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          id_proyecto: idProyecto, 
+          id_plantilla: idPlantillaFiltro 
         })
-        .catch(err => console.error("Error cargando preguntas de plantilla:", err));
-    } else {
-      setPreguntasPlantilla([]);
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Error al procesar");
+
+      const { stats } = json;
+      Swal.fire({
+        icon: 'success',
+        title: 'Evaluación Completada',
+        html: `
+          <div class="text-start small">
+            <p>Se procesaron <b>${stats.procesados}</b> registros.</p>
+            <ul>
+              <li class="text-primary">Con cambios: ${stats.con_cambios}</li>
+              <li class="text-muted">Sin cambios: ${stats.sin_cambios}</li>
+              <li class="text-warning">Ignorados (Override): ${stats.ignorados_override}</li>
+              ${stats.errores > 0 ? `<li class="text-danger">Errores: ${stats.errores}</li>` : ''}
+            </ul>
+          </div>
+        `
+      });
+
+      cargarInformes(); // Recargar tabla
+    } catch (err) {
+      Swal.fire('Error', err.message, 'error');
+    } finally {
+      setEvaluando(false);
     }
-  }, [idPlantillaFiltro]);
+  };
 
   useEffect(() => {
     if (!idProyecto) return;
@@ -226,34 +279,6 @@ const InformesProyecto = () => {
 
   // KMZ
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
-
-  const cargarInformes = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const qs = idPlantillaFiltro ? `?plantilla=${idPlantillaFiltro}` : "";
-      const resp = await fetch(`${API_URL}/informes/proyecto/${idProyecto}${qs}`, {
-        headers: authHeaders(),
-      });
-
-      if (!resp.ok) throw new Error(`Error ${resp.status}`);
-
-      const data = await resp.json();
-      setInformes(data.informes || []);
-    } catch (err) {
-      console.error("Error cargando informes:", err);
-      setError("No se pudieron cargar los informes.");
-      Toast.fire({ icon: "error", title: err?.message || "No se pudieron cargar los informes." });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (idProyecto) cargarInformes();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idProyecto, idPlantillaFiltro]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allIds = useMemo(
@@ -281,6 +306,14 @@ const InformesProyecto = () => {
     if (!iso) return "-";
     const d = new Date(iso);
     return d.toLocaleString("es-PY");
+  };
+
+  const getClasificacionColor = (clasificacion) => {
+    const c = String(clasificacion || "").toLowerCase();
+    if (c.includes("alto") || c.includes("vulnerable") || c.includes("crítico") || c.includes("critico")) return "danger";
+    if (c.includes("medio") || c.includes("alerta")) return "warning";
+    if (c.includes("bajo") || c.includes("seguro") || c.includes("bajo")) return "success";
+    return "secondary";
   };
 
   const descargarPdfInforme = async (idInforme) => {
@@ -847,10 +880,34 @@ const InformesProyecto = () => {
             📦 Importar Fotos (ZIP)
           </Button>
 
+          {formulaActiva && (
+            <Button
+              variant="outline-primary"
+              onClick={() => navigate(`/proyectos/${idProyecto}/diagnostico?plantilla=${idPlantillaFiltro}`)}
+              title="Abrir panel de Autodiagnóstico"
+            >
+              <i className="bi bi-clipboard2-data"></i> Diagnóstico
+            </Button>
+          )}
+
           <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
             ➕ Nuevo informe
           </Button>
         </div>
+      </div>
+
+      <div className="mb-3 d-flex gap-3 align-items-center">
+        <Form.Control
+          type="text"
+          placeholder="Buscar por cualquier campo..."
+          value={search}
+          onChange={(e) => {
+             setSearch(e.target.value);
+             setPage(1); // Reset page on new search
+          }}
+          disabled={loading && !informes.length}
+          style={{ maxWidth: '400px' }}
+        />
       </div>
 
       {loading && (
@@ -861,105 +918,46 @@ const InformesProyecto = () => {
 
       {error && <div className="alert alert-danger py-2">{error}</div>}
 
-      {!loading && !error && informes.length > 0 && (
-        <Table striped bordered hover size="sm" responsive>
-          <thead className="table-light">
-            <tr>
-              <th style={{ width: 48, textAlign: "center" }}>
-                <Form.Check
-                  type="checkbox"
-                  ref={headerCheckboxRef}
-                  checked={allSelected}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setSelectedIds(allIds);
-                    } else {
-                      setSelectedIds([]);
-                    }
-                  }}
-                />
-              </th>
-              <th style={{ width: 80 }}>ID</th>
-              <th>Plantilla</th>
-              <th>Título</th>
-              <th style={{ width: 180 }}>Fecha creado</th>
-              <th style={{ width: 120 }}>Creado por</th>
-              <th style={{ width: 340 }}>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {informes.map((inf) => {
-              const kmzLoading = !!downloadingKmzByInforme[inf.id_informe];
+      {!loading && !error && informes.length === 0 && search && (
+        <Alert variant="info" className="text-center py-3 mt-3">
+          Sin resultados para la búsqueda "{search}"
+        </Alert>
+      )}
 
-              return (
-                <tr key={inf.id_informe}>
-                  <td style={{ textAlign: "center" }}>
-                    <Form.Check
-                      type="checkbox"
-                      checked={selectedSet.has(Number(inf.id_informe))}
-                      onChange={(e) => {
-                        const id = Number(inf.id_informe);
-                        if (!id) return;
-                        setSelectedIds((prev) => {
-                          const set = new Set(prev);
-                          if (e.target.checked) set.add(id);
-                          else set.delete(id);
-                          return Array.from(set);
-                        });
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <Badge bg="secondary">{inf.id_informe}</Badge>
-                  </td>
-                  <td>{inf.nombre_plantilla || inf.id_plantilla}</td>
-                  <td>{inf.titulo || "-"}</td>
-                  <td>{formatearFecha(inf.fecha_creado)}</td>
-                  <td>{inf.creado_por || "-"}</td>
-                  <td>
-                    <div className="btn-group btn-group-sm">
-                      <Button variant="primary" onClick={() => abrirVer(inf.id_informe)}>
-                        Ver
-                      </Button>
+      {!loading && !error && informes.length === 0 && !search && (
+        <Alert variant="light" className="text-center text-muted border py-3 mt-3">
+          No hay informes para mostrar en esta vista.
+        </Alert>
+      )}
 
-                      <Button variant="outline-secondary" onClick={() => descargarPdfInforme(inf.id_informe)}>
-                        PDF
-                      </Button>
-
-                      {puedeDescargarKmz && (
-                        <Button
-                          variant="outline-dark"
-                          onClick={() => descargarKmzInforme(inf.id_informe)}
-                          disabled={kmzLoading || anyDownloading}
-                        >
-                          {kmzLoading ? (
-                            <>
-                              <Spinner animation="border" size="sm" className="me-2" />...
-                            </>
-                          ) : (
-                            <>KMZ</>
-                          )}
-                        </Button>
-                      )}
-
-                      {puedeEditar && (
-                        <Button variant="warning" onClick={() => abrirEditar(inf.id_informe)}>
-                          Editar
-                        </Button>
-                      )}
-
-                      {puedeEliminarAdmin && (
-                        <Button variant="danger" onClick={() => eliminarInforme(inf.id_informe)}>
-                          Eliminar
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </Table>
+      {!error && informes.length > 0 && (
+        <>
+          <InformesTableOperativo
+            informes={informes}
+            preguntasPlantilla={preguntasPlantilla}
+            abrirVer={abrirVer}
+            abrirEditar={abrirEditar}
+            eliminarInforme={eliminarInforme}
+            descargarPdfInforme={descargarPdfInforme}
+            descargarKmzInforme={descargarKmzInforme}
+            puedeEditar={puedeEditar}
+            puedeEliminarAdmin={puedeEliminarAdmin}
+            puedeDescargarKmz={puedeDescargarKmz}
+            downloadingKmzByInforme={downloadingKmzByInforme}
+            anyDownloading={anyDownloading}
+          />
+          <Pagination 
+            page={meta?.page || 1} 
+            totalPages={meta?.total_pages || 1} 
+            limit={limit}
+            onLimitChange={(l) => {
+                setLimit(l);
+                setPage(1);
+            }}
+            totalItems={meta?.total || 0}
+            onPageChange={setPage} 
+          />
+        </>
       )}
 
       <InformeModal
@@ -976,6 +974,24 @@ const InformesProyecto = () => {
         mode="edit"
         onSaved={() => cargarInformes()}
       />
+
+      <Modal 
+        show={showScoringModal} 
+        onHide={() => setShowScoringModal(false)}
+        size="lg"
+        centered
+        scrollable
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>Diagnóstico Detallado</Modal.Title>
+        </Modal.Header>
+        <Modal.Body className="bg-light">
+          {idRegistroSel && <ScoringResultPanel idRegistro={idRegistroSel} canEditOverride={puedeEditar} />}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowScoringModal(false)}>Cerrar</Button>
+        </Modal.Footer>
+      </Modal>
 
       <Modal
         show={kmzChoiceOpen}

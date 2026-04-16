@@ -332,6 +332,10 @@ app.use("/api/ai", aiRoutes);
 // ✅ POI
 app.use("/api", poiRoutes);
 
+// ✅ Diagnostico / Scoring Engine
+const diagnosticoRoutes = require("./routes/diagnostico.routes");
+app.use("/api/diagnostico", diagnosticoRoutes);
+
 // ✅ Use Change
 app.use("/api", useChangeRoutes);
 

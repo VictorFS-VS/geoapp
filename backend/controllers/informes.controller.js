@@ -1,4 +1,4 @@
-﻿// backend/controllers/informes.controller.js
+// backend/controllers/informes.controller.js
 "use strict";
 
 const fs = require("fs");
@@ -7,6 +7,8 @@ const crypto = require("crypto");
 const puppeteer = require("puppeteer");
 const ExcelJS = require("exceljs");
 const pool = require("../db");
+const scoringEngine = require("../src/modules/scoring/scoring.engine");
+
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ImageRun, PageOrientation } = require("docx");
 const { parseInformeLatLng } = require("../helpers/informesGeoSummary");
 
@@ -873,6 +875,8 @@ async function getPlantillas(req, res) {
     const q = `
       SELECT
         p.*,
+        u.username AS creador_username,
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS creador_nombre,
         CASE
           WHEN $2 = true THEN 'edit'
           WHEN p.id_creador = $1 THEN 'edit'
@@ -882,6 +886,8 @@ async function getPlantillas(req, res) {
       LEFT JOIN ema.informe_plantilla_usuario pu
         ON pu.id_plantilla = p.id_plantilla
        AND pu.id_usuario = $1
+      LEFT JOIN public.users u
+        ON u.id = p.id_creador
       WHERE
         ($2 = true)
         OR (p.id_creador = $1)
@@ -895,7 +901,7 @@ async function getPlantillas(req, res) {
     const { rows } = await pool.query(q, [userId, isAdmin]);
     return res.json(rows);
   } catch (err) {
-    console.error("âŒ getPlantillas error:", err.message);
+    console.error("❌ getPlantillas error:", err.message);
     return res.json([]);
   }
 }
@@ -911,18 +917,27 @@ async function getPlantillaById(req, res) {
       `
       SELECT
         p.*,
-        pu.rol AS mi_rol_db
+        pu.rol AS mi_rol_db,
+        u.username AS creador_username,
+        NULLIF(
+          TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+          ''
+        ) AS creador_nombre
       FROM ema.informe_plantilla p
       LEFT JOIN ema.informe_plantilla_usuario pu
         ON pu.id_plantilla = p.id_plantilla
        AND pu.id_usuario = $2
+      LEFT JOIN public.users u
+        ON u.id = p.id_creador
       WHERE p.id_plantilla = $1
       LIMIT 1
       `,
       [Number(id), Number(userId)]
     );
 
-    if (!plantRes.rowCount) return res.status(404).json({ ok: false, error: "Plantilla no encontrada" });
+    if (!plantRes.rowCount) {
+      return res.status(404).json({ ok: false, error: "Plantilla no encontrada" });
+    }
 
     const plantilla = plantRes.rows[0];
 
@@ -930,9 +945,10 @@ async function getPlantillaById(req, res) {
     const isShared = !!plantilla.mi_rol_db;
     const isActive = (plantilla.activo ?? true) === true;
 
-    // âœ… dueÃ±o SIEMPRE ve aunque estÃ© inactiva
     const canRead = isAdmin || isOwner || (isActive && isShared);
-    if (!canRead) return res.status(403).json({ ok: false, error: "Sin acceso a la plantilla" });
+    if (!canRead) {
+      return res.status(403).json({ ok: false, error: "Sin acceso a la plantilla" });
+    }
 
     const mi_rol = isAdmin || isOwner ? "edit" : plantilla.mi_rol_db;
 
@@ -943,7 +959,11 @@ async function getPlantillaById(req, res) {
 
     const { rows: preguntas } = await pool.query(
       `SELECT * FROM ema.informe_pregunta
-       WHERE id_seccion IN (SELECT id_seccion FROM ema.informe_seccion WHERE id_plantilla = $1)
+       WHERE id_seccion IN (
+         SELECT id_seccion
+         FROM ema.informe_seccion
+         WHERE id_plantilla = $1
+       )
        ORDER BY orden`,
       [id]
     );
@@ -953,7 +973,11 @@ async function getPlantillaById(req, res) {
       preguntas: preguntas.filter((p) => p.id_seccion === sec.id_seccion),
     }));
 
-    return res.json({ ...plantilla, mi_rol, secciones: seccionesConPreguntas });
+    return res.json({
+      ...plantilla,
+      mi_rol,
+      secciones: seccionesConPreguntas,
+    });
   } catch (err) {
     console.error("getPlantillaById error:", err);
     return res.status(500).json({ ok: false, error: "Error al obtener plantilla" });
@@ -979,13 +1003,13 @@ async function createPlantilla(req, res) {
           usuarios_compartidos ? JSON.stringify(usuarios_compartidos) : null,
         ]
       )
-      .catch(async () => {
-        console.warn("âš ï¸ createPlantilla: campos extendidos no disponibles, usando fallback");
+      .catch(async (e) => {
+        console.warn("⚠️ createPlantilla: campos extendidos no disponibles, usando fallback", e.message);
         return pool.query(
-          `INSERT INTO ema.informe_plantilla (nombre, descripcion, activo)
-           VALUES ($1, $2, $3)
-           RETURNING *`,
-          [nombre, descripcion || null, activo]
+          `INSERT INTO ema.informe_plantilla (nombre, descripcion, activo, id_creador)
+          VALUES ($1, $2, $3, $4)
+          RETURNING *`,
+          [nombre, descripcion || null, activo, userId || null]
         );
       });
 
@@ -2289,8 +2313,25 @@ async function deletePregunta(req, res) {
           ordenFoto++;
         }
       }
+      
+      // =========================
+      // MOTOR DE SCORING (DINÁMICO)
+      // =========================
+      // Auditoría: Resolvemos id_registro internamente para asegurar que el scoring corra 
+      // siempre que exista una fórmula activa, sin depender del body.
+      try {
+        const regRes = await client.query(
+          `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
+          [idInforme]
+        );
+        const idRegistro = regRes.rows[0].id_registro;
+        await scoringEngine.runScoring(idRegistro, client);
+      } catch (scoringErr) {
+        console.error("Scoring engine error (create):", scoringErr.message);
+      }
 
       await client.query("COMMIT");
+
       return res.status(201).json({ ok: true, id_informe: idInforme });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -2480,21 +2521,38 @@ async function deletePregunta(req, res) {
     try {
       const idP = Number(idProyecto);
       if (!Number.isFinite(idP) || idP <= 0) {
-        return res.status(400).json({ ok: false, error: "idProyecto invÃ¡lido" });
+        return res.status(400).json({ ok: false, error: "idProyecto inválido" });
       }
 
-      // 1) Plantillas usadas (conteo + Ãºltimo)
+      // 1) Plantillas usadas (conteo + último + creador)
       const q1 = await pool.query(
         `
         SELECT
           p.id_plantilla,
           p.nombre,
+          p.descripcion,
+          p.id_creador,
+          u.username AS creador_username,
+          NULLIF(
+            TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))),
+            ''
+          ) AS creador_nombre,
           COUNT(i.id_informe)::int AS total,
           MAX(i.fecha_creado) AS ultimo_informe
         FROM ema.informe i
-        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        JOIN ema.informe_plantilla p
+          ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN public.users u
+          ON u.id = p.id_creador
         WHERE i.id_proyecto = $1
-        GROUP BY p.id_plantilla, p.nombre
+        GROUP BY
+          p.id_plantilla,
+          p.nombre,
+          p.descripcion,
+          p.id_creador,
+          u.username,
+          u.first_name,
+          u.last_name
         ORDER BY MAX(i.fecha_creado) DESC NULLS LAST, p.id_plantilla DESC
         `,
         [idP]
@@ -2504,7 +2562,7 @@ async function deletePregunta(req, res) {
         return res.json({ ok: true, items: [] });
       }
 
-      // 2) Informes por plantilla (para dropdown â€œInformeâ€)
+      // 2) Informes por plantilla
       const q2 = await pool.query(
         `
         SELECT
@@ -2520,10 +2578,15 @@ async function deletePregunta(req, res) {
       );
 
       const map = new Map();
+
       for (const r of q1.rows) {
         map.set(Number(r.id_plantilla), {
           id_plantilla: Number(r.id_plantilla),
           nombre: r.nombre,
+          descripcion: r.descripcion || null,
+          id_creador: r.id_creador ? Number(r.id_creador) : null,
+          creador_username: r.creador_username || null,
+          creador_nombre: r.creador_nombre || null,
           total: Number(r.total || 0),
           ultimo_informe: r.ultimo_informe,
           informes: [],
@@ -2545,7 +2608,10 @@ async function deletePregunta(req, res) {
       return res.json({ ok: true, items: Array.from(map.values()) });
     } catch (err) {
       console.error("listPlantillasByProyecto error:", err);
-      return res.status(500).json({ ok: false, error: "Error al listar plantillas por proyecto" });
+      return res.status(500).json({
+        ok: false,
+        error: "Error al listar plantillas por proyecto",
+      });
     }
   }
 
@@ -2572,9 +2638,36 @@ async function deletePregunta(req, res) {
       const q = `
         SELECT
           i.*,
-          p.nombre AS nombre_plantilla
+          p.nombre AS nombre_plantilla,
+          ir.id_registro,
+          fr.score_total,
+          COALESCE(fr.resultado_consultor, fr.clasificacion) as clasificacion,
+          fr.manual_override,
+          fr.cambio_detectado,
+          fr.fecha_recalculo,
+          (
+            SELECT jsonb_object_agg(q_vis.etiqueta, 
+              CASE 
+                WHEN q_vis.tipo IN ('semaforo', 'select') THEN 
+                  COALESCE(r_vis.valor_json->>'label', r_vis.valor_texto, r_vis.valor_json::text)
+                WHEN q_vis.tipo = 'multiselect' THEN 
+                  (
+                    SELECT string_agg(item->>'label', ', ')
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r_vis.valor_json) = 'array' THEN r_vis.valor_json ELSE '[]'::jsonb END) AS item
+                  )
+                ELSE COALESCE(r_vis.valor_texto, r_vis.valor_json::text)
+              END
+            )
+            FROM ema.informe_respuesta r_vis
+            JOIN ema.informe_pregunta q_vis ON q_vis.id_pregunta = r_vis.id_pregunta
+            WHERE r_vis.id_informe = i.id_informe 
+              AND q_vis.visible_en_listado = true
+          ) as respuestas_clave
         FROM ema.informe i
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
+        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
+          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
         AND pu.id_usuario = $${scope.userParamIndex}
@@ -3277,7 +3370,32 @@ async function deletePregunta(req, res) {
         }
       }
 
+      // =========================
+      // MOTOR DE SCORING (DINÁMICO)
+      // =========================
+      // Auditoría: Aseguramos que el registro exista y recalculamos el scoring.
+      try {
+        const regRes = await client.query(
+          `SELECT id_registro FROM ema.informe_registro WHERE id_informe = $1 LIMIT 1`,
+          [idInforme]
+        );
+        let idReg;
+        if (regRes.rowCount > 0) {
+          idReg = regRes.rows[0].id_registro;
+        } else {
+          const insReg = await client.query(
+            `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
+            [idInforme]
+          );
+          idReg = insReg.rows[0].id_registro;
+        }
+        await scoringEngine.runScoring(idReg, client);
+      } catch (scoringErr) {
+        console.error("Scoring engine error (update):", scoringErr.message);
+      }
+
       await client.query("COMMIT");
+
       return res.json({ ok: true });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -3612,6 +3730,126 @@ async function deletePregunta(req, res) {
     }
   }
 
+  async function updateShareLink(req, res) {
+    try {
+      const { idShare } = req.params;
+      const sid = Number(idShare);
+
+      if (!sid) {
+        return res.status(400).json({ ok: false, error: "idShare inválido" });
+      }
+
+      const {
+        id_proyecto,
+        titulo,
+        expira_en,
+        max_envios,
+      } = req.body || {};
+
+      const userId = req.user?.id ?? req.user?.id_user ?? null;
+      const tipoUsuario = Number(req.user?.tipo_usuario ?? req.user?.group_id ?? req.user?.tipo ?? 0);
+      const esAdmin = tipoUsuario === 1;
+
+      // 1) buscar link actual
+      const linkRes = await pool.query(
+        `
+        SELECT *
+        FROM ema.informe_share_link
+        WHERE id_share = $1
+        LIMIT 1
+        `,
+        [sid]
+      );
+
+      if (!linkRes.rowCount) {
+        return res.status(404).json({ ok: false, error: "Link no encontrado" });
+      }
+
+      const actual = linkRes.rows[0];
+
+      // 2) permiso básico: admin o creador
+      if (!esAdmin && Number(actual.creado_por) !== Number(userId)) {
+        return res.status(403).json({ ok: false, error: "No tenés permiso para editar este link" });
+      }
+
+      // 3) no editar link cerrado
+      if (actual.cerrado_en) {
+        return res.status(400).json({ ok: false, error: "No se puede editar un link cerrado" });
+      }
+
+      // 4) normalizar valores
+      let nuevoProyecto = actual.id_proyecto;
+      if (id_proyecto !== undefined) {
+        if (id_proyecto === null || String(id_proyecto).trim() === "") {
+          nuevoProyecto = null;
+        } else {
+          nuevoProyecto = Number(id_proyecto);
+          if (!Number.isFinite(nuevoProyecto) || nuevoProyecto <= 0) {
+            return res.status(400).json({ ok: false, error: "id_proyecto inválido" });
+          }
+        }
+      }
+
+      let nuevoTitulo = actual.titulo;
+      if (titulo !== undefined) {
+        const t = String(titulo ?? "").trim();
+        nuevoTitulo = t || null;
+      }
+
+      let nuevaExpira = actual.expira_en;
+      if (expira_en !== undefined) {
+        const d = new Date(expira_en);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({ ok: false, error: "expira_en inválido" });
+        }
+        if (d.getTime() <= Date.now()) {
+          return res.status(400).json({ ok: false, error: "La expiración debe ser futura" });
+        }
+        nuevaExpira = d;
+      }
+
+      let nuevoMaxEnvios = actual.max_envios;
+      if (max_envios !== undefined) {
+        if (max_envios === null || String(max_envios).trim() === "") {
+          nuevoMaxEnvios = null;
+        } else {
+          nuevoMaxEnvios = Number(max_envios);
+          if (!Number.isFinite(nuevoMaxEnvios) || nuevoMaxEnvios <= 0) {
+            return res.status(400).json({ ok: false, error: "max_envios inválido" });
+          }
+        }
+      }
+
+      // 5) update
+      const upd = await pool.query(
+        `
+        UPDATE ema.informe_share_link
+        SET
+          id_proyecto = $2,
+          titulo = $3,
+          expira_en = $4,
+          max_envios = $5
+        WHERE id_share = $1
+        RETURNING *
+        `,
+        [sid, nuevoProyecto, nuevoTitulo, nuevaExpira, nuevoMaxEnvios]
+      );
+
+      const row = upd.rows[0];
+
+      return res.json({
+        ok: true,
+        link: {
+          ...row,
+          publicUrl: buildPublicUrl(req, row.token),
+        },
+      });
+    } catch (err) {
+      console.error("updateShareLink error:", err);
+      return res.status(500).json({ ok: false, error: "Error al actualizar link" });
+    }
+  }
+
   async function closeShareLink(req, res) {
     try {
       const { idShare } = req.params;
@@ -3632,6 +3870,27 @@ async function deletePregunta(req, res) {
     } catch (err) {
       console.error("closeShareLink error:", err);
       return res.status(500).json({ ok: false, error: "Error al cerrar link" });
+    }
+  }
+
+  async function reopenShareLink(req, res) {
+    try {
+      const { idShare } = req.params;
+
+      const { rows } = await pool.query(
+        `UPDATE ema.informe_share_link
+        SET cerrado_en = NULL,
+            cerrado_por = NULL
+        WHERE id_share = $1
+        RETURNING *`,
+        [Number(idShare)]
+      );
+
+      if (!rows.length) return res.status(404).json({ ok: false, error: "Link no encontrado" });
+      return res.json({ ok: true, link: rows[0] });
+    } catch (err) {
+      console.error("reopenShareLink error:", err);
+      return res.status(500).json({ ok: false, error: "Error al reabrir link" });
     }
   }
 
@@ -3736,75 +3995,134 @@ async function publicGetShareForm(req, res) {
 
 // POST /api/informes-public/:token/enviar
 async function publicSubmitShareForm(req, res) {
-  if (req.body?.respuestas) {
-    console.log("respuestas preview:", String(req.body.respuestas).slice(0, 120));
-  }
-
-  const { token } = req.params;
-  const { titulo } = req.body;
+  const token = String(req.params.token || "").trim();
+  const titulo = req.body?.titulo ? String(req.body.titulo).trim() : null;
+  const clientRequestId = String(req.body?.client_request_id || "").trim();
 
   let respuestasObj = {};
   try {
-    if (req.body?.respuestas) {
-      respuestasObj =
-        typeof req.body.respuestas === "string"
-          ? JSON.parse(req.body.respuestas)
-          : req.body.respuestas;
-    } else if (req.body?.answers) {
-      respuestasObj =
-        typeof req.body.answers === "string" ? JSON.parse(req.body.answers) : req.body.answers;
-    }
-
-    if (!respuestasObj || typeof respuestasObj !== "object" || Array.isArray(respuestasObj)) {
-      respuestasObj = {};
-    }
+    const raw = req.body?.respuestas;
+    respuestasObj =
+      typeof raw === "string"
+        ? JSON.parse(raw || "{}")
+        : raw && typeof raw === "object" && !Array.isArray(raw)
+        ? raw
+        : {};
   } catch {
-    respuestasObj = {};
+    return res.status(400).json({ ok: false, error: "respuestas inválidas" });
   }
 
-  const files = req.files || {};
+  if (!token) {
+    return res.status(400).json({ ok: false, error: "Token vacío" });
+  }
+
+  if (!clientRequestId) {
+    return res.status(400).json({ ok: false, error: "client_request_id vacío" });
+  }
 
   const client = await pool.connect();
+
   try {
     await client.query("BEGIN");
 
-    const shareRes = await client.query(
-      `SELECT * FROM ema.informe_share_link WHERE token = $1 FOR UPDATE`,
+    // 1) Buscar share link válido por token
+    const linkRes = await client.query(
+      `
+      SELECT
+        s.id_share,
+        s.id_plantilla,
+        s.id_proyecto,
+        s.titulo,
+        s.expira_en,
+        s.max_envios,
+        s.envios_count,
+        s.cerrado_en,
+        COALESCE(s.activo, true) AS activo
+      FROM ema.informe_share_link s
+      WHERE s.token = $1
+      LIMIT 1
+      `,
       [token]
     );
-    if (!shareRes.rowCount) {
+
+    if (!linkRes.rowCount) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ ok: false, error: "Link invÃ¡lido" });
+      return res.status(404).json({ ok: false, error: "Link público no encontrado" });
     }
 
-    const link = shareRes.rows[0];
-    const now = new Date();
+    const link = linkRes.rows[0];
+
+    if (!link.activo) {
+      await client.query("ROLLBACK");
+      return res.status(410).json({ ok: false, error: "El link ya no está activo" });
+    }
 
     if (link.cerrado_en) {
       await client.query("ROLLBACK");
-      return res.status(410).json({ ok: false, error: "Link cerrado" });
-    }
-    if (new Date(link.expira_en) <= now) {
-      await client.query("ROLLBACK");
-      return res.status(410).json({ ok: false, error: "Link expirado" });
-    }
-    if (link.max_envios != null && Number(link.envios_count) >= Number(link.max_envios)) {
-      await client.query("ROLLBACK");
-      return res.status(429).json({ ok: false, error: "LÃ­mite de envÃ­os alcanzado" });
+      return res.status(410).json({ ok: false, error: "El link ya fue cerrado" });
     }
 
-    // âœ… incluir opciones_json
+    if (link.expira_en && new Date(link.expira_en).getTime() < Date.now()) {
+      await client.query("ROLLBACK");
+      return res.status(410).json({ ok: false, error: "El link expiró" });
+    }
+
+    if (
+      link.max_envios !== null &&
+      link.max_envios !== undefined &&
+      Number(link.envios_count || 0) >= Number(link.max_envios)
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ ok: false, error: "Se alcanzó el máximo de envíos permitido" });
+    }
+
+    // 2) Idempotencia: si ya existe este mismo envío, devolver OK sin duplicar
+    const existRes = await client.query(
+      `
+      SELECT id_informe
+      FROM ema.informe
+      WHERE client_request_id = $1
+      LIMIT 1
+      `,
+      [clientRequestId]
+    );
+
+    if (existRes.rowCount) {
+      const idInforme = existRes.rows[0].id_informe;
+
+      await client.query("COMMIT");
+      return res.json({
+        ok: true,
+        duplicated: true,
+        id_informe: idInforme,
+        share: {
+          id_share: link.id_share,
+          envios_count: link.envios_count,
+          cerrado_en: link.cerrado_en,
+        },
+        message: "Este envío ya fue procesado anteriormente.",
+      });
+    }
+
+    // 3) Leer preguntas + reglas
     const qRes = await client.query(
       `
       SELECT
-        q.id_pregunta, q.etiqueta, q.tipo, q.obligatorio, q.permite_foto,
+        q.id_pregunta,
+        q.etiqueta,
+        q.tipo,
+        q.obligatorio,
+        q.permite_foto,
         q.opciones_json,
-        q.visible_if, q.required_if, q.hide_if,
+        q.visible_if,
+        q.required_if,
+        q.hide_if,
         s.visible_if AS sec_visible_if
       FROM ema.informe_pregunta q
-      JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+      JOIN ema.informe_seccion s
+        ON s.id_seccion = q.id_seccion
       WHERE s.id_plantilla = $1
-      ORDER BY s.orden, q.orden
+      ORDER BY s.orden, q.orden, q.id_pregunta
       `,
       [Number(link.id_plantilla)]
     );
@@ -3812,122 +4130,123 @@ async function publicSubmitShareForm(req, res) {
     const preguntas = qRes.rows || [];
     const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
 
-    const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas);
-
+    // 4) Resolver preguntas visibles
     const visibleSet = new Set();
-    const requiredSet = new Set();
-    const invalid = [];
 
     for (const q of preguntas) {
-      const qid = Number(q.id_pregunta);
+      const secVisible = evalCond(q.sec_visible_if, respuestasObj);
+      const qVisible = evalCond(q.visible_if, respuestasObj);
+      const qHidden = q.hide_if ? evalCond(q.hide_if, respuestasObj) : false;
 
-      const isVisible = computeVisibility(q, respuestasObj);
-      if (isVisible) visibleSet.add(qid);
-
-      const requiredByRule = q.required_if ? evalCond(q.required_if, respuestasObj) : false;
-      const isRequired = isVisible && (!!q.obligatorio || requiredByRule);
-      if (isRequired) requiredSet.add(qid);
-    }
-
-    // âœ… required no-imagen
-    for (const qid of requiredSet) {
-      const q = preguntasById.get(qid);
-      if (!q) continue;
-
-      if (String(q.tipo).toLowerCase() === "imagen") continue;
-
-      const raw = _getAnswerValueFromObj(respuestasObj, qid);
-      const val = _coerceValue(raw);
-
-      if (raw === undefined || isEmptyAnswer(val)) {
-        invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required" });
+      if (secVisible && qVisible && !qHidden) {
+        visibleSet.add(Number(q.id_pregunta));
       }
     }
 
-    // âœ… required imagen (en pÃºblico)
-    for (const qid of requiredSet) {
-      const q = preguntasById.get(qid);
-      if (!q) continue;
-      if (String(q.tipo).toLowerCase() !== "imagen") continue;
+    // 5) Validar obligatorios visibles
+    const faltantes = [];
 
-      const field = `fotos_${qid}`;
-      const tieneArchivos = !!files?.[field];
-      if (!tieneArchivos) {
-        invalid.push({ id_pregunta: qid, etiqueta: q?.etiqueta, reason: "required_imagen" });
+    for (const q of preguntas) {
+      const idPregunta = Number(q.id_pregunta);
+      if (!visibleSet.has(idPregunta)) continue;
+
+      const requiredNow =
+        !!q.obligatorio || (q.required_if ? evalCond(q.required_if, respuestasObj) : false);
+
+      if (!requiredNow) continue;
+
+      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      const val = normalizeAnswerForSaveByTipo(q.tipo, raw);
+
+      let fotosPregunta = req.files?.[`fotos_${idPregunta}`];
+      const fotosArr = Array.isArray(fotosPregunta)
+        ? fotosPregunta
+        : fotosPregunta
+        ? [fotosPregunta]
+        : [];
+
+      const esImagen = String(q.tipo || "").toLowerCase() === "imagen";
+      if (esImagen) {
+        if (!fotosArr.length) {
+          faltantes.push({
+            id_pregunta: idPregunta,
+            etiqueta: q.etiqueta || `Pregunta ${idPregunta}`,
+            reason: "required_image",
+          });
+        }
+        continue;
+      }
+
+      if (isEmptyAnswer(val)) {
+        faltantes.push({
+          id_pregunta: idPregunta,
+          etiqueta: q.etiqueta || `Pregunta ${idPregunta}`,
+          reason: "required_answer",
+        });
       }
     }
 
-    if (invalid.length) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        ok: false,
-        error: "Faltan respuestas obligatorias (incluye condicionales)",
-        detalles: invalid,
-      });
+    if (faltantes.length) {
+      const err = new Error("Faltan respuestas obligatorias");
+      err.statusCode = 400;
+      err.details = faltantes;
+      throw err;
     }
 
-    // âœ… crear informe
-    const infRes = await client.query(
+    // 6) Crear cabecera informe
+    const insInforme = await client.query(
       `
-      INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
-      VALUES ($1, $2, $3)
-      RETURNING *
+      INSERT INTO ema.informe (
+        id_plantilla,
+        id_proyecto,
+        titulo,
+        fecha_creado,
+        creado_por,
+        client_request_id
+      )
+      VALUES ($1, $2, $3, NOW(), NULL, $4)
+      RETURNING id_informe
       `,
       [
         Number(link.id_plantilla),
         link.id_proyecto ? Number(link.id_proyecto) : null,
         titulo || link.titulo || null,
+        clientRequestId,
       ]
     );
 
-    const idInforme = infRes.rows[0].id_informe;
+    const idInforme = Number(insInforme.rows[0].id_informe);
 
-    // âœ… guardar respuestas (solo visibles)
-    for (const [idPreguntaStr, valorRaw] of Object.entries(respuestasObj || {})) {
-      const idPregunta = Number(idPreguntaStr);
-      if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
-
-      const q = preguntasById.get(idPregunta);
-      if (!q) continue;
+    // 7) Guardar respuestas visibles
+    for (const q of preguntas) {
+      const idPregunta = Number(q.id_pregunta);
       if (!visibleSet.has(idPregunta)) continue;
 
-      // âœ… NormalizaciÃ³n por tipo (FIX SELECT)
-      const valor = normalizeAnswerForSaveByTipo(q.tipo, valorRaw);
+      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      if (raw === undefined) continue;
 
-      let valorTexto = null;
-      let valorBool = null;
-      let valorJson = null;
+      const valorNormalizado = normalizeAnswerForSaveByTipo(q.tipo, raw);
+      if (isEmptyAnswer(valorNormalizado)) continue;
 
-      if (String(q.tipo || "").trim().toLowerCase() === "semaforo") {
-        const obj = semaforoToObj(valor, semaforoPaletteMap);
-        if (obj && obj.hex) {
-          valorTexto = obj.nombre || null;
-          valorJson = { nombre: obj.nombre || null, hex: obj.hex };
-        } else {
-          const t = toJsonbOrText(valor);
-          valorTexto = t.valor_texto;
-          valorBool = t.valor_bool;
-          valorJson = t.valor_json;
-        }
-      } else {
-        const t = toJsonbOrText(valor);
-        valorTexto = t.valor_texto;
-        valorBool = t.valor_bool;
-        valorJson = t.valor_json;
-      }
+      const { valor_texto, valor_bool, valor_json } = toJsonbOrText(valorNormalizado);
 
       await client.query(
         `
         INSERT INTO ema.informe_respuesta
           (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
         VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (id_informe, id_pregunta)
+        DO UPDATE SET
+          valor_texto = EXCLUDED.valor_texto,
+          valor_bool  = EXCLUDED.valor_bool,
+          valor_json  = EXCLUDED.valor_json
         `,
-        [idInforme, idPregunta, valorTexto, valorBool, valorJson]
+        [idInforme, idPregunta, valor_texto, valor_bool, valor_json]
       );
     }
 
-    // âœ… subir fotos segura
-    const uploadsRoot = path.join(__dirname, "..", "uploads");
+    // 8) Guardar fotos
+    const uploadsRoot = path.resolve(path.join(__dirname, "..", "uploads"));
     const baseDir = path.join(
       uploadsRoot,
       "proyectos",
@@ -3935,12 +4254,14 @@ async function publicSubmitShareForm(req, res) {
       "informes",
       String(idInforme)
     );
+
     await fs.promises.mkdir(baseDir, { recursive: true });
 
-    for (const [fieldName, fileOrFiles] of Object.entries(files)) {
-      if (!fieldName.startsWith("fotos_")) continue;
+    for (const [fieldName, fileOrFiles] of Object.entries(req.files || {})) {
+      const m = /^fotos_(\d+)$/.exec(String(fieldName));
+      if (!m) continue;
 
-      const idPregunta = Number(fieldName.replace("fotos_", ""));
+      const idPregunta = Number(m[1]);
       if (!Number.isFinite(idPregunta) || idPregunta <= 0) continue;
 
       const q = preguntasById.get(idPregunta);
@@ -3977,7 +4298,7 @@ async function publicSubmitShareForm(req, res) {
       }
     }
 
-    // âœ… actualizar contador/envÃ­os
+    // 9) Actualizar contador de envíos del share
     const upd = await client.query(
       `
       UPDATE ema.informe_share_link
@@ -3992,9 +4313,25 @@ async function publicSubmitShareForm(req, res) {
       [link.id_share]
     );
 
+    // =========================
+    // MOTOR DE SCORING (PUBLIC SUBMIT)
+    // =========================
+    try {
+      const regRes = await client.query(
+        `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
+        [idInforme]
+      );
+      const idRegistro = regRes.rows[0].id_registro;
+      await scoringEngine.runScoring(idRegistro, client);
+    } catch (scoringErr) {
+      console.error("[Scoring/Public] Error en submit:", scoringErr.message);
+    }
+
     await client.query("COMMIT");
+
     return res.status(201).json({
       ok: true,
+      duplicated: false,
       id_informe: idInforme,
       share: {
         id_share: link.id_share,
@@ -4003,15 +4340,33 @@ async function publicSubmitShareForm(req, res) {
       },
     });
   } catch (err) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+
     console.error("publicSubmitShareForm error:", err);
-    return res
-      .status(500)
-      .json({ ok: false, error: err?.message || "Error al enviar formulario pÃºblico" });
+
+    if (err?.code === "23505") {
+      // unique violation por client_request_id
+      return res.json({
+        ok: true,
+        duplicated: true,
+        message: "Este envío ya fue procesado.",
+      });
+    }
+
+    const status = Number(err?.statusCode || 500);
+    return res.status(status).json({
+      ok: false,
+      error: err?.message || "Error al enviar formulario público",
+      details: err?.details || undefined,
+    });
   } finally {
     client.release();
   }
 }
+
+
 
 // 7) GET /api/informes/proyecto/:idProyecto/export/excel?plantilla=ID
 // Excel tipo KoBo: 1 fila = 1 informe, 1 columna = 1 pregunta (+ columnas fotos)
@@ -5634,6 +5989,184 @@ async function duplicarPlantilla(req, res) {
 }
 
 /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ EXPORTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ──────────────────────────────────────────────────────────────────────────── 
+    GET /api/informes/query
+    Endpoint unificado con paginación, búsqueda global, y filtro diagnóstico.
+  ──────────────────────────────────────────────────────────────────────────── */
+  async function queryInformes(req, res) {
+    try {
+      const { id_proyecto, id_plantilla, search, con_diagnostico, sort_by, sort_order } = req.query;
+      const page = parseInt(req.query.page, 10) || 1;
+      const limit = parseInt(req.query.limit, 10) || 20;
+      const offset = (page - 1) * limit;
+
+      const idP = Number(id_proyecto);
+      if (!Number.isFinite(idP) || idP <= 0) {
+        return res.status(400).json({ error: "id_proyecto inválido" });
+      }
+
+      const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
+      const userId = req.user.id;
+      const isAdmin =
+        Number(req.user.tipo_usuario) === 1 || Number(req.user.group_id) === 1;
+
+      const baseParams = [idP];
+      const scope = buildInformeVisibleScope({
+        userId,
+        isAdmin,
+        plantillaId: id_plantilla,
+        startIndex: baseParams.length + 1,
+      });
+
+      const whereConditions = ["i.id_proyecto = $1"];
+      const scopeWhere = scope.whereSql.replace(/^\s*AND\s*/i, "");
+      if (scopeWhere) whereConditions.push(scopeWhere);
+      
+      const params = [...baseParams, ...scope.params];
+
+      if (id_plantilla) {
+        params.push(Number(id_plantilla));
+        whereConditions.push(`i.id_plantilla = $${params.length}`);
+      }
+
+      if (con_diagnostico !== undefined && con_diagnostico !== '') {
+        const hasDiag = con_diagnostico === 'true';
+        if (hasDiag) {
+          whereConditions.push("fr.id_resultado IS NOT NULL");
+        } else {
+          whereConditions.push("fr.id_resultado IS NULL");
+        }
+      }
+
+      if (search) {
+        params.push(`%${search}%`);
+        const searchIdx = params.length;
+        whereConditions.push(`
+          EXISTS (
+            SELECT 1 
+            FROM ema.informe_respuesta r2 
+            WHERE r2.id_informe = i.id_informe
+            AND (
+              r2.valor_texto ILIKE $${searchIdx}
+              OR r2.valor_json::text ILIKE $${searchIdx}
+              OR r2.valor_bool::text ILIKE $${searchIdx}
+            )
+          )
+        `);
+      }
+
+      const whereClause = whereConditions.map(c => `(${c})`).join(" AND ");
+
+      const countQuery = `
+        SELECT COUNT(DISTINCT i.id_informe) as total
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
+        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
+          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.informe_plantilla_usuario pu
+          ON pu.id_plantilla = p.id_plantilla
+          AND pu.id_usuario = $${scope.userParamIndex}
+        ${whereClause ? `WHERE ${whereClause}` : ""}
+      `;
+
+      // --- ORDENAMIENTO DINÁMICO ---
+      let sortSql = "ORDER BY fr.cambio_detectado DESC NULLS LAST, fr.score_total DESC NULLS LAST, i.id_informe DESC";
+      
+      if (sort_by) {
+        let col = "";
+        let secondary = ", i.id_informe DESC";
+        
+        switch (sort_by) {
+          case 'score_total': col = "fr.score_total"; break;
+          case 'clasificacion': col = "COALESCE(fr.resultado_consultor, fr.clasificacion)"; break;
+          case 'evaluador_nombre': col = "CONCAT(u.first_name, ' ', u.last_name)"; break;
+          case 'fecha': col = "i.fecha_creado"; break;
+          case 'diferencia': 
+            col = "(fr.resultado_consultor IS NOT NULL AND fr.resultado_consultor != fr.clasificacion)"; 
+            secondary = ", fr.score_total DESC, i.id_informe DESC";
+            break;
+          default: col = "i.fecha_creado";
+        }
+        const dir = (sort_order || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC";
+        sortSql = `ORDER BY ${col} ${dir}${secondary}`;
+      }
+
+      const dataQuery = `
+        SELECT 
+          i.*,
+          p.nombre AS nombre_plantilla,
+          ir.id_registro,
+          fr.score_total,
+          fr.clasificacion,
+          fr.resultado_consultor,
+          fr.cambio_detectado,
+          fr.manual_override,
+          fr.fecha_recalculo,
+          fr.fecha_manual_evaluacion,
+          fr.fecha_revision_usuario,
+          CONCAT(u.first_name, ' ', u.last_name) AS evaluador_nombre,
+          (
+            SELECT jsonb_object_agg(q_vis.etiqueta, 
+              CASE 
+                WHEN q_vis.tipo IN ('semaforo', 'select', 'radio', 'select_single') THEN 
+                  COALESCE(r_vis.valor_json->>'label', r_vis.valor_texto, r_vis.valor_json::text)
+                WHEN q_vis.tipo IN ('multiselect', 'checkbox', 'select_multiple') THEN 
+                  (
+                    SELECT string_agg(item->>'label', ', ')
+                    FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r_vis.valor_json) = 'array' THEN r_vis.valor_json ELSE '[]'::jsonb END) AS item
+                  )
+                ELSE COALESCE(r_vis.valor_texto, r_vis.valor_json::text)
+              END
+            )
+            FROM ema.informe_respuesta r_vis
+            JOIN ema.informe_pregunta q_vis ON q_vis.id_pregunta = r_vis.id_pregunta
+            WHERE r_vis.id_informe = i.id_informe 
+              AND q_vis.visible_en_listado = true
+          ) as respuestas_clave
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
+        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
+          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.informe_plantilla_usuario pu
+          ON pu.id_plantilla = p.id_plantilla
+          AND pu.id_usuario = $${scope.userParamIndex}
+        LEFT JOIN public.users u ON u.id = fr.id_usuario_evaluador
+        ${whereClause ? `WHERE ${whereClause}` : ""}
+        ${sortSql}
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      const dataParams = [...params, limit, offset];
+
+      const [countRes, dataRes] = await Promise.all([
+        pool.query(countQuery, params),
+        pool.query(dataQuery, dataParams)
+      ]);
+
+      const total = parseInt(countRes.rows[0].total, 10);
+      const total_pages = Math.ceil(total / limit);
+
+      // Compatibilidad y nueva estructura
+      return res.json({ 
+        ok: true, 
+        informes: dataRes.rows, 
+        data: dataRes.rows,
+        meta: {
+          total,
+          page,
+          limit,
+          total_pages
+        }
+      });
+    } catch (err) {
+      console.error("❌ queryInformes error:", err.message);
+      return res.status(500).json({ ok: false, error: "Error en paginación", data: [], informes: [] });
+    }
+  }
+
+
 module.exports = {
   // Plantillas
   getPlantillas,
@@ -5672,6 +6205,7 @@ module.exports = {
   // Proyecto helpers
   listPlantillasByProyecto,
   listInformesByProyecto,
+  queryInformes,
   getInformesPuntosGeojson,
   exportProyectoInformesExcel,
   buscarPersonasProyecto,
@@ -5681,7 +6215,9 @@ module.exports = {
   // Share links (privado)
   createShareLink,
   listShareLinksByPlantilla,
+  updateShareLink,
   closeShareLink,
+  reopenShareLink,
   eliminarShareLink,
 
   // Share links (pÃºblico)

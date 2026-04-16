@@ -10,7 +10,7 @@
 // ✅ NUEVO: Generar QR del mismo link público
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Modal, Form, Table, Alert, Badge, Spinner } from "react-bootstrap";
+import { Button, Modal, Form, Table, Alert, Badge, Spinner, Tabs, Tab, Row, Col } from "react-bootstrap";
 import * as XLSX from "xlsx";
 import { listarProyectosParaSelect } from "@/services/proyectosService";
 import Swal from "sweetalert2";
@@ -19,6 +19,7 @@ import QRCode from "qrcode";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
 import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
 import DuplicarPlantillaModal from "@/components/informes/DuplicarPlantillaModal";
+import ScoringBuilderTab from "@/modules/diagnostico/ScoringBuilderTab";
 import { hasPerm as hasUserPerm } from "@/utils/auth";
 
 /* =========================
@@ -102,6 +103,7 @@ const emptyPregunta = {
   id_unico: false,
   visible_if: null,
   required_if: null,
+  visible_en_listado: false,
 };
 
 /* =========================
@@ -869,6 +871,15 @@ export default function InformeBuilder() {
     max_envios: "",
   });
 
+  const [showEditShareModal, setShowEditShareModal] = useState(false);
+  const [editingShareId, setEditingShareId] = useState(null);
+  const [editShareForm, setEditShareForm] = useState({
+    id_proyecto: "",
+    titulo: "",
+    expira_en_local: "",
+    max_envios: "",
+  });
+
   /* ───────────────────────── QR (Share link) ───────────────────────── */
   const [showQrModal, setShowQrModal] = useState(false);
   const [qrLoading, setQrLoading] = useState(false);
@@ -1097,6 +1108,7 @@ export default function InformeBuilder() {
     a.click();
     document.body.removeChild(a);
   }
+
 
   /* ───────────────────────── Load inicial ───────────────────────── */
   useEffect(() => {
@@ -1701,6 +1713,7 @@ export default function InformeBuilder() {
       id_unico: !!preg.id_unico,
       visible_if: preg.visible_if ?? null,
       required_if: preg.required_if ?? null,
+      visible_en_listado: !!preg.visible_en_listado,
     };
 
     setPreguntaForm(init);
@@ -1982,6 +1995,16 @@ export default function InformeBuilder() {
     }
   }
 
+  async function onReopenShareLink(idShare) {
+    try {
+      await apiSend(`${API_URL}/informes/share-links/${idShare}/reopen`, "PUT");
+      await refreshShareLinks(plantillaSelId);
+      toastOk("Link reabierto");
+    } catch (e) {
+      toastErr(e.message);
+    }
+  }
+
   function setExpInMonths(m) {
     const d = addMonths(new Date(), m);
     setShareForm((s) => ({ ...s, expira_en_local: toDatetimeLocalValue(d) }));
@@ -1990,6 +2013,72 @@ export default function InformeBuilder() {
   function handleMultiSelectChange(e) {
     const values = Array.from(e.target.selectedOptions).map((o) => o.value);
     setRuleUI((s) => ({ ...s, valueList: values }));
+  }
+
+  function openEditarShareLink(link) {
+    if (!link) return;
+
+    setEditingShareId(link.id_share || link.id || null);
+    setEditShareForm({
+      id_proyecto: link.id_proyecto ? String(link.id_proyecto) : "",
+      titulo: link.titulo || "",
+      expira_en_local: link.expira_en ? toDatetimeLocalValue(link.expira_en) : defaultExp,
+      max_envios:
+        link.max_envios === null || link.max_envios === undefined
+          ? ""
+          : String(link.max_envios),
+    });
+    setShowEditShareModal(true);
+  }
+
+  async function onUpdateShareLink() {
+    if (!editingShareId) {
+      toastWarn("No hay link seleccionado para editar");
+      return;
+    }
+
+    if (!editShareForm.id_proyecto) {
+      toastWarn("Debés seleccionar un proyecto");
+      return;
+    }
+
+    if (!editShareForm.expira_en_local) {
+      toastWarn("Elegí una fecha/hora de expiración");
+      return;
+    }
+
+    const exp = new Date(editShareForm.expira_en_local);
+    if (Number.isNaN(exp.getTime())) {
+      toastWarn("La fecha de expiración no es válida");
+      return;
+    }
+
+    if (exp.getTime() <= Date.now()) {
+      toastWarn("La expiración debe ser en el futuro");
+      return;
+    }
+
+    try {
+      setShareLoading(true);
+
+      await apiSend(`${API_URL}/informes/share-links/${editingShareId}`, "PUT", {
+        id_proyecto: Number(editShareForm.id_proyecto),
+        titulo: editShareForm.titulo?.trim() ? editShareForm.titulo.trim() : null,
+        expira_en: exp.toISOString(),
+        max_envios: editShareForm.max_envios
+          ? Number(editShareForm.max_envios)
+          : null,
+      });
+
+      toastOk("Link actualizado");
+      setShowEditShareModal(false);
+      setEditingShareId(null);
+      await refreshShareLinks(plantillaSelId);
+    } catch (e) {
+      toastErr(e.message);
+    } finally {
+      setShareLoading(false);
+    }
   }
 
   /* ───────────────────────── Render ───────────────────────── */
@@ -2130,46 +2219,6 @@ export default function InformeBuilder() {
                   {!plantillasPaginadas.length ? (
                     <div className="p-3 text-muted">Sin plantillas.</div>
                   ) : null}
-
-                  {plantillasFiltradas.length > 0 && (
-                    <div className="d-flex justify-content-between align-items-center mt-3 gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline-secondary"
-                        disabled={plantillasPage <= 1}
-                        onClick={() => setPlantillasPage((prev) => Math.max(1, prev - 1))}
-                      >
-                        Anterior
-                      </Button>
-
-                      <div className="small text-muted text-center flex-grow-1">
-                        Mostrando{" "}
-                        {Math.min(
-                          (plantillasPage - 1) * PLANTILLAS_PER_PAGE + 1,
-                          plantillasFiltradas.length
-                        )}{" "}
-                        a{" "}
-                        {Math.min(
-                          plantillasPage * PLANTILLAS_PER_PAGE,
-                          plantillasFiltradas.length
-                        )}{" "}
-                        de {plantillasFiltradas.length}
-                      </div>
-
-                      <Button
-                        size="sm"
-                        variant="outline-secondary"
-                        disabled={plantillasPage >= totalPlantillasPages}
-                        onClick={() =>
-                          setPlantillasPage((prev) =>
-                            Math.min(totalPlantillasPages, prev + 1)
-                          )
-                        }
-                      >
-                        Siguiente
-                      </Button>
-                    </div>
-                  )}
                 </>
               )}
             </div>
@@ -2179,53 +2228,27 @@ export default function InformeBuilder() {
         {/* Columna derecha */}
         <div className="col-md-8 col-lg-9">
           {!plantillaSelId ? (
-            <Alert variant="info">Seleccioná una plantilla para editar secciones/preguntas y generar links públicos.</Alert>
-          ) : loadingEstructura ? (
-            <div className="card">
-              <div className="card-body">
-                <Spinner /> Cargando estructura...
-              </div>
+            <div className="card shadow-sm border-0 h-100 d-flex flex-column align-items-center justify-content-center p-5 text-muted">
+              <i className="bi bi-arrow-left-circle fs-1 mb-3"></i>
+              <h4>Seleccioná una plantilla para comenzar</h4>
             </div>
           ) : (
-            <>            
-            {/* importación de respuestas */}
-            <div className="card mb-3">
-              <div className="card-header d-flex align-items-center justify-content-between">
-                <b>Importación</b>
-                <Button
-                  variant="outline-primary"
-                  onClick={() => setShowImportModal(true)}
-                  disabled={!plantillaSelId || !preguntasLista.length}
-                  title={!plantillaSelId ? "Seleccioná una plantilla" : (!preguntasLista.length ? "La plantilla no tiene preguntas" : "")}
-                >
-                  Importar respuestas (Excel)
-                </Button>
-                <Button
-                  variant="outline-info"
-                  onClick={() => setShowNewImportModal(true)}
-                  disabled={!plantillaSelId}
-                  title={!plantillaSelId ? "Seleccioná una plantilla" : "Canal nuevo de importación XLSX"}
-                >
-                  Importación nueva (XLSX)
-                </Button>
-              </div>
-              <div className="card-body text-muted">
-                Importá respuestas masivamente desde Excel con vista previa y mapeo automático de columnas.                
-              </div>
-            </div>
-
-            {/* ESTRUCTURA */}
-              <div className="card mb-3">
-                <div className="card-header d-flex align-items-center justify-content-between">
-                  <b>Estructura</b>
+            <Tabs defaultActiveKey="estructura" id="builder-tabs" className="mb-4 bg-white border rounded shadow-sm">
+              <Tab eventKey="estructura" title="1. Estructura" className="p-4 bg-light border-start border-end border-bottom rounded-bottom">
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                  <h5 className="mb-0 fw-bold"><i className="bi bi-layers me-2"></i>Estructura de la Plantilla</h5>
                   <Button size="sm" variant="success" onClick={openCrearSeccion}>
-                    + Sección
+                    + Nueva Sección
                   </Button>
                 </div>
 
-                <div className="card-body">
+                <div className="secciones-wrapper">
                   {(estructura?.secciones || []).length === 0 ? (
-                    <div className="text-muted">No hay secciones. Creá la primera.</div>
+                    <div className="border rounded p-5 text-center bg-white shadow-sm">
+                      <div className="text-muted mb-2"><i className="bi bi-plus-circle fs-2"></i></div>
+                      <div className="text-muted">No hay secciones definidas aún.</div>
+                      <Button variant="link" onClick={openCrearSeccion}>Crear la primera sección</Button>
+                    </div>
                   ) : (
                     (estructura?.secciones || [])
                       .slice()
@@ -2233,27 +2256,19 @@ export default function InformeBuilder() {
                       .map((sec) => {
                         const collapsed = !!collapsedBySection[sec.id_seccion];
                         return (
-                          <div key={sec.id_seccion} className="border rounded p-2 mb-3">
+                          <div key={sec.id_seccion} className="bg-white border rounded p-3 mb-3 shadow-sm">
                             <div className="d-flex align-items-center justify-content-between">
                               <div
                                 className="d-flex align-items-center gap-2"
                                 style={{ cursor: "pointer", userSelect: "none" }}
                                 onClick={() => toggleSection(sec.id_seccion)}
-                                title={collapsed ? "Mostrar preguntas" : "Ocultar preguntas"}
                               >
-                                <div className="fw-semibold">
+                                <span className="fs-5 text-muted">{collapsed ? "▸" : "▾"}</span>
+                                <div className="fw-bold fs-5">
                                   {sec.orden}. {sec.titulo}
                                 </div>
-
-                                <Badge bg="secondary">{sec?.preguntas?.length || 0} preguntas</Badge>
-
-                                {sec.visible_if ? (
-                                  <Badge bg="info" title="Esta sección se muestra según condición (visible_if)">
-                                    Visible_if (Sección)
-                                  </Badge>
-                                ) : null}
-
-                                <span className="ms-1">{collapsed ? "▸" : "▾"}</span>
+                                <Badge bg="secondary" pill>{sec?.preguntas?.length || 0}</Badge>
+                                {sec.visible_if ? <Badge bg="info">Condicional</Badge> : null}
                               </div>
 
                               <div className="d-flex gap-2">
@@ -2261,30 +2276,29 @@ export default function InformeBuilder() {
                                   + Pregunta
                                 </Button>
                                 <Button size="sm" variant="outline-secondary" onClick={() => openEditarSeccion(sec)}>
-                                  Editar
+                                  <i className="bi bi-pencil"></i>
                                 </Button>
                                 <Button size="sm" variant="outline-danger" onClick={() => borrarSeccion(sec.id_seccion)}>
-                                  Eliminar
+                                  <i className="bi bi-trash"></i>
                                 </Button>
                               </div>
                             </div>
 
                             {!collapsed && (
-                              <div className="mt-2">
+                              <div className="mt-3 border-top pt-3">
                                 {!sec.preguntas?.length ? (
-                                  <div className="text-muted small">Sin preguntas.</div>
+                                  <div className="text-center p-3 text-muted small bg-light rounded border border-dashed">
+                                    No hay preguntas en esta sección.
+                                  </div>
                                 ) : (
-                                  <Table bordered hover size="sm" className="mb-0">
-                                    <thead>
+                                  <Table bordered hover size="sm" className="mb-0 custom-builder-table">
+                                    <thead className="bg-light">
                                       <tr>
-                                        <th style={{ width: 80 }}>Orden</th>
-                                        <th>Etiqueta</th>
-                                        <th style={{ width: 160 }}>Tipo</th>
-                                        <th style={{ width: 120 }}>Oblig.</th>
-                                        <th style={{ width: 120 }}>Foto</th>
-                                        <th style={{ width: 220 }} className="text-end">
-                                          Acciones
-                                        </th>
+                                        <th style={{ width: 60 }} className="text-center">#</th>
+                                        <th>Etiqueta / Pregunta</th>
+                                        <th style={{ width: 140 }}>Tipo</th>
+                                        <th style={{ width: 80 }} className="text-center">Oblig.</th>
+                                        <th style={{ width: 220 }} className="text-end">Acciones</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -2292,70 +2306,25 @@ export default function InformeBuilder() {
                                         .slice()
                                         .sort((a, b) => (a.orden || 0) - (b.orden || 0))
                                         .map((preg, idx, arr) => {
-                                          const optVals = optionValuesFromOpcionesJson(preg.opciones_json);
                                           return (
                                             <tr key={preg.id_pregunta}>
-                                              <td>{preg.orden}</td>
+                                              <td className="text-center text-muted small">{preg.orden}</td>
                                               <td>
                                                 <div className="fw-semibold">{preg.etiqueta}</div>
-
                                                 <div className="mt-1 d-flex flex-wrap gap-1">
-                                                  {preg.visible_if ? <Badge bg="info">Visible_if</Badge> : null}
-                                                  {preg.required_if ? (
-                                                    <Badge bg="warning" text="dark">
-                                                      Required_if
-                                                    </Badge>
-                                                  ) : null}
-                                                  {preg.id_unico ? <Badge bg="dark">ID único</Badge> : null}
+                                                  {preg.visible_if && <Badge bg="info" className="fw-normal" style={{ fontSize: '0.6rem' }}>VISIBLE_IF</Badge>}
+                                                  {preg.required_if && <Badge bg="warning" text="dark" className="fw-normal" style={{ fontSize: '0.6rem' }}>REQUIRED_IF</Badge>}
+                                                  {preg.id_unico && <Badge bg="dark" className="fw-normal" style={{ fontSize: '0.6rem' }}>ID_UNICO</Badge>}
                                                 </div>
-
-                                                {(isSelectLikeTipo(preg.tipo) || isMultiTipo(preg.tipo)) && preg.opciones_json ? (
-                                                  <div className="small text-muted">
-                                                    Opciones: {optVals.length ? optVals.join(" | ") : "(json)"}
-                                                  </div>
-                                                ) : null}
                                               </td>
-                                              <td>{tiposLabel[preg.tipo] || preg.tipo}</td>
-                                              <td>{preg.obligatorio ? "Sí" : "No"}</td>
-                                              <td>{preg.permite_foto ? "Sí" : "No"}</td>
+                                              <td className="small">{tiposLabel[preg.tipo] || preg.tipo}</td>
+                                              <td className="text-center">{preg.obligatorio ? <i className="bi bi-check-circle-fill text-success"></i> : "—"}</td>
                                               <td className="text-end">
                                                 <div className="btn-group btn-group-sm">
-                                                  <Button
-                                                    variant="outline-secondary"
-                                                    disabled={idx === 0}
-                                                    onClick={() =>
-                                                      moverPregunta(preg.id_pregunta, {
-                                                        to_seccion_id: sec.id_seccion,
-                                                        to_orden: idx,
-                                                      })
-                                                    }
-                                                  >
-                                                    ↑
-                                                  </Button>
-
-                                                  <Button
-                                                    variant="outline-secondary"
-                                                    disabled={idx === arr.length - 1}
-                                                    onClick={() =>
-                                                      moverPregunta(preg.id_pregunta, {
-                                                        to_seccion_id: sec.id_seccion,
-                                                        to_orden: idx + 2,
-                                                      })
-                                                    }
-                                                  >
-                                                    ↓
-                                                  </Button>
-
-                                                  <Button
-                                                    variant="outline-secondary"
-                                                    onClick={() => openEditarPregunta(sec.id_seccion, preg)}
-                                                  >
-                                                    Editar
-                                                  </Button>
-
-                                                  <Button variant="outline-danger" onClick={() => borrarPregunta(preg.id_pregunta)}>
-                                                    Eliminar
-                                                  </Button>
+                                                  <Button variant="link" className="text-secondary py-0" disabled={idx === 0} onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx })}>↑</Button>
+                                                  <Button variant="link" className="text-secondary py-0" disabled={idx === arr.length - 1} onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx + 2 })}>↓</Button>
+                                                  <Button variant="link" className="text-primary py-0" onClick={() => openEditarPregunta(sec.id_seccion, preg)}><i className="bi bi-pencil-square"></i></Button>
+                                                  <Button variant="link" className="text-danger py-0" onClick={() => borrarPregunta(preg.id_pregunta)}><i className="bi bi-trash"></i></Button>
                                                 </div>
                                               </td>
                                             </tr>
@@ -2371,93 +2340,64 @@ export default function InformeBuilder() {
                       })
                   )}
                 </div>
-              </div>
+              </Tab>
 
-              {/* SHARE LINK */}
-              <div className="card">
-                <div className="card-header d-flex align-items-center justify-content-between">
-                  <b>Link público</b>
-                  {publicUrl ? (
-                    <Button size="sm" variant="outline-primary" onClick={() => copyToClipboard(publicUrl)}>
-                      Copiar URL
-                    </Button>
-                  ) : null}
-                </div>
+              <Tab eventKey="scoring" title="2. Puntos y Scoring" className="p-4 bg-light border-start border-end border-bottom rounded-bottom">
+                <ScoringBuilderTab idPlantilla={plantillaSelId} preguntas={preguntasLista} />
+              </Tab>
 
-                <div className="card-body">
-                  <div className="row g-2">
-                    <div className="col-md-4">
-                      <Form.Label>Proyecto</Form.Label>
-                      <Form.Select
-                        value={shareForm.id_proyecto ?? ""}
-                        onChange={(e) => setShareForm((s) => ({ ...s, id_proyecto: e.target.value }))}
-                      >
-                        <option value="">Seleccione un proyecto</option>
-                        {(proyectos || []).map((p) => (
-                          <option key={p.id} value={String(p.id)}>
-                            {p.codigo ? `${p.codigo} - ` : ""}
-                            {p.nombre || `Proyecto #${p.id}`}
-                          </option>
-                        ))}
-                      </Form.Select>
-
-                      <div className="small text-muted mt-1">
-                        El link guardará ese <b>id_proyecto</b> al crear el informe público.
-                      </div>
-                    </div>
-
-                    <div className="col-md-4">
-                      <Form.Label>Título (opcional)</Form.Label>
-                      <Form.Control value={shareForm.titulo} onChange={(e) => setShareForm((s) => ({ ...s, titulo: e.target.value }))} />
-                    </div>
-
-                    <div className="col-md-3">
-                      <Form.Label>Expira en</Form.Label>
-                      <Form.Control
-                        type="datetime-local"
-                        value={shareForm.expira_en_local}
-                        onChange={(e) => setShareForm((s) => ({ ...s, expira_en_local: e.target.value }))}
-                      />
-                      <div className="d-flex gap-2 mt-2">
-                        <Button size="sm" variant="outline-secondary" onClick={() => setExpInMonths(1)}>
-                          +1 mes
-                        </Button>
-                        <Button size="sm" variant="outline-secondary" onClick={() => setExpInMonths(3)}>
-                          +3 meses
-                        </Button>
-                        <Button size="sm" variant="outline-secondary" onClick={() => setExpInMonths(6)}>
-                          +6 meses
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="col-md-1">
-                      <Form.Label>Máx</Form.Label>
-                      <Form.Control
-                        type="number"
-                        value={shareForm.max_envios}
-                        placeholder="∞"
-                        onChange={(e) => setShareForm((s) => ({ ...s, max_envios: e.target.value }))}
-                      />
+              <Tab eventKey="avanzado" title="3. Distribución e Importación" className="p-4 bg-light border-start border-end border-bottom rounded-bottom">
+                <div className="card mb-4 shadow-sm border-0">
+                  <div className="card-header bg-white py-3 d-flex align-items-center justify-content-between">
+                    <h6 className="mb-0 fw-bold"><i className="bi bi-file-earmark-spreadsheet me-2"></i>Importación de Respuestas</h6>
+                    <div className="d-flex gap-2">
+                       <Button size="sm" variant="outline-primary" onClick={() => setShowImportModal(true)} disabled={!preguntasLista.length}>Legacy Import</Button>
+                       <Button size="sm" variant="primary" onClick={() => setShowNewImportModal(true)}>Nuevo Importador XLSX</Button>
                     </div>
                   </div>
+                  <div className="card-body bg-white small text-muted">
+                    Subí un archivo Excel para crear informes masivamente. El sistema mapeará las columnas según las etiquetas configuradas.
+                  </div>
+                </div>
 
-                  <div className="mt-3 d-flex gap-2">
-                    <Button variant="success" onClick={onCreateShareLink} disabled={shareLoading}>
-                      {shareLoading ? "Creando..." : "Crear link"}
-                    </Button>
-
-                    {publicUrl ? (
-                      <>
-                        <Button variant="outline-secondary" onClick={() => openUrl(publicUrl)}>
-                          Abrir
-                        </Button>
-
-                        <Button variant="outline-dark" onClick={() => openQrForUrl(publicUrl)}>
-                          QR
-                        </Button>
-                      </>
-                    ) : null}
+                <div className="card shadow-sm border-0 mb-4">
+                  <div className="card-header bg-white py-3 d-flex align-items-center justify-content-between">
+                    <h6 className="mb-0 fw-bold"><i className="bi bi-share me-2"></i>Recolección Pública (Links)</h6>
+                    {publicUrl && <Button size="sm" variant="outline-primary" onClick={() => copyToClipboard(publicUrl)}>Copiar URL Reciente</Button>}
+                  </div>
+                  <div className="card-body bg-white p-3">
+                    <Row className="g-3 mb-3">
+                      <Col md={6}>
+                        <Form.Label className="small fw-bold">Asociar a Proyecto</Form.Label>
+                        <Form.Select size="sm" value={shareForm.id_proyecto ?? ""} onChange={(e) => setShareForm((s) => ({ ...s, id_proyecto: e.target.value }))}>
+                          <option value="">Seleccionar...</option>
+                          {(proyectos || []).map((p) => <option key={p.id} value={String(p.id)}>{p.codigo ? `${p.codigo} - ` : ""}{p.nombre}</option>)}
+                        </Form.Select>
+                      </Col>
+                      <Col md={6}>
+                        <Form.Label className="small fw-bold">Título del Link</Form.Label>
+                        <Form.Control size="sm" placeholder="Ej: Censo Abril" value={shareForm.titulo} onChange={(e) => setShareForm((s) => ({ ...s, titulo: e.target.value }))} />
+                      </Col>
+                    </Row>
+                    <Row className="g-3">
+                      <Col md={3}>
+                        <Form.Label className="small fw-bold">Expira en</Form.Label>
+                        <Form.Control size="sm" type="datetime-local" value={shareForm.expira_en_local} onChange={(e) => setShareForm((s) => ({ ...s, expira_en_local: e.target.value }))} />
+                        <div className="d-flex gap-1 mt-1">
+                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(1)}>+1m</Button>
+                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(3)}>+3m</Button>
+                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(6)}>+6m</Button>
+                        </div>
+                      </Col>
+                      <Col md={1}>
+                        <Form.Label className="small fw-bold">Máx</Form.Label>
+                        <Form.Control size="sm" type="number" placeholder="∞" value={shareForm.max_envios} onChange={(e) => setShareForm((s) => ({ ...s, max_envios: e.target.value }))} />
+                      </Col>
+                      <Col md={2} className="d-flex align-items-end gap-2">
+                        <Button size="sm" variant="success" className="w-100" onClick={onCreateShareLink} disabled={shareLoading}>{shareLoading ? "Creando..." : "Crear Link Público"}</Button>
+                        {publicUrl && <Button size="sm" variant="outline-dark" onClick={() => openQrForUrl(publicUrl)}><i className="bi bi-qr-code"></i></Button>}
+                      </Col>
+                    </Row>
                   </div>
 
                   {publicUrl ? (
@@ -2545,9 +2485,8 @@ export default function InformeBuilder() {
                     </Table>
                   </div>
                 </div>
-              </div>
-
-            </>
+              </Tab>
+            </Tabs>
           )}
         </div>
       </div>
@@ -2862,7 +2801,22 @@ export default function InformeBuilder() {
                       />
                     </div>
 
-                    <div className="col-md-4 d-flex align-items-end">
+                    <div className="col-md-3 d-flex align-items-end">
+                      <Form.Check
+                        type="checkbox"
+                        label="Visible en listado"
+                        checked={!!preguntaForm.visible_en_listado}
+                        onChange={(e) =>
+                          setPreguntaForm((s) => ({
+                            ...s,
+                            visible_en_listado: e.target.checked,
+                          }))
+                        }
+                        title="Si se activa, el valor de esta respuesta se mostrará como una columna en el listado de informes."
+                      />
+                    </div>
+
+                    <div className="col-md-3 d-flex align-items-end">
                       {String(preguntaForm.tipo).toLowerCase() !== "imagen" ? (
                         <Form.Check
                           type="checkbox"
@@ -3511,6 +3465,87 @@ export default function InformeBuilder() {
                 authHeaders={authHeaders}
                 onSuccess={handleDuplicarPlantillaSuccess}
               />
+
+              <Modal
+                show={showEditShareModal}
+                onHide={() => setShowEditShareModal(false)}
+                centered
+              >
+                <Modal.Header closeButton>
+                  <Modal.Title>Editar link público</Modal.Title>
+                </Modal.Header>
+
+                <Modal.Body>
+                  <Form.Group className="mb-3">
+                    <Form.Label>Proyecto</Form.Label>
+                    <Form.Select
+                      value={editShareForm.id_proyecto}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, id_proyecto: e.target.value }))
+                      }
+                    >
+                      <option value="">Seleccionar...</option>
+                      {(proyectos || []).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.codigo ? `${p.codigo} - ` : ""}{p.nombre}
+                        </option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+
+                  <Form.Group className="mb-3">
+                    <Form.Label>Título</Form.Label>
+                    <Form.Control
+                      type="text"
+                      value={editShareForm.titulo}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, titulo: e.target.value }))
+                      }
+                      placeholder="Opcional"
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-3">
+                    <Form.Label>Expira en</Form.Label>
+                    <Form.Control
+                      type="datetime-local"
+                      value={editShareForm.expira_en_local}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, expira_en_local: e.target.value }))
+                      }
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-2">
+                    <Form.Label>Máx. envíos</Form.Label>
+                    <Form.Control
+                      type="number"
+                      min="1"
+                      value={editShareForm.max_envios}
+                      onChange={(e) =>
+                        setEditShareForm((s) => ({ ...s, max_envios: e.target.value }))
+                      }
+                      placeholder="Vacío = sin límite"
+                    />
+                  </Form.Group>
+                </Modal.Body>
+
+                <Modal.Footer>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowEditShareModal(false)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={onUpdateShareLink}
+                    disabled={shareLoading}
+                  >
+                    {shareLoading ? "Guardando..." : "Guardar cambios"}
+                  </Button>
+                </Modal.Footer>
+              </Modal>
     </>
   );
 }

@@ -497,7 +497,7 @@ function isCamino(props) {
   return getUsoCategory(props) === "camino";
 }
 
-function buildTramoMiniLabelHtml({ label, uso }) {
+function buildTramoMiniLabelHtml({ label }) {
   const div = document.createElement("div");
   div.className = "tramo-mini-label";
 
@@ -505,7 +505,6 @@ function buildTramoMiniLabelHtml({ label, uso }) {
     <div style="
       display:inline-flex;
       align-items:center;
-      gap:6px;
       max-width:160px;
       padding:3px 7px;
       border-radius:999px;
@@ -525,10 +524,6 @@ function buildTramoMiniLabelHtml({ label, uso }) {
         overflow:hidden;
         text-overflow:ellipsis;
       ">${esc(label || "Tramo")}</span>
-      <span style="
-        opacity:.8;
-        font-weight:600;
-      ">· ${esc(uso || "Sin uso")}</span>
     </div>
   `;
 
