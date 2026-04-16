@@ -5,6 +5,8 @@ const path = require("path");
 const fs = require("fs");
 const { URL } = require("url");
 const pool = require("../db");
+const scoringEngine = require("../src/modules/scoring/scoring.engine");
+
 
 const MAX_IMPORT_BYTES = 25 * 1024 * 1024; // 25MB, limite prudente para iteracion 1
 const MAX_IMPORT_ROWS = 20000;
@@ -1613,7 +1615,25 @@ async function runImportXlsx(req, res) {
                 }
               }
 
+              // =========================
+              // MOTOR DE SCORING (IMPORT)
+              // =========================
+              try {
+                // 1. Crear el registro base para este informe (1:1 en este tipo de importador)
+                const regRes = await client.query(
+                  `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
+                  [idInforme]
+                );
+                const idRegistro = regRes.rows[0].id_registro;
+
+                // 2. Ejecutar Scoring (Usa cache interno por id_plantilla)
+                await scoringEngine.runScoring(idRegistro, client);
+              } catch (scoringErr) {
+                console.error(`[Scoring/Import] Error en fila ${rowNumber}:`, scoringErr.message);
+              }
+
               await client.query("COMMIT");
+
               summary.created += 1;
               return { rowNumber, action: "created", id_informe: idInforme };
             } catch (e) {
@@ -1729,7 +1749,31 @@ async function runImportXlsx(req, res) {
               }
             }
 
+            // =========================
+            // MOTOR DE SCORING (UPDATE/IMPORT)
+            // =========================
+            try {
+              const regRes = await client.query(
+                `SELECT id_registro FROM ema.informe_registro WHERE id_informe = $1 LIMIT 1`,
+                [idInforme]
+              );
+              let idRegistro;
+              if (regRes.rowCount > 0) {
+                idRegistro = regRes.rows[0].id_registro;
+              } else {
+                const insRes = await client.query(
+                  `INSERT INTO ema.informe_registro (id_informe) VALUES ($1) RETURNING id_registro`,
+                  [idInforme]
+                );
+                idRegistro = insRes.rows[0].id_registro;
+              }
+              await scoringEngine.runScoring(idRegistro, client);
+            } catch (scoringErr) {
+              console.error(`[Scoring/ImportUpdate] Error en fila ${rowNumber}:`, scoringErr.message);
+            }
+
             await client.query("COMMIT");
+
             summary.updated += 1;
             return { rowNumber, action: "updated", id_informe: idInforme };
           } catch (e) {

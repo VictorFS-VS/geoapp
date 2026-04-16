@@ -195,6 +195,13 @@ router.put(
   informesCtrl.closeShareLink
 );
 
+router.put(
+  "/share-links/:idShare/reopen",
+  verifyToken,
+  requirePerm("informes.sharelinks.manage"),
+  informesCtrl.reopenShareLink
+);
+
 router.delete(
   "/share-links/:idShare",
   verifyToken,
@@ -246,7 +253,15 @@ router.get(
   informesCtrl.buscarRespuestasProyecto
 );
 
-// Listar informes del proyecto
+// Nuevo endpoint unificado para Dashboard / Diagnóstico
+router.get(
+  "/query",
+  verifyToken,
+  requirePerm("informes.read"),
+  informesCtrl.queryInformes
+);
+
+// Listar informes del proyecto (legacy fallback)
 router.get(
   "/proyecto/:idProyecto",
   verifyToken,
