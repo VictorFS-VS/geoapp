@@ -2485,9 +2485,8 @@ export default function InformeBuilder() {
                     </Table>
                   </div>
                 </div>
-              </div>
-
-            </>
+              </Tab>
+            </Tabs>
           )}
         </div>
       </div>

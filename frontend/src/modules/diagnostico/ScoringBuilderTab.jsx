@@ -126,8 +126,8 @@ const ScoringBuilderTab = ({ idPlantilla, preguntas = [] }) => {
               </div>
             </div>
             <div className="d-flex gap-2">
-              <Button variant="outline-secondary" onClick={loadFormula} disabled={saving} title="Recargar">
-                <i className="bi bi-arrow-clockwise"></i>
+              <Button variant="outline-secondary" onClick={loadFormula} disabled={saving}>
+                <i className="bi bi-arrow-clockwise me-1"></i> Recargar
               </Button>
               <Button variant="success" onClick={handleSaveAll} disabled={saving}>
                 {saving ? 'Guardando...' : '✔ Aplicar Cambios'}
