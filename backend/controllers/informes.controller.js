@@ -25,6 +25,10 @@ function safeStr(v) {
   return String(v);
 }
 
+function generateClientRequestId() {
+  return crypto.randomUUID();
+}
+
 function asPositiveInt(v, fallback = 1) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 1) return fallback;
@@ -1940,6 +1944,12 @@ async function deletePregunta(req, res) {
   // POST /api/informes (crear)
   async function crearInforme(req, res) {
     const { id_plantilla, id_proyecto, titulo, respuestas } = req.body;
+    
+    let clientRequestId = String(req.body?.client_request_id || "").trim();
+    if (!clientRequestId) {
+      clientRequestId = generateClientRequestId();
+      console.warn(`[Private Submit] client_request_id generado para request legacy: ${clientRequestId}`);
+    }
 
     const idPlantilla = Number(id_plantilla);
     if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
@@ -2163,11 +2173,11 @@ async function deletePregunta(req, res) {
 
       const infRes = await client.query(
         `
-        INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo)
-        VALUES ($1, $2, $3)
+        INSERT INTO ema.informe (id_plantilla, id_proyecto, titulo, client_request_id)
+        VALUES ($1, $2, $3, $4)
         RETURNING *
         `,
-        [idPlantilla, idProyecto, titulo || null]
+        [idPlantilla, idProyecto, titulo || null, clientRequestId]
       );
 
       const informe = infRes.rows[0];
@@ -3997,7 +4007,12 @@ async function publicGetShareForm(req, res) {
 async function publicSubmitShareForm(req, res) {
   const token = String(req.params.token || "").trim();
   const titulo = req.body?.titulo ? String(req.body.titulo).trim() : null;
-  const clientRequestId = String(req.body?.client_request_id || "").trim();
+  let clientRequestId = String(req.body?.client_request_id || "").trim();
+
+  if (!clientRequestId) {
+    clientRequestId = generateClientRequestId();
+    console.warn(`[Public Submit] client_request_id generado para request legacy: ${clientRequestId}`);
+  }
 
   let respuestasObj = {};
   try {
@@ -4014,10 +4029,6 @@ async function publicSubmitShareForm(req, res) {
 
   if (!token) {
     return res.status(400).json({ ok: false, error: "Token vacío" });
-  }
-
-  if (!clientRequestId) {
-    return res.status(400).json({ ok: false, error: "client_request_id vacío" });
   }
 
   const client = await pool.connect();
