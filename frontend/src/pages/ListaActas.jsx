@@ -59,7 +59,7 @@ export default function ListaActas() {
   const fetchActas = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/proyectos/${id}/actas-preconstruccion`, {
+      const res = await fetch(`${API_URL}/actas/proyectos/${id}/actas-preconstruccion`, {
         headers: { ...authHeaders() },
       });
       const data = await jsonOrRedirect401(res);
@@ -85,7 +85,7 @@ export default function ListaActas() {
     if (!window.confirm("¿Reimprimir PDF de esta acta?")) return;
 
     try {
-      const url = `${API_URL}/proyectos/${id}/actas-preconstruccion-pdf?id_acta=${acta.id_acta}`;
+      const url = `${API_URL}/actas/proyectos/${id}/actas-preconstruccion-pdf?id_acta=${acta.id_acta}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { ...authHeaders() },
@@ -136,7 +136,7 @@ export default function ListaActas() {
     if (!window.confirm(`¿Eliminar acta #${acta.id_acta}? Se borrarán también sus imágenes y firmas.`)) return;
 
     try {
-      const res = await fetch(`${API_URL}/actas-preconstruccion/${acta.id_acta}`, {
+      const res = await fetch(`${API_URL}/actas/actas-preconstruccion/${acta.id_acta}`, {
         method: "DELETE",
         headers: { ...authHeaders() },
       });

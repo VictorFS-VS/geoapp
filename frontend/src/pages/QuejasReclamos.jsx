@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import PqrDashboardView from "@/modules/projectHome/PqrDashboardView";
+import { FaArrowLeft } from "react-icons/fa";
 import { Button, Form, Table, Modal, Row, Col, Spinner, Badge } from "react-bootstrap";
 import { loadGoogleMapsApi } from "@/utils/loadGoogleMapsApi";
 
@@ -640,9 +642,11 @@ function CoordinatePickerModal({
   );
 }
 
-export default function QuejasReclamos() {
+export default function QuejasReclamos({ idProyectoExternal = null, embedded = false }) {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const proyectoDesdeUrl = searchParams.get("id_proyecto") || "";
+  const initialIdProyecto = idProyectoExternal || proyectoDesdeUrl;
 
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -656,7 +660,7 @@ export default function QuejasReclamos() {
   const [estado, setEstado] = useState("");
   const [tipologia, setTipologia] = useState("");
   const [nivelRiesgo, setNivelRiesgo] = useState("");
-  const [idProyecto, setIdProyecto] = useState(proyectoDesdeUrl);
+  const [idProyecto, setIdProyecto] = useState(initialIdProyecto);
 
   const [showModal, setShowModal] = useState(false);
   const [mode, setMode] = useState("crear");
@@ -676,8 +680,8 @@ export default function QuejasReclamos() {
   const hayTramos = Array.isArray(tramos) && tramos.length > 0;
 
   useEffect(() => {
-    setIdProyecto(proyectoDesdeUrl);
-  }, [proyectoDesdeUrl]);
+    setIdProyecto(initialIdProyecto);
+  }, [initialIdProyecto]);
 
   async function fetchData(currentPage = page) {
     try {
@@ -1020,76 +1024,96 @@ export default function QuejasReclamos() {
   }
 
   return (
-    <div className="container-fluid py-3">
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <div>
-          <h3 className="mb-0">Quejas y Reclamos</h3>
-          <small className="text-muted">Gestión de quejas, reclamos y seguimiento</small>
+    <div className={`container-fluid ${embedded ? "px-0" : "py-3"}`}>
+      {!embedded && (
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <div className="d-flex align-items-center gap-3">
+            <Button variant="outline-secondary" onClick={() => navigate(`/project-home/${idProyecto}`)}>
+              <FaArrowLeft /> Volver
+            </Button>
+            <div>
+              <h3 className="mb-0">Quejas y Reclamos</h3>
+              <small className="text-muted">
+                {nombreProyecto ? `Proyecto: ${nombreProyecto}` : "Gestión de quejas, reclamos y seguimiento"}
+              </small>
+            </div>
+          </div>
+          <div className="d-flex gap-3">
+            <Button variant="success" onClick={openCrear}>
+              + Nueva Queja
+            </Button>
+          </div>
         </div>
-        <Button variant="primary" onClick={openCrear}>
-          + Nuevo
-        </Button>
-      </div>
+      )}
 
-      <div className="card shadow-sm border-0 mb-3">
-        <div className="card-body">
-          <Form onSubmit={handleBuscar}>
-            <Row className="g-2">
-              <Col md={2}>
-                <Form.Control
-                  value={nombreProyecto || (idProyecto ? `Proyecto ${idProyecto}` : "")}
-                  readOnly
-                />
-              </Col>
-
-              <Col md={3}>
-                <Form.Control
-                  placeholder="Buscar por código, nombre o descripción"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </Col>
-
-              <Col md={2}>
-                <Form.Select value={estado} onChange={(e) => setEstado(e.target.value)}>
-                  <option value="">Todos los estados</option>
-                  {ESTADOS.map((x) => (
-                    <option key={x} value={x}>
-                      {labelOf(x)}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Col>
-
-              <Col md={2}>
-                <Form.Select value={tipologia} onChange={(e) => setTipologia(e.target.value)}>
-                  <option value="">Todas las tipologías</option>
-                  {TIPOLOGIAS.map((x) => (
-                    <option key={x} value={x}>
-                      {labelOf(x)}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Col>
-
-              <Col md={2}>
-                <Form.Select value={nivelRiesgo} onChange={(e) => setNivelRiesgo(e.target.value)}>
-                  <option value="">Todo riesgo</option>
-                  {NIVELES.map((x) => (
-                    <option key={x} value={x}>
-                      {labelOf(x)}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Col>
-
-              <Col md={1} className="d-grid">
-                <Button type="submit">Buscar</Button>
-              </Col>
-            </Row>
-          </Form>
+      {embedded && (
+        <div className="d-flex justify-content-end mb-3">
+           <Button variant="success" onClick={openCrear}>
+            + Nueva Queja
+           </Button>
         </div>
-      </div>
+      )}
+
+      <div style={{ display: 'block' }}>
+        <div className="card shadow-sm border-0 mb-3">
+          <div className="card-body">
+            <Form onSubmit={handleBuscar}>
+              <Row className="g-2">
+                <Col md={2}>
+                  <Form.Control
+                    value={nombreProyecto || (idProyecto ? `Proyecto ${idProyecto}` : "")}
+                    readOnly
+                  />
+                </Col>
+
+                <Col md={3}>
+                  <Form.Control
+                    placeholder="Buscar por código, nombre o descripción"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </Col>
+
+                <Col md={2}>
+                  <Form.Select value={estado} onChange={(e) => setEstado(e.target.value)}>
+                    <option value="">Todos los estados</option>
+                    {ESTADOS.map((x) => (
+                      <option key={x} value={x}>
+                        {labelOf(x)}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Col>
+
+                <Col md={2}>
+                  <Form.Select value={tipologia} onChange={(e) => setTipologia(e.target.value)}>
+                    <option value="">Todas las tipologías</option>
+                    {TIPOLOGIAS.map((x) => (
+                      <option key={x} value={x}>
+                        {labelOf(x)}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Col>
+
+                <Col md={2}>
+                  <Form.Select value={nivelRiesgo} onChange={(e) => setNivelRiesgo(e.target.value)}>
+                    <option value="">Todo riesgo</option>
+                    {NIVELES.map((x) => (
+                      <option key={x} value={x}>
+                        {labelOf(x)}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Col>
+
+                <Col md={1} className="d-grid">
+                  <Button type="submit">Buscar</Button>
+                </Col>
+              </Row>
+            </Form>
+          </div>
+        </div>
 
       <div className="card shadow-sm border-0">
         <div className="card-body">
@@ -1208,6 +1232,7 @@ export default function QuejasReclamos() {
           )}
         </div>
       </div>
+    </div>
 
       <Modal show={showModal} onHide={closeModal} size="xl" backdrop="static">
         <Form onSubmit={handleSubmit}>

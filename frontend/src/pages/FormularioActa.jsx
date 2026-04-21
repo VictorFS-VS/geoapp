@@ -346,14 +346,14 @@ export default function FormularioActa() {
   const handleSubmitPDF = (e) => {
     e.preventDefault();
     downloadFromEndpoint(
-      `${API_URL}/proyectos/${id}/actas-preconstruccion-pdf`,
+      `${API_URL}/actas/proyectos/${id}/actas-preconstruccion-pdf`,
       `ActaPreconstruccion_${id}.pdf`
     );
   };
 
   const handleGenerateDOCX = () => {
     downloadFromEndpoint(
-      `${API_URL}/proyectos/${id}/actas-preconstruccion-docx`,
+      `${API_URL}/actas/proyectos/${id}/actas-preconstruccion-docx`,
       `ActaPreconstruccion_${id}.docx`
     );
   };

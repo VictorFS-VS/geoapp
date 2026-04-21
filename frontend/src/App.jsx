@@ -243,7 +243,18 @@ function ClienteVisorRedirect({ API_URL }) {
         const j = res.ok ? await res.json() : null;
         const idProyecto = j?.gid ?? null;
 
-        setTo(idProyecto ? `/visor-full/${idProyecto}` : "/proyectos");
+        if (!idProyecto) {
+          setTo("/proyectos");
+          return;
+        }
+
+        // ✅ Redirección Inteligente por Rol
+        // Tipo 10 = CLIENTE_VIAL -> /project-home
+        if (Number(u?.tipo_usuario) === 10) {
+          setTo(`/project-home/${idProyecto}`);
+        } else {
+          setTo(`/visor-full/${idProyecto}`);
+        }
       } catch {
         setTo("/proyectos");
       }

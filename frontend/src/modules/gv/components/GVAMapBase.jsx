@@ -5,6 +5,29 @@ const GMAPS_API_KEY =
   import.meta.env.VITE_GOOGLE_MAPS_KEY || import.meta.env.VITE_GMAPS_API_KEY;
 const GMAPS_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID;
 
+// Patrón exacto del aviso informativo de Google Maps al combinar mapId + satellite.
+// No es un error, es un advisory documentado que no afecta la funcionalidad.
+const GMAPS_CLOUD_STYLE_ADVISORY = "preregistered map type";
+
+// Interceptor global para asfixiar este warning específico de Google de forma permanente
+// y evitar que consoleToasts.js lo muestre cada vez que cambias a modo Satélite.
+if (typeof console !== "undefined") {
+  const origWarn = console.warn;
+  const origError = console.error;
+  
+  console.warn = function(...args) {
+    const msg = String(args[0] || "");
+    if (msg.includes(GMAPS_CLOUD_STYLE_ADVISORY)) return;
+    origWarn.apply(console, args);
+  };
+  
+  console.error = function(...args) {
+    const msg = String(args[0] || "");
+    if (msg.includes(GMAPS_CLOUD_STYLE_ADVISORY)) return;
+    origError.apply(console, args);
+  };
+}
+
 export default function GVAMapBase({
   className = "",
   style,
@@ -107,7 +130,10 @@ export default function GVAMapBase({
   useEffect(() => {
     if (!ready || !mapRef.current) return;
     try {
-      mapRef.current.setMapTypeId(mapTypeId);
+      mapRef.current.setOptions({
+        mapTypeId,
+        mapId: GMAPS_MAP_ID || undefined,
+      });
     } catch {}
   }, [mapTypeId, ready]);
 
