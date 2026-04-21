@@ -327,7 +327,46 @@ async function setResponsables(id_actividad, lista = []) {
 /* =========================
    ALERTAS y QUEUE
    ========================= */
-async function crearAlertaYQueue({ id_actividad, modo = "AUTO", offset_min, canal = "IN_APP", activo = true }) {
+
+function getOffsetsByTipo(tipo) {
+  const t = String(tipo || "").toUpperCase();
+
+  if (t === "VISITA") {
+    return [
+      { codigo: "3D", offset_min: -(3 * 24 * 60), canal: "IN_APP" },
+      { codigo: "1D", offset_min: -(1 * 24 * 60), canal: "IN_APP" },
+      { codigo: "2H", offset_min: -(2 * 60), canal: "IN_APP" },
+    ];
+  }
+
+  if (t === "ENTREGA_INFORME") {
+    return [
+      { codigo: "3D", offset_min: -(3 * 24 * 60), canal: "IN_APP" },
+      { codigo: "1D", offset_min: -(1 * 24 * 60), canal: "IN_APP" },
+    ];
+  }
+
+  if (t === "AUDITORIA") {
+    return [
+      { codigo: "3D", offset_min: -(3 * 24 * 60), canal: "IN_APP" },
+      { codigo: "1D", offset_min: -(1 * 24 * 60), canal: "IN_APP" },
+      { codigo: "4H", offset_min: -(4 * 60), canal: "IN_APP" },
+    ];
+  }
+
+  return [
+    { codigo: "1D", offset_min: -(1 * 24 * 60), canal: "IN_APP" },
+  ];
+}
+
+async function crearAlertaYQueue({
+  id_actividad,
+  modo = "AUTO",
+  offset_min,
+  canal = "IN_APP",
+  activo = true,
+  codigo = null,
+}) {
   const { rows: alertRows } = await pool.query(
     `
     INSERT INTO ema.regencia_alertas (id_actividad, modo, offset_min, canal, activo)
@@ -336,51 +375,143 @@ async function crearAlertaYQueue({ id_actividad, modo = "AUTO", offset_min, cana
     `,
     [id_actividad, modo, offset_min, canal, activo]
   );
-  const alerta = alertRows[0];
 
-  const { rows: actRows } = await pool.query(
-    `SELECT inicio_at FROM ema.regencia_actividades WHERE id=$1 LIMIT 1`,
-    [id_actividad]
-  );
-  if (!actRows[0]) return alerta;
+  const alerta = alertRows[0];
 
   const { rows: qRows } = await pool.query(
     `
-    INSERT INTO ema.regencia_alertas_queue (id_alerta, disparar_at, estado)
-    VALUES (
-      $1,
-      (SELECT inicio_at + make_interval(mins => $2) FROM ema.regencia_actividades WHERE id=$3),
-      'PENDIENTE'
-    )
+    INSERT INTO ema.regencia_alertas_queue
+      (id_alerta, disparar_at, estado, intentos, ultimo_error, creado_en)
+    VALUES
+      (
+        $1,
+        (
+          SELECT inicio_at + make_interval(mins => $2)
+          FROM ema.regencia_actividades
+          WHERE id = $3
+        ),
+        'PENDIENTE',
+        0,
+        null,
+        now()
+      )
     RETURNING *
     `,
     [alerta.id, offset_min, id_actividad]
   );
 
-  return { alerta, queue: qRows[0] };
+  return {
+    alerta: {
+      ...alerta,
+      codigo,
+    },
+    queue: qRows[0],
+  };
+}
+
+async function cancelarAlertasPendientesDeActividad(client, id_actividad) {
+  await client.query(
+    `
+    UPDATE ema.regencia_alertas_queue q
+    SET estado = 'CANCELADA'
+    FROM ema.regencia_alertas a
+    WHERE q.id_alerta = a.id
+      AND a.id_actividad = $1
+      AND q.estado = 'PENDIENTE'
+    `,
+    [id_actividad]
+  );
+
+  await client.query(
+    `
+    UPDATE ema.regencia_alertas
+    SET activo = false
+    WHERE id_actividad = $1
+      AND activo = true
+    `,
+    [id_actividad]
+  );
 }
 
 async function generarAlertasEstandar(id_actividad) {
-  const act = await getActividad(id_actividad);
-  if (!act) return { created: 0, items: [] };
+  const client = await pool.connect();
 
-  let offsets = [];
-  if (act.tipo === "VISITA") offsets = [-7 * 24 * 60];
-  if (act.tipo === "ENTREGA_INFORME") offsets = [-3 * 24 * 60];
-  if (act.tipo === "AUDITORIA") offsets = [-90 * 24 * 60];
+  try {
+    await client.query("BEGIN");
 
-  const items = [];
-  for (const off of offsets) {
-    const created = await crearAlertaYQueue({
-      id_actividad,
-      modo: "AUTO",
-      offset_min: off,
-      canal: "IN_APP",
-      activo: true,
-    });
-    items.push(created);
+    const { rows } = await client.query(
+      `
+      SELECT *
+      FROM ema.regencia_actividades
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id_actividad]
+    );
+
+    const act = rows[0];
+    if (!act) {
+      await client.query("ROLLBACK");
+      return { created: 0, items: [] };
+    }
+
+    const offsets = getOffsetsByTipo(act.tipo);
+
+    await cancelarAlertasPendientesDeActividad(client, id_actividad);
+
+    const items = [];
+
+    for (const off of offsets) {
+      const { rows: alertRows } = await client.query(
+        `
+        INSERT INTO ema.regencia_alertas (id_actividad, modo, offset_min, canal, activo)
+        VALUES ($1,$2,$3,$4,$5)
+        RETURNING *
+        `,
+        [id_actividad, "AUTO", off.offset_min, off.canal, true]
+      );
+
+      const alerta = alertRows[0];
+
+      const { rows: qRows } = await client.query(
+        `
+        INSERT INTO ema.regencia_alertas_queue
+          (id_alerta, disparar_at, estado, intentos, ultimo_error, creado_en)
+        VALUES
+          (
+            $1,
+            (
+              SELECT inicio_at + make_interval(mins => $2)
+              FROM ema.regencia_actividades
+              WHERE id = $3
+            ),
+            'PENDIENTE',
+            0,
+            null,
+            now()
+          )
+        RETURNING *
+        `,
+        [alerta.id, off.offset_min, id_actividad]
+      );
+
+      items.push({
+        alerta: {
+          ...alerta,
+          codigo: off.codigo,
+        },
+        queue: qRows[0],
+      });
+    }
+
+    await client.query("COMMIT");
+    return { created: items.length, items };
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
   }
-  return { created: items.length, items };
 }
 
 /* =========================
@@ -428,7 +559,7 @@ function firstDayOfMonth(year, monthIndex0) {
 
 function getDateForWeekdayOfMonth(year, monthIndex0, weekOfMonth, dayOfWeek) {
   const first = firstDayOfMonth(year, monthIndex0);
-  const firstWeekday = first.getDay(); // 0=Dom ... 6=Sab
+  const firstWeekday = first.getDay();
 
   const offset = (dayOfWeek - firstWeekday + 7) % 7;
   const firstOccurrenceDay = 1 + offset;

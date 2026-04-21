@@ -1,3 +1,4 @@
+// controllers/regencia.controller.js
 const Reg = require("../models/regencia.model");
 
 /* =========================
@@ -14,6 +15,7 @@ function todayYYYYMMDD() {
 
 function isContratoVigente(contrato) {
   if (!contrato) return false;
+
   const estado = String(contrato.estado || "").toUpperCase();
   if (estado !== "ACTIVO") return false;
 
@@ -29,6 +31,7 @@ async function validarContratoParaRegencia({ id_proyecto, tipoActividad }) {
   }
 
   const contrato = await Reg.getContratoActivoPorProyecto(id_proyecto);
+
   if (!contrato) {
     return {
       ok: false,
@@ -40,8 +43,7 @@ async function validarContratoParaRegencia({ id_proyecto, tipoActividad }) {
   if (!isContratoVigente(contrato)) {
     return {
       ok: false,
-      message:
-        `Regencia bloqueada: el contrato está vencido (fecha_fin: ${contrato.fecha_fin}). Renueve el contrato para continuar.`,
+      message: `Regencia bloqueada: el contrato está vencido (fecha_fin: ${contrato.fecha_fin}). Renueve el contrato para continuar.`,
     };
   }
 
@@ -49,8 +51,34 @@ async function validarContratoParaRegencia({ id_proyecto, tipoActividad }) {
 }
 
 /* =========================
+   HELPERS: alertas
+   ========================= */
+
+async function regenerarAlertasActividad(id_actividad) {
+  try {
+    if (!id_actividad || typeof Reg.generarAlertasEstandar !== "function") return;
+
+    // Si en el futuro agregás Reg.recrearAlertasEstandar, lo usa primero.
+    if (typeof Reg.recrearAlertasEstandar === "function") {
+      await Reg.recrearAlertasEstandar(id_actividad);
+      return;
+    }
+
+    await Reg.generarAlertasEstandar(id_actividad);
+  } catch (e) {
+    console.warn(
+      "[Regencia] No se pudieron regenerar alertas para actividad",
+      id_actividad,
+      "-",
+      e?.message || e
+    );
+  }
+}
+
+/* =========================
    CONTRATOS
    ========================= */
+
 async function getContratoActivo(req, res) {
   try {
     const id_proyecto = parseInt(req.params.id_proyecto, 10);
@@ -76,12 +104,12 @@ async function listarContratos(req, res) {
 async function crearContrato(req, res) {
   try {
     const { id_proyecto, fecha_inicio, fecha_fin, titulo, observacion } = req.body || {};
+
     if (!id_proyecto || !fecha_fin) {
       return res.status(400).json({ message: "id_proyecto y fecha_fin son obligatorios" });
     }
 
-    const creado_por =
-      req.user?.id ? `user:${req.user.id}` : "Sistema";
+    const creado_por = req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const row = await Reg.crearContrato({
       id_proyecto: parseInt(id_proyecto, 10),
@@ -103,7 +131,11 @@ async function actualizarContrato(req, res) {
   try {
     const id = parseInt(req.params.id, 10);
     const row = await Reg.actualizarContrato(id, req.body || {});
-    if (!row) return res.status(404).json({ message: "Contrato no encontrado" });
+
+    if (!row) {
+      return res.status(404).json({ message: "Contrato no encontrado" });
+    }
+
     return res.json(row);
   } catch (e) {
     console.error("actualizarContrato:", e);
@@ -114,9 +146,11 @@ async function actualizarContrato(req, res) {
 /* =========================
    ACTIVIDADES
    ========================= */
+
 async function listarActividades(req, res) {
   try {
     const { id_proyecto, id_contrato, from, to, estado, tipo, q } = req.query || {};
+
     const rows = await Reg.listarActividades({
       id_proyecto: id_proyecto ? parseInt(id_proyecto, 10) : null,
       id_contrato: id_contrato ? parseInt(id_contrato, 10) : null,
@@ -126,6 +160,7 @@ async function listarActividades(req, res) {
       tipo: tipo || null,
       q: q || null,
     });
+
     return res.json(rows);
   } catch (e) {
     console.error("listarActividades:", e);
@@ -137,7 +172,11 @@ async function getActividad(req, res) {
   try {
     const id = parseInt(req.params.id, 10);
     const row = await Reg.getActividad(id);
-    if (!row) return res.status(404).json({ message: "Actividad no encontrada" });
+
+    if (!row) {
+      return res.status(404).json({ message: "Actividad no encontrada" });
+    }
+
     return res.json(row);
   } catch (e) {
     console.error("getActividad:", e);
@@ -164,7 +203,9 @@ async function crearActividad(req, res) {
     const tipo = String(body.tipo || "").toUpperCase();
 
     const id_contrato =
-      body.id_contrato !== undefined && body.id_contrato !== null && body.id_contrato !== ""
+      body.id_contrato !== undefined &&
+      body.id_contrato !== null &&
+      body.id_contrato !== ""
         ? parseInt(body.id_contrato, 10)
         : null;
 
@@ -172,11 +213,15 @@ async function crearActividad(req, res) {
       return res.status(400).json({ message: "id_contrato inválido" });
     }
 
-    const check = await validarContratoParaRegencia({ id_proyecto, tipoActividad: tipo });
-    if (!check.ok) return res.status(409).json({ message: check.message });
+    const check = await validarContratoParaRegencia({
+      id_proyecto,
+      tipoActividad: tipo,
+    });
+    if (!check.ok) {
+      return res.status(409).json({ message: check.message });
+    }
 
-    const creado_por =
-      req.user?.id ? `user:${req.user.id}` : "Sistema";
+    const creado_por = req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const row = await Reg.crearActividad({
       ...body,
@@ -187,20 +232,25 @@ async function crearActividad(req, res) {
       origen: body.origen || "MANUAL",
     });
 
-    const lista =
-      Array.isArray(body.responsables)
-        ? body.responsables
-        : body.responsables?.responsables;
+    const lista = Array.isArray(body.responsables)
+      ? body.responsables
+      : body.responsables?.responsables;
 
     if (!Array.isArray(lista) || lista.length === 0) {
       if (req.user?.id) {
         await Reg.setResponsables(row.id, [
-          { id_usuario: req.user.id, rol: "RESPONSABLE" },
+          {
+            id_usuario: req.user.id,
+            rol: "RESPONSABLE",
+          },
         ]);
       }
     } else {
       await Reg.setResponsables(row.id, lista);
     }
+
+    // ✅ Generar alertas automáticamente al crear
+    await regenerarAlertasActividad(row.id);
 
     return res.json(row);
   } catch (e) {
@@ -214,32 +264,41 @@ async function actualizarActividad(req, res) {
     const id = parseInt(req.params.id, 10);
 
     const act = await Reg.getActividad(id);
-    if (!act) return res.status(404).json({ message: "Actividad no encontrada" });
+    if (!act) {
+      return res.status(404).json({ message: "Actividad no encontrada" });
+    }
 
-    const nuevoTipo = req.body?.tipo ? String(req.body.tipo).toUpperCase() : act.tipo;
+    const nuevoTipo = req.body?.tipo
+      ? String(req.body.tipo).toUpperCase()
+      : act.tipo;
+
     const id_proyecto = act.id_proyecto;
 
     const check = await validarContratoParaRegencia({
       id_proyecto,
       tipoActividad: nuevoTipo,
     });
-    if (!check.ok) return res.status(409).json({ message: check.message });
+    if (!check.ok) {
+      return res.status(409).json({ message: check.message });
+    }
 
     const row = await Reg.actualizarActividad(id, {
       ...req.body,
       tipo: nuevoTipo,
     });
 
-    const lista =
-      Array.isArray(req.body?.responsables)
-        ? req.body.responsables
-        : Array.isArray(req.body)
-        ? req.body
-        : null;
+    const lista = Array.isArray(req.body?.responsables)
+      ? req.body.responsables
+      : Array.isArray(req.body)
+      ? req.body
+      : null;
 
     if (Array.isArray(lista)) {
       await Reg.setResponsables(id, lista);
     }
+
+    // ✅ Regenerar alertas automáticamente al editar
+    await regenerarAlertasActividad(id);
 
     return res.json(row);
   } catch (e) {
@@ -252,16 +311,23 @@ async function setEstadoActividad(req, res) {
   try {
     const id = parseInt(req.params.id, 10);
     const { estado } = req.body || {};
-    if (!estado) return res.status(400).json({ message: "estado es obligatorio" });
+
+    if (!estado) {
+      return res.status(400).json({ message: "estado es obligatorio" });
+    }
 
     const act = await Reg.getActividad(id);
-    if (!act) return res.status(404).json({ message: "Actividad no encontrada" });
+    if (!act) {
+      return res.status(404).json({ message: "Actividad no encontrada" });
+    }
 
     const check = await validarContratoParaRegencia({
       id_proyecto: act.id_proyecto,
       tipoActividad: act.tipo,
     });
-    if (!check.ok) return res.status(409).json({ message: check.message });
+    if (!check.ok) {
+      return res.status(409).json({ message: check.message });
+    }
 
     const row = await Reg.setEstadoActividad(id, estado);
     return res.json(row);
@@ -274,6 +340,7 @@ async function setEstadoActividad(req, res) {
 /* =========================
    RESPONSABLES
    ========================= */
+
 async function listarResponsables(req, res) {
   try {
     const id_actividad = parseInt(req.params.id_actividad, 10);
@@ -290,13 +357,17 @@ async function setResponsables(req, res) {
     const id_actividad = parseInt(req.params.id_actividad, 10);
 
     const act = await Reg.getActividad(id_actividad);
-    if (!act) return res.status(404).json({ message: "Actividad no encontrada" });
+    if (!act) {
+      return res.status(404).json({ message: "Actividad no encontrada" });
+    }
 
     const check = await validarContratoParaRegencia({
       id_proyecto: act.id_proyecto,
       tipoActividad: act.tipo,
     });
-    if (!check.ok) return res.status(409).json({ message: check.message });
+    if (!check.ok) {
+      return res.status(409).json({ message: check.message });
+    }
 
     const lista = Array.isArray(req.body) ? req.body : req.body?.responsables;
     if (!Array.isArray(lista)) {
@@ -304,6 +375,10 @@ async function setResponsables(req, res) {
     }
 
     const rows = await Reg.setResponsables(id_actividad, lista);
+
+    // ✅ Al cambiar responsables, regenerar alertas también
+    await regenerarAlertasActividad(id_actividad);
+
     return res.json(rows);
   } catch (e) {
     console.error("setResponsables:", e);
@@ -314,18 +389,23 @@ async function setResponsables(req, res) {
 /* =========================
    ALERTAS
    ========================= */
+
 async function generarAlertasEstandar(req, res) {
   try {
     const id_actividad = parseInt(req.params.id_actividad, 10);
 
     const act = await Reg.getActividad(id_actividad);
-    if (!act) return res.status(404).json({ message: "Actividad no encontrada" });
+    if (!act) {
+      return res.status(404).json({ message: "Actividad no encontrada" });
+    }
 
     const check = await validarContratoParaRegencia({
       id_proyecto: act.id_proyecto,
       tipoActividad: act.tipo,
     });
-    if (!check.ok) return res.status(409).json({ message: check.message });
+    if (!check.ok) {
+      return res.status(409).json({ message: check.message });
+    }
 
     const result = await Reg.generarAlertasEstandar(id_actividad);
     return res.json(result);
@@ -377,8 +457,7 @@ async function generarVisitasMensuales(req, res) {
       });
     }
 
-    const creado_por =
-      req.user?.id ? `user:${req.user.id}` : "Sistema";
+    const creado_por = req.user?.id ? `user:${req.user.id}` : "Sistema";
 
     const result = await Reg.generarVisitasMensualesDesdeContrato({
       id_contrato,
