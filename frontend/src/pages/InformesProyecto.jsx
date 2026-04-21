@@ -92,7 +92,10 @@ async function downloadWithAuth(url, fallbackFilename) {
   window.URL.revokeObjectURL(blobUrl);
 }
 
-// ✅ storage key para pick global por proyecto+plantilla
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function kmzPickStorageKey(idProyecto, idPlantillaFiltro) {
   const pl = idPlantillaFiltro ? String(idPlantillaFiltro) : "ALL";
   return `kmz_pick_global:p${idProyecto}:pl${pl}`;
@@ -101,7 +104,6 @@ function kmzPickByInformeKey(idInforme) {
   return `kmz_pick_informe:${idInforme}`;
 }
 
-// fallback perms desde localStorage.user (por si AuthContext aún está cargando)
 function getUserPermsFromStorage() {
   try {
     const s = localStorage.getItem("user");
@@ -110,18 +112,18 @@ function getUserPermsFromStorage() {
 
     const p = u?.perms ?? u?.permissions ?? u?.permisos ?? [];
     if (Array.isArray(p)) return p.map(String);
-    if (typeof p === "string")
+    if (typeof p === "string") {
       return p
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
+    }
     return [];
   } catch {
     return [];
   }
 }
 
-// chequeo de permiso robusto (AuthContext -> auth.user.perms -> localStorage)
 function hasPerm(auth, code) {
   if (typeof auth?.hasPerm === "function") return !!auth.hasPerm(code);
   const permsAuth = auth?.user?.perms;
@@ -177,34 +179,81 @@ const InformesProyecto = () => {
     docxTabla: false,
     xlsx: false,
     kmz: false,
+    docxRange: false,
+    docxTablaRange: false,
+    docxSingleRange: false,
+    docxTablaSingleRange: false,
   });
 
   const [downloadingKmzByInforme, setDownloadingKmzByInforme] = useState({});
 
-  // ✅ Modal choice KMZ
   const [kmzChoiceOpen, setKmzChoiceOpen] = useState(false);
   const [kmzChoiceInfo, setKmzChoiceInfo] = useState(null);
   const [kmzChoiceSelected, setKmzChoiceSelected] = useState(null);
-  const [kmzChoiceScope, setKmzChoiceScope] = useState(null); // "proyecto" | "informe"
+  const [kmzChoiceScope, setKmzChoiceScope] = useState(null);
   const [kmzChoiceInformeId, setKmzChoiceInformeId] = useState(null);
 
   const kmzPickGlobalRef = useRef(null);
 
-  // ✅ Massive Import ZI
   const [showImportZip, setShowImportZip] = useState(false);
+
   const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
+  const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
+
+  const [showWordConfig, setShowWordConfig] = useState(false);
+  const [wordConfig, setWordConfig] = useState({
+    modo: "normal",
+    incluirFotos: true,
+    fotosEnTabla: false,
+    maxFotos: 2,
+    page: 1,
+    limit: 10,
+    preguntas: [],
+    secciones: [],
+  });
+
+  const [wordRange, setWordRange] = useState({
+    from: 1,
+    to: 1,
+  });
 
   useEffect(() => {
     if (idPlantillaFiltro) {
       fetch(`${API_URL}/informes/plantillas/${idPlantillaFiltro}`, { headers: authHeaders() })
-        .then(r => r.json())
-        .then(d => {
-          const allPreguntas = d.secciones ? d.secciones.flatMap(s => s.preguntas || []) : [];
+        .then((r) => r.json())
+        .then((d) => {
+          const secciones = Array.isArray(d.secciones) ? d.secciones : [];
+          const seccionesConPreguntas = secciones.filter(
+            (s) => Array.isArray(s.preguntas) && s.preguntas.length > 0
+          );
+          const allPreguntas = seccionesConPreguntas.flatMap((s) => s.preguntas || []);
+
+          setSeccionesPlantilla(seccionesConPreguntas);
           setPreguntasPlantilla(allPreguntas);
+
+          setWordConfig((prev) => ({
+            ...prev,
+            preguntas: [],
+            secciones: [],
+            page: 1,
+            limit: 10,
+          }));
         })
-        .catch(err => console.error("Error cargando preguntas de plantilla:", err));
+        .catch((err) => {
+          console.error("Error cargando preguntas de plantilla:", err);
+          setSeccionesPlantilla([]);
+          setPreguntasPlantilla([]);
+        });
     } else {
       setPreguntasPlantilla([]);
+      setSeccionesPlantilla([]);
+      setWordConfig((prev) => ({
+        ...prev,
+        preguntas: [],
+        secciones: [],
+        page: 1,
+        limit: 10,
+      }));
     }
   }, [idPlantillaFiltro]);
 
@@ -216,15 +265,10 @@ const InformesProyecto = () => {
     kmzPickGlobalRef.current = Number.isFinite(n) && n > 0 ? n : null;
   }, [idProyecto, idPlantillaFiltro]);
 
-  // ✅ PERMISOS REALES
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
-  const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
-
-  // 👇 ya NO depende de admin
+  useMemo(() => isAdminUser(auth), [auth?.user]);
   const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
-
-  // KMZ
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
 
   const cargarInformes = async () => {
@@ -281,6 +325,236 @@ const InformesProyecto = () => {
     if (!iso) return "-";
     const d = new Date(iso);
     return d.toLocaleString("es-PY");
+  };
+
+  const totalRegistrosExport = useMemo(() => informes.length || 0, [informes]);
+
+  const limitOptions = useMemo(() => {
+    return wordConfig.incluirFotos ? [10, 20] : [10, 20, 50, 100];
+  }, [wordConfig.incluirFotos]);
+
+  const totalPaginasWord = useMemo(() => {
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return Math.max(1, Math.ceil(totalRegistrosExport / lim));
+  }, [totalRegistrosExport, wordConfig.limit]);
+
+  const rangoDesdeWord = useMemo(() => {
+    if (totalRegistrosExport <= 0) return 0;
+    const page = Math.max(1, Number(wordConfig.page || 1));
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return (page - 1) * lim + 1;
+  }, [totalRegistrosExport, wordConfig.page, wordConfig.limit]);
+
+  const rangoHastaWord = useMemo(() => {
+    if (totalRegistrosExport <= 0) return 0;
+    const page = Math.max(1, Number(wordConfig.page || 1));
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return Math.min(page * lim, totalRegistrosExport);
+  }, [totalRegistrosExport, wordConfig.page, wordConfig.limit]);
+
+  useEffect(() => {
+    setWordConfig((prev) => {
+      let newLimit = Number(prev.limit || 10);
+
+      if (!limitOptions.includes(newLimit)) {
+        newLimit = limitOptions[0];
+      }
+
+      const totalPages = Math.max(1, Math.ceil((informes.length || 0) / newLimit));
+      let newPage = Number(prev.page || 1);
+
+      if (newPage > totalPages) newPage = totalPages;
+      if (newPage < 1) newPage = 1;
+
+      if (newLimit === prev.limit && newPage === prev.page) return prev;
+
+      return {
+        ...prev,
+        limit: newLimit,
+        page: newPage,
+      };
+    });
+  }, [limitOptions, informes.length]);
+
+  useEffect(() => {
+    setWordRange((prev) => {
+      let from = Number(prev.from || 1);
+      let to = Number(prev.to || 1);
+
+      if (from < 1) from = 1;
+      if (to < 1) to = 1;
+      if (from > totalPaginasWord) from = totalPaginasWord;
+      if (to > totalPaginasWord) to = totalPaginasWord;
+      if (to < from) to = from;
+
+      if (from === prev.from && to === prev.to) return prev;
+      return { from, to };
+    });
+  }, [totalPaginasWord]);
+
+  const seccionesDisponibles = useMemo(() => {
+    return (seccionesPlantilla || []).filter((sec) => Array.isArray(sec.preguntas) && sec.preguntas.length > 0);
+  }, [seccionesPlantilla]);
+
+  const preguntasDisponibles = useMemo(() => {
+    return (preguntasPlantilla || []).filter(Boolean);
+  }, [preguntasPlantilla]);
+
+  const selectedSeccionesSet = useMemo(
+    () => new Set((wordConfig.secciones || []).map(Number)),
+    [wordConfig.secciones]
+  );
+
+  const preguntasFiltradasPorSeccion = useMemo(() => {
+    if (!Array.isArray(preguntasDisponibles) || preguntasDisponibles.length === 0) return [];
+
+    if (!wordConfig.secciones || wordConfig.secciones.length === 0) {
+      return preguntasDisponibles;
+    }
+
+    return preguntasDisponibles.filter((preg) =>
+      selectedSeccionesSet.has(Number(preg.id_seccion))
+    );
+  }, [preguntasDisponibles, selectedSeccionesSet, wordConfig.secciones]);
+
+  useEffect(() => {
+    const idsPreguntasValidas = new Set(preguntasFiltradasPorSeccion.map((p) => Number(p.id_pregunta)));
+    const idsSeccionesValidas = new Set(seccionesDisponibles.map((s) => Number(s.id_seccion)));
+
+    setWordConfig((prev) => {
+      const preguntasPrev = Array.isArray(prev.preguntas) ? prev.preguntas : [];
+      const seccionesPrev = Array.isArray(prev.secciones) ? prev.secciones : [];
+
+      const nuevasPreguntas = preguntasPrev.filter((id) => idsPreguntasValidas.has(Number(id)));
+      const nuevasSecciones = seccionesPrev.filter((id) => idsSeccionesValidas.has(Number(id)));
+
+      if (
+        nuevasPreguntas.length === preguntasPrev.length &&
+        nuevasSecciones.length === seccionesPrev.length
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        preguntas: nuevasPreguntas,
+        secciones: nuevasSecciones,
+      };
+    });
+  }, [preguntasFiltradasPorSeccion, seccionesDisponibles]);
+
+  const handleWordLimitChange = (value) => {
+    const nuevoLimit = Number(value || 10);
+    const limitSeguro = limitOptions.includes(nuevoLimit) ? nuevoLimit : limitOptions[0];
+    const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / limitSeguro));
+
+    setWordConfig((prev) => ({
+      ...prev,
+      limit: limitSeguro,
+      page: Math.min(Math.max(1, Number(prev.page || 1)), totalPages),
+    }));
+
+    setWordRange((prev) => {
+      let from = Math.min(Math.max(1, Number(prev.from || 1)), totalPages);
+      let to = Math.min(Math.max(1, Number(prev.to || 1)), totalPages);
+      if (to < from) to = from;
+      return { from, to };
+    });
+  };
+
+  const handleWordPageChange = (value) => {
+    const nuevaPagina = Number(value || 1);
+    setWordConfig((prev) => ({
+      ...prev,
+      page: Math.min(Math.max(1, nuevaPagina), totalPaginasWord),
+    }));
+  };
+
+  const handleRangeFromChange = (value) => {
+    const from = Math.min(Math.max(1, Number(value || 1)), totalPaginasWord);
+    setWordRange((prev) => {
+      let to = Number(prev.to || from);
+      if (to < from) to = from;
+      if (to > totalPaginasWord) to = totalPaginasWord;
+      return { from, to };
+    });
+  };
+
+  const handleRangeToChange = (value) => {
+    const toInput = Math.min(Math.max(1, Number(value || 1)), totalPaginasWord);
+    setWordRange((prev) => {
+      const from = Math.min(Math.max(1, Number(prev.from || 1)), totalPaginasWord);
+      const to = Math.max(from, toInput);
+      return { from, to };
+    });
+  };
+
+  const goFirstPageWord = () => setWordConfig((prev) => ({ ...prev, page: 1 }));
+  const goPrevPageWord = () => {
+    setWordConfig((prev) => ({ ...prev, page: Math.max(1, Number(prev.page || 1) - 1) }));
+  };
+  const goNextPageWord = () => {
+    setWordConfig((prev) => ({
+      ...prev,
+      page: Math.min(totalPaginasWord, Number(prev.page || 1) + 1),
+    }));
+  };
+  const goLastPageWord = () => setWordConfig((prev) => ({ ...prev, page: totalPaginasWord }));
+
+  const toggleIncluirFotos = (checked) => {
+    const opciones = checked ? [10, 20] : [10, 20, 50, 100];
+    setWordConfig((prev) => {
+      let newLimit = Number(prev.limit || 10);
+      if (!opciones.includes(newLimit)) {
+        newLimit = 10;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / newLimit));
+      return {
+        ...prev,
+        incluirFotos: checked,
+        fotosEnTabla: checked ? prev.fotosEnTabla : false,
+        limit: newLimit,
+        page: Math.min(Math.max(1, Number(prev.page || 1)), totalPages),
+      };
+    });
+
+    const totalPages = Math.max(
+      1,
+      Math.ceil(totalRegistrosExport / (checked ? 10 : Math.max(1, Number(wordConfig.limit || 10))))
+    );
+    setWordRange((prev) => {
+      let from = Math.min(Math.max(1, Number(prev.from || 1)), totalPages);
+      let to = Math.min(Math.max(1, Number(prev.to || 1)), totalPages);
+      if (to < from) to = from;
+      return { from, to };
+    });
+  };
+
+  const buildWordParams = (modoFinal, page = null) => {
+    const params = new URLSearchParams();
+
+    if (idPlantillaFiltro) params.set("plantilla", String(idPlantillaFiltro));
+    params.set("modo", modoFinal);
+
+    if (Array.isArray(wordConfig.preguntas) && wordConfig.preguntas.length > 0) {
+      params.set("preguntas", wordConfig.preguntas.join(","));
+    }
+
+    if (Array.isArray(wordConfig.secciones) && wordConfig.secciones.length > 0) {
+      params.set("secciones", wordConfig.secciones.join(","));
+    }
+
+    params.set("incluirFotos", wordConfig.incluirFotos ? "1" : "0");
+    params.set("fotosEnTabla", wordConfig.fotosEnTabla ? "1" : "0");
+    params.set("maxFotos", String(Math.max(0, Number(wordConfig.maxFotos || 0))));
+    params.set("limit", String(Math.max(1, Number(wordConfig.limit || 10))));
+
+    if (page != null) {
+      params.set("page", String(page));
+    }
+
+    return params;
   };
 
   const descargarPdfInforme = async (idInforme) => {
@@ -359,30 +633,168 @@ const InformesProyecto = () => {
     }
   };
 
-  const descargarProyectoDocx = async (modo) => {
-    const key = modo === "tabla" ? "docxTabla" : "docx";
+  const descargarProyectoDocx = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTabla" : "docx";
+
     try {
       setDownloading((s) => ({ ...s, [key]: true }));
 
-      const params = new URLSearchParams();
-      if (idPlantillaFiltro) params.set("plantilla", String(idPlantillaFiltro));
-      if (modo === "tabla") params.set("modo", "tabla");
+      const params = buildWordParams(modoFinal, Math.max(1, Number(wordConfig.page || 1)));
       const qs = params.toString() ? `?${params.toString()}` : "";
-
       const url = `${API_URL}/informes/proyecto/${idProyecto}/docx${qs}`;
 
       const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
-      const suffixModo = modo === "tabla" ? `_TABLA` : `_NORMAL`;
-      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}${suffixModo}.docx`;
+      const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+      const suffixLote = `_Lote_${Math.max(1, Number(wordConfig.page || 1))}`;
+      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}${suffixLote}${suffixModo}.docx`;
 
       await downloadWithAuth(url, filename);
+
       Toast.fire({
         icon: "success",
-        title: modo === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado."
+        title: modoFinal === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado.",
       });
+
+      setShowWordConfig(false);
     } catch (err) {
       console.error("Error descargando docx:", err);
-      Toast.fire({ icon: "error", title: "No se pudo descargar el WORD." });
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo descargar el WORD." });
+    } finally {
+      setDownloading((s) => ({ ...s, [key]: false }));
+    }
+  };
+
+  const descargarRangoLotesWord = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTablaRange" : "docxRange";
+
+    try {
+      if (!totalRegistrosExport || totalPaginasWord <= 0) {
+        Toast.fire({ icon: "error", title: "No hay registros para exportar." });
+        return;
+      }
+
+      const from = Math.min(Math.max(1, Number(wordRange.from || 1)), totalPaginasWord);
+      const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
+      const totalLotes = to - from + 1;
+
+      const confirm = await Swal.fire({
+        icon: "question",
+        title: "¿Descargar rango de lotes en varios archivos?",
+        html: `
+          <div style="text-align:left">
+            <div><b>Total registros:</b> ${totalRegistrosExport}</div>
+            <div><b>Registros por lote:</b> ${wordConfig.limit}</div>
+            <div><b>Total páginas:</b> ${totalPaginasWord}</div>
+            <div><b>Rango elegido:</b> ${from} a ${to}</div>
+            <div><b>Cantidad de lotes:</b> ${totalLotes}</div>
+            <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: "Sí, descargar",
+        cancelButtonText: "Cancelar",
+      });
+
+      if (!confirm.isConfirmed) return;
+
+      setDownloading((s) => ({ ...s, [key]: true }));
+
+      for (let page = from; page <= to; page++) {
+        const params = buildWordParams(modoFinal, page);
+        const qs = params.toString() ? `?${params.toString()}` : "";
+        const url = `${API_URL}/informes/proyecto/${idProyecto}/docx${qs}`;
+
+        const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
+        const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+        const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}_Lote_${page}_de_${totalPaginasWord}${suffixModo}.docx`;
+
+        await downloadWithAuth(url, filename);
+
+        Toast.fire({
+          icon: "success",
+          title: `Lote ${page} descargado`,
+        });
+
+        await sleep(900);
+      }
+
+      await Swal.fire({
+        icon: "success",
+        title: "Descarga finalizada",
+        text: `Se descargaron los lotes ${from} al ${to}.`,
+      });
+    } catch (err) {
+      console.error("Error descargando rango de lotes:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo descargar el rango de lotes.",
+      });
+    } finally {
+      setDownloading((s) => ({ ...s, [key]: false }));
+    }
+  };
+
+  const descargarRangoUnSoloWord = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTablaSingleRange" : "docxSingleRange";
+
+    try {
+      if (!totalRegistrosExport || totalPaginasWord <= 0) {
+        Toast.fire({ icon: "error", title: "No hay registros para exportar." });
+        return;
+      }
+
+      const from = Math.min(Math.max(1, Number(wordRange.from || 1)), totalPaginasWord);
+      const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
+      const totalLotes = to - from + 1;
+
+      const confirm = await Swal.fire({
+        icon: "question",
+        title: "¿Descargar rango en un solo Word?",
+        html: `
+          <div style="text-align:left">
+            <div><b>Total registros:</b> ${totalRegistrosExport}</div>
+            <div><b>Registros por lote:</b> ${wordConfig.limit}</div>
+            <div><b>Total páginas:</b> ${totalPaginasWord}</div>
+            <div><b>Rango elegido:</b> ${from} a ${to}</div>
+            <div><b>Cantidad de lotes unidos:</b> ${totalLotes}</div>
+            <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: "Sí, descargar",
+        cancelButtonText: "Cancelar",
+      });
+
+      if (!confirm.isConfirmed) return;
+
+      setDownloading((s) => ({ ...s, [key]: true }));
+
+      const params = buildWordParams(modoFinal, null);
+      params.set("fromPage", String(from));
+      params.set("toPage", String(to));
+
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const url = `${API_URL}/informes/proyecto/${idProyecto}/docx-rango-unico${qs}`;
+
+      const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
+      const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}_Lotes_${from}_a_${to}${suffixModo}.docx`;
+
+      await downloadWithAuth(url, filename);
+
+      Toast.fire({
+        icon: "success",
+        title: "Word único descargado.",
+      });
+    } catch (err) {
+      console.error("Error descargando un solo Word:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo descargar el Word único del rango.",
+      });
     } finally {
       setDownloading((s) => ({ ...s, [key]: false }));
     }
@@ -681,7 +1093,15 @@ const InformesProyecto = () => {
   };
 
   const anyDownloading =
-    downloading.pdf || downloading.docx || downloading.docxTabla || downloading.xlsx || downloading.kmz;
+    downloading.pdf ||
+    downloading.docx ||
+    downloading.docxTabla ||
+    downloading.xlsx ||
+    downloading.kmz ||
+    downloading.docxRange ||
+    downloading.docxTablaRange ||
+    downloading.docxSingleRange ||
+    downloading.docxTablaSingleRange;
 
   const choiceCandidates = useMemo(() => {
     const c = kmzChoiceInfo?.candidates || [];
@@ -716,6 +1136,15 @@ const InformesProyecto = () => {
       </>
     );
   }, [kmzChoiceScope]);
+
+  const selectedPreguntasSet = useMemo(
+    () => new Set((wordConfig.preguntas || []).map(Number)),
+    [wordConfig.preguntas]
+  );
+
+  const isDownloadingRange = downloading[wordConfig.modo === "tabla" ? "docxTablaRange" : "docxRange"];
+  const isDownloadingSingleRange =
+    downloading[wordConfig.modo === "tabla" ? "docxTablaSingleRange" : "docxSingleRange"];
 
   return (
     <div className="container mt-3">
@@ -789,7 +1218,14 @@ const InformesProyecto = () => {
               )}
             </Button>
 
-            <Button variant="outline-primary" onClick={() => descargarProyectoDocx("normal")} disabled={anyDownloading}>
+            <Button
+              variant="outline-primary"
+              onClick={() => {
+                setWordConfig((prev) => ({ ...prev, modo: "normal" }));
+                setShowWordConfig(true);
+              }}
+              disabled={anyDownloading}
+            >
               {downloading.docx ? (
                 <>
                   <Spinner animation="border" size="sm" className="me-2" />...
@@ -799,7 +1235,14 @@ const InformesProyecto = () => {
               )}
             </Button>
 
-            <Button variant="outline-primary" onClick={() => descargarProyectoDocx("tabla")} disabled={anyDownloading}>
+            <Button
+              variant="outline-primary"
+              onClick={() => {
+                setWordConfig((prev) => ({ ...prev, modo: "tabla" }));
+                setShowWordConfig(true);
+              }}
+              disabled={anyDownloading}
+            >
               {downloading.docxTabla ? (
                 <>
                   <Spinner animation="border" size="sm" className="me-2" />...
@@ -1048,6 +1491,335 @@ const InformesProyecto = () => {
 
             <Button variant="primary" onClick={confirmarKmzChoice}>
               Usar esta
+            </Button>
+          </div>
+        </Modal.Footer>
+      </Modal>
+
+      <Modal
+        show={showWordConfig}
+        onHide={() => setShowWordConfig(false)}
+        centered
+        size="lg"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>
+            Exportar Word {wordConfig.modo === "tabla" ? "(Tabla)" : "(Normal)"}
+          </Modal.Title>
+        </Modal.Header>
+
+        <Modal.Body>
+          <div className="row g-3">
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Registros por lote</Form.Label>
+                <Form.Select
+                  value={wordConfig.limit}
+                  onChange={(e) => handleWordLimitChange(e.target.value)}
+                >
+                  {limitOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n} por página
+                    </option>
+                  ))}
+                </Form.Select>
+                <div className="form-text">
+                  {wordConfig.incluirFotos
+                    ? "Modo seguro con fotos: máximo 20 por lote."
+                    : "Sin fotos podés usar lotes más grandes."}
+                </div>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Lote / Página</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordConfig.page}
+                  onChange={(e) => handleWordPageChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4 d-flex align-items-end">
+              <div className="w-100 d-flex gap-2">
+                <Button
+                  variant="outline-secondary"
+                  className="w-100"
+                  onClick={goPrevPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ← Anterior
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  className="w-100"
+                  onClick={goNextPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Siguiente →
+                </Button>
+              </div>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Check
+                type="switch"
+                id="word_incluir_fotos"
+                label="Incluir fotos"
+                checked={wordConfig.incluirFotos}
+                onChange={(e) => toggleIncluirFotos(e.target.checked)}
+              />
+            </div>
+
+            <div className="col-md-4">
+              <Form.Check
+                type="switch"
+                id="word_fotos_tabla"
+                label="Fotos dentro de tabla"
+                checked={wordConfig.fotosEnTabla}
+                disabled={!wordConfig.incluirFotos || wordConfig.modo !== "tabla"}
+                onChange={(e) =>
+                  setWordConfig((prev) => ({
+                    ...prev,
+                    fotosEnTabla: e.target.checked,
+                  }))
+                }
+              />
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Máx. fotos por pregunta</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={0}
+                  value={wordConfig.maxFotos}
+                  disabled={!wordConfig.incluirFotos}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      maxFotos: Number(e.target.value || 0),
+                    }))
+                  }
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-12">
+              <Alert variant="info" className="mb-0">
+                <div><strong>Total registros:</strong> {totalRegistrosExport}</div>
+                <div><strong>Total páginas:</strong> {totalPaginasWord}</div>
+                <div><strong>Rango actual:</strong> {rangoDesdeWord} - {rangoHastaWord}</div>
+                <div><strong>Página actual:</strong> {wordConfig.page} de {totalPaginasWord}</div>
+              </Alert>
+            </div>
+
+            <div className="col-12">
+              <div className="d-flex gap-2 flex-wrap">
+                <Button
+                  variant="outline-secondary"
+                  onClick={goFirstPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ⏮ Primera
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goPrevPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ◀ Anterior
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goNextPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Siguiente ▶
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goLastPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Última ⏭
+                </Button>
+              </div>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Desde lote</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordRange.from}
+                  onChange={(e) => handleRangeFromChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Hasta lote</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordRange.to}
+                  onChange={(e) => handleRangeToChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-12">
+              <Alert variant="warning" className="mb-0">
+                <div><strong>Rango de descarga:</strong> {wordRange.from} a {wordRange.to}</div>
+                <div><strong>Cantidad de lotes:</strong> {Math.max(0, Number(wordRange.to) - Number(wordRange.from) + 1)}</div>
+              </Alert>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Filtrar por secciones</Form.Label>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    border: "1px solid #dee2e6",
+                    borderRadius: 6,
+                    padding: 10,
+                  }}
+                >
+                  {seccionesDisponibles.length === 0 ? (
+                    <div className="text-muted small">No hay secciones disponibles.</div>
+                  ) : (
+                    seccionesDisponibles.map((sec) => (
+                      <Form.Check
+                        key={sec.id_seccion}
+                        type="checkbox"
+                        label={sec.titulo || `Sección ${sec.id_seccion}`}
+                        checked={wordConfig.secciones.includes(Number(sec.id_seccion))}
+                        onChange={(e) => {
+                          const id = Number(sec.id_seccion);
+                          setWordConfig((prev) => {
+                            const nuevasSecciones = e.target.checked
+                              ? [...prev.secciones, id]
+                              : prev.secciones.filter((x) => x !== id);
+
+                            const preguntasValidas = preguntasDisponibles
+                              .filter((p) => {
+                                if (nuevasSecciones.length === 0) return true;
+                                return nuevasSecciones.includes(Number(p.id_seccion));
+                              })
+                              .map((p) => Number(p.id_pregunta));
+
+                            return {
+                              ...prev,
+                              secciones: nuevasSecciones,
+                              preguntas: prev.preguntas.filter((x) => preguntasValidas.includes(Number(x))),
+                            };
+                          });
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Filtrar por preguntas</Form.Label>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    border: "1px solid #dee2e6",
+                    borderRadius: 6,
+                    padding: 10,
+                  }}
+                >
+                  {preguntasFiltradasPorSeccion.length === 0 ? (
+                    <div className="text-muted small">No hay preguntas disponibles.</div>
+                  ) : (
+                    preguntasFiltradasPorSeccion.map((preg) => (
+                      <Form.Check
+                        key={preg.id_pregunta}
+                        type="checkbox"
+                        label={preg.etiqueta || `Pregunta ${preg.id_pregunta}`}
+                        checked={selectedPreguntasSet.has(Number(preg.id_pregunta))}
+                        onChange={(e) => {
+                          const id = Number(preg.id_pregunta);
+                          setWordConfig((prev) => ({
+                            ...prev,
+                            preguntas: e.target.checked
+                              ? [...prev.preguntas, id]
+                              : prev.preguntas.filter((x) => x !== id),
+                          }));
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </Form.Group>
+            </div>
+          </div>
+
+          <Alert variant="secondary" className="mt-3 mb-0">
+            Esta exportación usa lote, secciones, preguntas y control de fotos. Para evitar saturación,
+            con fotos el sistema limita automáticamente el tamaño del lote.
+          </Alert>
+        </Modal.Body>
+
+        <Modal.Footer className="d-flex justify-content-between">
+          <div className="text-muted small">
+            Exportando {rangoDesdeWord} - {rangoHastaWord} de {totalRegistrosExport}
+          </div>
+          <div className="d-flex gap-2 flex-wrap justify-content-end">
+            <Button variant="secondary" onClick={() => setShowWordConfig(false)}>
+              Cancelar
+            </Button>
+
+            <Button
+              variant="outline-primary"
+              onClick={() => descargarRangoLotesWord(wordConfig.modo)}
+              disabled={isDownloadingRange || anyDownloading}
+            >
+              {isDownloadingRange ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>Rango en varios Word</>
+              )}
+            </Button>
+
+            <Button
+              variant="outline-success"
+              onClick={() => descargarRangoUnSoloWord(wordConfig.modo)}
+              disabled={isDownloadingSingleRange || anyDownloading}
+            >
+              {isDownloadingSingleRange ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>Rango en un solo Word</>
+              )}
+            </Button>
+
+            <Button
+              variant="primary"
+              onClick={() => descargarProyectoDocx(wordConfig.modo)}
+              disabled={anyDownloading}
+            >
+              Descargar Word
             </Button>
           </div>
         </Modal.Footer>
