@@ -227,7 +227,7 @@ export default function EditarActa() {
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch(`${API_URL}/actas-preconstruccion/${actaId}`, {
+        const res = await fetch(`${API_URL}/actas/actas-preconstruccion/${actaId}`, {
           headers: { ...authHeaders() },
         });
         const data = await jsonOrRedirect401(res);
@@ -437,7 +437,7 @@ export default function EditarActa() {
         fotos: fotosPayload,
       };
 
-      const res = await fetch(`${API_URL}/actas-preconstruccion/${actaId}`, {
+      const res = await fetch(`${API_URL}/actas/actas-preconstruccion/${actaId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
@@ -465,7 +465,7 @@ export default function EditarActa() {
     try {
       setSaving(true);
 
-      const url = `${API_URL}/proyectos/${id}/actas-preconstruccion-pdf?id_acta=${actaId}`;
+      const url = `${API_URL}/actas/proyectos/${id}/actas-preconstruccion-pdf?id_acta=${actaId}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { ...authHeaders() },

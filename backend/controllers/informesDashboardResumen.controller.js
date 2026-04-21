@@ -977,7 +977,7 @@ async function getInformesResumenBase(req, res) {
           const isSemaforo = tipo === "semaforo";
           const items = isSemaforo
             ? buildSemaforoSummaryItems(rawItems)
-            : rawItems.slice(0, 10).map((it, idx) => ({
+            : rawItems.slice(0, 50).map((it, idx) => ({
                 ...it,
                 color_hex: MAP_KPI_CATEGORY_PALETTE[idx % MAP_KPI_CATEGORY_PALETTE.length],
               }));

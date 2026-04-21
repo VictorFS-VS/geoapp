@@ -17,4 +17,11 @@ router.get(
   projectHomeCtrl.getResumen
 );
 
+// GET /api/project-home/resumen-ejecutivo?id_proyecto=...
+router.get(
+  "/resumen-ejecutivo",
+  requireAny(["informes.read", "expedientes.read", "quejas_reclamos.read"]),
+  projectHomeCtrl.getExecutiveResumen
+);
+
 module.exports = router;

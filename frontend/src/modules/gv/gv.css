@@ -1,88 +1,484 @@
-/* gv.css - Estilos aislados para el submódulo GV Catastro */
+/* gv.css - Estilos Profesionales GeoApp */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 .gv-page {
-  padding: 1rem;
+  padding: 1.5rem;
+  font-family: 'Inter', sans-serif;
+  background-color: #F8FAFC;
+  min-height: 100vh;
 }
 
 .gv-kpi {
-  font-weight: 600;
-  font-size: 1.5rem;
+  font-weight: 700;
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+  color: #1E293B;
 }
 
 .gv-muted {
-  opacity: 0.75;
-  font-size: 0.875rem;
+  color: #64748B;
+  font-size: 0.825rem;
+  font-weight: 500;
 }
 
 .gv-card {
-  border-left-width: 4px;
-  border-radius: 0.5rem;
-  transition: transform 0.2s;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 1rem !important; /* rounded-4 */
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06) !important;
+  transition: all 0.2s ease-in-out;
+  background: #fff;
 }
 
 .gv-card:hover {
-  transform: translateY(-2px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
 }
 
-.gv-chartWrap {
-  position: relative;
-  width: 100%;
-  height: 280px;
-  max-height: 280px;
-  overflow: hidden;
-}
-
-.gv-chartWrap--donut {
-  height: 240px;
-  max-height: 240px;
-}
-
-.gv-preview-card {
-  max-height: 520px;
-  overflow-y: auto;
-  border-right: 4px solid #0dcedc;
-}
-
-.gv-preview-header {
-  border-bottom: 1px solid #eee;
-  padding-bottom: 0.5rem;
-  margin-bottom: 1rem;
-}
-
-.gv-preview-body {
-  font-size: 0.9rem;
+.gv-section-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .gv-map-container {
-  height: 520px;
-  border-radius: 0.5rem;
+  height: 450px;
+  border-radius: 1rem;
   overflow: hidden;
 }
 
-.gv-modal-body {
-  max-height: 70vh;
-  overflow-y: auto;
+.gv-toolbar {
+  background: white;
+  border: 1px solid #E2E8F0;
+  border-radius: 1rem;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
-.gv-chart-box {
-  height: 260px;
-  position: relative;
+.gv-hero-number {
+  font-size: 2.25rem;
+  font-weight: 800;
+  color: #0F172A;
 }
 
-.gv-chart-box canvas {
-  max-height: 100% !important;
+.gv-table thead th {
+  background-color: #F8FAFC;
+  color: #64748B;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.75rem;
 }
-.gv-phase-filter-row {
-  cursor: pointer;
-  transition: background-color .15s ease;
+
+.gv-table tbody td {
+  padding: 0.75rem;
+  vertical-align: middle;
 }
 
 .gv-phase-filter-row:hover {
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: #F1F5F9;
 }
 
 .gv-phase-filter-row--active {
-  background-color: rgba(13, 110, 253, 0.12);
+  background-color: #EFF6FF !important;
+  color: #1E40AF;
   font-weight: 600;
 }
 
+/* Phase 2: Hero Grid Styles */
+.gv-hero-grid .card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.gv-hero-grid .card:hover {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+}
+
+.gv-tramo-row {
+  border: 1px solid transparent;
+}
+
+.gv-tramo-row:hover {
+  background-color: #F8FAFC !important;
+  border-color: #E2E8F0 !important;
+  transform: translateY(-1px);
+}
+
+.gv-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.gv-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.gv-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #CBD5E1;
+  border-radius: 20px;
+}
+.gv-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: #94A3B8;
+}
+
+/* Phase 3: Technical Composition & Dots */
+.gv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.gv-nav-pills .nav-link {
+  color: #64748B;
+  font-weight: 600;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  padding: 6px 12px;
+  transition: all 0.2s;
+}
+
+.gv-nav-pills .nav-link.active {
+  background-color: #EFF6FF !important;
+  color: #1E40AF !important;
+  box-shadow: inset 0 0 0 1px rgba(30, 64, 175, 0.1);
+}
+
+.gv-alert-soft {
+  background-color: #FFFBEB;
+  border: 1px solid #FEF3C7;
+  border-radius: 12px;
+  padding: 12px;
+  color: #92400E;
+}
+
+/* Phase 4: Financial Executive Ledger */
+.gv-economic-section {
+  background-color: #F8FAFC;
+  border-radius: 1.5rem;
+  padding: 2rem;
+  border: 1px solid #E2E8F0;
+}
+
+.gv-financial-card {
+  background: white;
+  border: 1px solid #E2E8F0;
+  border-radius: 1rem;
+  padding: 1.5rem;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.gv-money-label {
+  color: #64748B;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.gv-money-value {
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  color: #0F172A;
+  font-size: 1.15rem;
+}
+
+.gv-hero-total {
+  font-size: 2.25rem;
+  font-weight: 800;
+  color: #059669; /* Emerald 600 */
+  letter-spacing: -0.04em;
+}
+
+.gv-incentive-badge {
+  background-color: #ECFDF5;
+  color: #059669;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+
+/* Phase 5: Floating UI & Glassmorphism */
+.gv-map-overlay-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.gv-floating-card {
+  position: absolute;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.12) !important;
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s ease;
+  z-index: 20;
+}
+
+.gv-floating-card.is-map-panning {
+  opacity: 0.2;
+}
+
+.gv-card-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(15, 23, 42, 0.05);
+  color: #64748B;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.gv-card-close-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
+}
+
+.gv-widget-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.12);
+  pointer-events: auto;
+  z-index: 10;
+}
+
+.is-satellite-mode .gv-widget-dock {
+  background: rgba(15, 23, 42, 0.85);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.gv-dock-pill {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.is-satellite-mode .gv-dock-pill {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #F8FAFC;
+}
+
+.gv-dock-pill:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+.is-satellite-mode .gv-dock-pill:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.gv-drag-handle {
+  cursor: grab;
+  padding-bottom: 8px;
+  margin: -4px -4px 4px -4px;
+}
+
+.gv-drag-handle:active {
+  cursor: grabbing;
+}
+
+.gv-drag-handle:hover {
+  color: #1E40AF;
+}
+
+.gv-floating-card:active {
+  box-shadow: 0 12px 48px rgba(15, 23, 42, 0.2) !important;
+  transform: scale(1.02);
+}
+
+/* Responsive Grid Fallback (Mobile/Tablet) */
+@media (max-width: 1024px) {
+  .gv-map-container {
+    height: 350px !important;
+  }
+  
+  .gv-map-overlay-wrapper {
+    position: relative !important;
+    height: auto !important;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: 1.5rem 0;
+    pointer-events: auto !important;
+  }
+
+  .gv-floating-card {
+    position: relative !important;
+    width: 100% !important;
+    max-height: none !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: none !important;
+    background: white !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+  }
+
+  .gv-widget-dock {
+    display: none !important;
+  }
+  
+  .gv-drag-handle {
+    display: none !important;
+  }
+}
+
+/* Phase 3: Satellite Adaptation & empty states */
+.is-satellite-mode .gv-floating-card {
+  background: rgba(15, 23, 42, 0.85) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #F8FAFC;
+}
+
+.is-satellite-mode .gv-floating-card .text-secondary,
+.is-satellite-mode .gv-floating-card .text-muted,
+.is-satellite-mode .gv-floating-card .gv-money-label {
+  color: #CBD5E1 !important; /* Soft Slate 300 */
+}
+
+.is-satellite-mode .gv-floating-card .card-internal {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #FFFFFF !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.is-satellite-mode .gv-floating-card .card-internal .text-dark,
+.is-satellite-mode .gv-floating-card .card-internal .text-secondary,
+.is-satellite-mode .gv-floating-card .card-internal .text-muted,
+.is-satellite-mode .gv-floating-card .card-internal .fw-bold,
+.is-satellite-mode .gv-floating-card .card-internal .badge,
+.is-satellite-mode .gv-floating-card .card-internal .progress-bar,
+.is-satellite-mode .gv-floating-card .card-internal .progress {
+  color: #FFFFFF !important;
+}
+
+.is-satellite-mode .gv-floating-card .gv-card-close-btn {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #FFFFFF !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+.is-satellite-mode .gv-floating-card .text-dark,
+.is-satellite-mode .gv-floating-card .display-6,
+.is-satellite-mode .gv-floating-card .h4,
+.is-satellite-mode .gv-floating-card .h5,
+.is-satellite-mode .gv-floating-card .h6,
+.is-satellite-mode .gv-floating-card .gv-money-value {
+  color: #FFFFFF !important;
+}
+
+.is-satellite-mode .gv-floating-card .progress {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.is-satellite-mode .gv-floating-card .btn-light {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #FFFFFF !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.is-satellite-mode .gv-floating-card {
+  background: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.is-satellite-mode .gv-floating-card,
+.is-satellite-mode .gv-floating-card h1,
+.is-satellite-mode .gv-floating-card h2,
+.is-satellite-mode .gv-floating-card h3,
+.is-satellite-mode .gv-floating-card h4,
+.is-satellite-mode .gv-floating-card h5,
+.is-satellite-mode .gv-floating-card h6,
+.is-satellite-mode .gv-floating-card p,
+.is-satellite-mode .gv-floating-card span,
+.is-satellite-mode .gv-floating-card label,
+.is-satellite-mode .gv-floating-card div,
+.is-satellite-mode .gv-floating-card small,
+.is-satellite-mode .gv-floating-card .form-label,
+.is-satellite-mode .gv-floating-card .gv-money-label,
+.is-satellite-mode .gv-floating-card .gv-money-value,
+.is-satellite-mode .gv-floating-card .gv-card-close-btn,
+.is-satellite-mode .gv-floating-card .text-secondary,
+.is-satellite-mode .gv-floating-card .text-muted,
+.is-satellite-mode .gv-floating-card .text-dark,
+.is-satellite-mode .gv-floating-card .display-6,
+.is-satellite-mode .gv-floating-card .h4,
+.is-satellite-mode .gv-floating-card .h5,
+.is-satellite-mode .gv-floating-card .h6 {
+  color: #FFFFFF !important;
+}
+
+.gv-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  background: rgba(248, 250, 252, 0.5);
+  border-radius: 12px;
+  border: 1px dashed #E2E8F0;
+}
+
+.gv-empty-state i {
+  font-size: 2.5rem;
+  color: #CBD5E1;
+  margin-bottom: 1rem;
+}
+
+.gv-empty-state p {
+  color: #64748B;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 0;
+}
+
+.gv-entrance-stagger {
+  opacity: 0;
+  transform: translateY(10px);
+}

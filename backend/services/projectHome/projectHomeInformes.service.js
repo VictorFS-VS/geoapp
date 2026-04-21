@@ -65,7 +65,8 @@ async function getInformesResumenRaw({
   time_grouping = "week",
   date_from = null,
   date_to = null,
-  skip_temporal = false,
+  skip_temporal = true,
+  config = null,
 }) {
   // EXEC 2.2:
   // - reuse getInformesResumenBase
@@ -74,7 +75,7 @@ async function getInformesResumenRaw({
   let selected_fields = [];
   if (id_plantilla) {
     try {
-      selected_fields = await getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla });
+      selected_fields = await getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla, config });
     } catch (_e) {
       selected_fields = [];
     }
@@ -297,7 +298,7 @@ async function getProjectHomeResumen({
   id_proyecto,
   id_plantilla = null,
   homeItem = null,
-  skip_temporal = false,
+  skip_temporal = true,
 }) {
   const can = (p) => {
     const roles = Array.isArray(req.user?.roleIds) ? req.user.roleIds : [];
@@ -318,30 +319,33 @@ async function getProjectHomeResumen({
   const hasQuejas = can("quejas_reclamos.read");
   const hasCatastro = can("expedientes.read") || can("catastro.read");
 
-  // 1) Global summary is computed over the whole project universe (Informes).
-  const rawGlobalBase = hasInformes 
-    ? await getInformesResumenRaw({
-        req,
-        id_proyecto,
-        id_plantilla: null,
-        skip_temporal,
-      })
-    : { ok: true, general: {}, kpis: {}, geo: {}, temporal: {}, plantillas: [], field_summaries: [] };
-
-  // 2) Load persisted config (if any) for the exact combo requested.
+  // 1) Load persisted config (if any) for the exact combo requested.
+  // We load this EARLIER to inform the metadata selection.
   const configRow = (hasInformes && !homeItem) 
     ? await getProjectHomeConfig({ req, id_proyecto, id_plantilla }) 
     : homeItem;
 
-  // 3) Determine plantilla focus (manual config > explicit param > auto focus)
-  const autopPlantilla = getProjectHomeFocusPlantilla(rawGlobalBase);
   const configuredPlantillaId = configRow?.id_plantilla || null;
 
+  // 2) Global summary is computed over the whole project universe (Informes).
+  // If we have a configured plantilla focus, we use it even for the "Global" base
+  // to ensure consistency (eliminate records from other templates or orphans).
+  const rawGlobalBase = hasInformes 
+    ? await getInformesResumenRaw({
+        req,
+        id_proyecto,
+        id_plantilla: configuredPlantillaId || null, 
+        skip_temporal,
+        config: configRow,
+      })
+    : { ok: true, general: {}, kpis: {}, geo: {}, temporal: {}, plantillas: [], field_summaries: [] };
+
+  // 3) Determine plantilla focus (manual config > explicit param > auto focus)
+  const autopPlantilla = getProjectHomeFocusPlantilla(rawGlobalBase);
 
   const requestedPlantillaId = id_plantilla || null;
   const focusPlantillaId =
     configuredPlantillaId || requestedPlantillaId || autopPlantilla?.id_plantilla || null;
-  const focusSource = configuredPlantillaId ? "manual" : "auto";
 
   let rawForKpisBase = rawGlobalBase;
   if (hasInformes && focusPlantillaId) {
@@ -349,26 +353,16 @@ async function getProjectHomeResumen({
       req,
       id_proyecto,
       id_plantilla: focusPlantillaId,
-      skip_temporal,
+      skip_temporal: true,
+      config: configRow,
     });
   }
 
+  const focusSource = configuredPlantillaId ? "configured" : (requestedPlantillaId ? "requested" : "auto");
   const plantillaFocus = !configuredPlantillaId && !requestedPlantillaId ? autopPlantilla : null;
 
-  // 4) Validate overrides against what's actually available now.
-  let temporalSources = null;
-  if (hasInformes && !skip_temporal && focusPlantillaId) {
-    try {
-      temporalSources = await getPlantillaTemporalSources({
-        req,
-        id_proyecto,
-        id_plantilla: focusPlantillaId,
-      });
-    } catch (_e) {
-      temporalSources = null;
-    }
-  }
-
+  const temporalSources = null;
+  // skip_temporal already true by parameter/assignment
   const overrides = resolveProjectHomeConfigOverrides(configRow, {
     field_summaries: rawForKpisBase.field_summaries,
     temporal_sources: temporalSources,
@@ -409,24 +403,7 @@ async function getProjectHomeResumen({
     explicitBehavior,
   });
 
-  const activeWindow = needsTemporalOverride
-    ? resolveActiveWindow(rawGlobal?.temporal, effectiveTimeGrouping, effectiveTemporalBehavior)
-    : null;
-
-  let rawForKpis = rawForKpisBase;
-  if (needsTemporalOverride && activeWindow?.date_from && activeWindow?.date_to) {
-    rawForKpis = await getInformesResumenRaw({
-      req,
-      id_proyecto,
-      id_plantilla: focusPlantillaId,
-      date_field_id: effectiveDateFieldId,
-      time_grouping: effectiveTimeGrouping,
-      date_from: activeWindow.date_from,
-      date_to: activeWindow.date_to,
-      skip_temporal,
-    });
-  }
-
+  const rawForKpis = rawForKpisBase;
   const focusPlantillaInfo =
     Array.isArray(rawForKpis?.plantillas) && focusPlantillaId
       ? rawForKpis.plantillas.find((p) => Number(p.id_plantilla) === Number(focusPlantillaId))
@@ -589,11 +566,11 @@ async function getProjectHomeResumen({
           ? "Fecha de carga"
           : temporal.date_field_label,
       time_grouping: skip_temporal ? null : effectiveTimeGrouping,
-      range_from: skip_temporal ? null : activeWindow?.date_from || temporal.absolute_min || null,
-      range_to: skip_temporal ? null : activeWindow?.date_to || temporal.absolute_max || null,
+      range_from: skip_temporal ? null : (temporal.absolute_min || null),
+      range_to: skip_temporal ? null : (temporal.absolute_max || null),
       period_total: skip_temporal
-        ? lightweightPeriodTotal
-        : activeWindow?.period_total ?? fallbackPeriodTotal,
+        ? (Number(kpis.total_informes) || 0)
+        : (temporal.range_total || 0),
       mode: skip_temporal ? "lightweight" : "full",
     } : null,
     kpis: hasInformes ? {

@@ -518,10 +518,17 @@ export default function Expedientes() {
   }
 
   const [rows, setRows] = useState([]);
+  const [totalRecords, setTotalRecords] = useState(0);
   const [loading, setLoading] = useState(false);
   const [filterQ, setFilterQ] = useState("");
   const [filterTramoId, setFilterTramoId] = useState("");
   const [filterSubtramoId, setFilterSubtramoId] = useState("");
+  const [filterDateStart, setFilterDateStart] = useState("");
+  const [filterDateEnd, setFilterDateEnd] = useState("");
+  const [filterEstado, setFilterEstado] = useState("todos"); // todos | activo | inactivo
+  const [filterTipoExp, setFilterTipoExp] = useState(null); // null | M | T
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+
   const [sortKey, setSortKey] = useState("");
   const [sortDir, setSortDir] = useState("asc");
   const qDebounceRef = useRef(null);
@@ -1847,24 +1854,40 @@ export default function Expedientes() {
   // =========================
   const EXPORT_FIELDS = [
     // =========================
-    // BASE
+    // BASE & IDENTIFICACIÓN
     // =========================
-    { key: "id_expediente", label: "ID Expediente", group: "base" },
-    { key: "id_import", label: "Código importación", group: "base" },
-    { key: "fecha_relevamiento", label: "Fecha relevamiento", group: "base" },
-    { key: "gps", label: "GPS", group: "base" },
-    { key: "tecnico", label: "Técnico", group: "base" },
-    { key: "codigo_exp", label: "Código expediente", group: "base" },
-    { key: "codigo_censo", label: "Código censo", group: "base" },
+    { key: "codigo_unico", label: "Nro. Notificación Único", group: "base" },
+    { key: "codigo_exp", label: "Nro. de Notificación", group: "base" },
+    { key: "tipo_expediente_label", label: "Tipo de Carpeta", group: "base" },
     { key: "propietario_nombre", label: "Propietario nombre", group: "base" },
     { key: "propietario_ci", label: "Propietario CI", group: "base" },
     { key: "pareja_nombre", label: "Pareja nombre", group: "base" },
     { key: "pareja_ci", label: "Pareja CI", group: "base" },
-    { key: "id_tramo", label: "ID Tramo", group: "base" },
-    { key: "id_sub_tramo", label: "ID Subtramo", group: "base" },
-    { key: "parte_a", label: "Parte A", group: "base" },
-    { key: "parte_b", label: "Parte B", group: "base" },
-    { key: "premio_aplica", label: "Premio aplica", group: "base" },
+    { key: "telefono", label: "Teléfono", group: "base" },
+
+    // =========================
+    // UBICACIÓN & CONTEXTO
+    // =========================
+    { key: "tramo_nombre", label: "Tramo", group: "base" },
+    { key: "subtramo_nombre", label: "Subtramo", group: "base" },
+    { key: "gps_clean", label: "Coordenadas (Lat, Lon)", group: "base" },
+    { key: "padrón", label: "Padrón", group: "base" },
+    { key: "cta_cte_catastral", label: "Cta. Cte. Catastral", group: "base" },
+    { key: "superficie", label: "Superficie", group: "base" },
+    { key: "superficie_afectada", label: "Superficie afectada", group: "base" },
+    { key: "porcentaje_afectacion", label: "% Afectación", group: "base" },
+
+    // =========================
+    // GESTIÓN TÉCNICA (FLATTENED)
+    // =========================
+    { key: "estado_ok", label: "Estado Gestión (OK)", group: "base" },
+    { key: "codigo_dbi", label: "Código DBI", group: "base" },
+    { key: "desafectado_label", label: "¿Desafectado?", group: "base" },
+    { key: "premio_aplica_label", label: "¿Premio Aplica?", group: "base" },
+    { key: "fecha_relevamiento", label: "Fecha relevamiento", group: "base" },
+    { key: "created_at_fmt", label: "Fecha Registro", group: "base" },
+    { key: "tecnico", label: "Técnico", group: "base" },
+    { key: "observaciones_gestion", label: "Observaciones de Gestión", group: "base" },
 
     // =========================
     // DOCUMENTACIÓN
@@ -1898,39 +1921,19 @@ export default function Expedientes() {
   ];
 
   const DEFAULT_EXPORT_SELECTION = {
-    id_expediente: true,
-    id_import: true,
-    fecha_relevamiento: true,
-    gps: true,
-    tecnico: true,
+    codigo_unico: true,
     codigo_exp: true,
-    codigo_censo: true,
+    tipo_expediente_label: true,
     propietario_nombre: true,
     propietario_ci: true,
-    id_tramo: true,
-    id_sub_tramo: true,
-
+    tramo_nombre: true,
+    subtramo_nombre: true,
+    gps_clean: true,
+    estado_ok: true,
+    codigo_dbi: true,
+    desafectado_label: true,
+    fecha_relevamiento: true,
     doc_total: true,
-    ci_frente: true,
-    ci_dorso: true,
-    ci_adicional_frente: true,
-    ci_adicional_dorso: true,
-
-    doc_nombres: false,
-    doc_urls: false,
-
-    docs_documentacion_nombres: false,
-    docs_documentacion_urls: false,
-    docs_documentacion_final_nombres: false,
-    docs_documentacion_final_urls: false,
-    docs_avaluo_nombres: false,
-    docs_avaluo_urls: false,
-    docs_informe_pericial_nombres: false,
-    docs_informe_pericial_urls: false,
-    docs_plantilla_nombres: false,
-    docs_plantilla_urls: false,
-    docs_notif_conformidad_nombres: false,
-    docs_notif_conformidad_urls: false,
   };
 
   const [showExport, setShowExport] = useState(false);
@@ -2020,12 +2023,26 @@ export default function Expedientes() {
       ),
 
       codigo_exp: pick(
+        "nro de notificación",
+        "nro de notificacion",
+        "nro. de notificación",
+        "nro. de notificacion",
         "Datos_del_Expediente_Código_Expediente_Notificación",
         "Datos_del_Expediente_Codigo_Expediente_Notificacion",
         "codigo expediente notificacion",
         "código expediente notificación",
         "codigo exp",
         "codigo expediente"
+      ),
+
+      codigo_unico: pick(
+        "nro notificación único",
+        "nro notificacion unico",
+        "nro. notificación único",
+        "nro. notificacion unico",
+        "codigo unico",
+        "código único",
+        "id unico"
       ),
 
       codigo_censo: pick(
@@ -2243,6 +2260,14 @@ export default function Expedientes() {
     });
   }
 
+  const handleExcelImport = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      onExcelPicked(file);
+      e.target.value = "";
+    }
+  };
+
   async function onExcelPicked(file) {
     setImportErrors([]);
     setExcelWarnings([]);
@@ -2449,32 +2474,55 @@ export default function Expedientes() {
           const needsDocs = selectedFields.some((f) => f.group === "docs");
           const docs = needsDocs ? await collectExportDocs(r.id_expediente) : null;
 
+          // Flattening y Transformación Elite
+          const isOK = r.tipo_expediente === 'M' 
+            ? r.carpeta_mejora?.documentacion_final?.ok === true 
+            : r.carpeta_terreno?.documentacion_final?.ok === true;
+
+          const gpsClean = String(r.gps || "").replace(/\(|\)|\[|\]|lat:|lon:/gi, "").trim();
+          
+          const obsArr = [];
+          if (r.carpeta_mejora?.observaciones) obsArr.push(`Mejora: ${r.carpeta_mejora.observaciones}`);
+          if (r.carpeta_terreno?.observaciones) obsArr.push(`Terreno: ${r.carpeta_terreno.observaciones}`);
+          if (r.carpeta_dbi?.obs) obsArr.push(`DBI: ${r.carpeta_dbi.obs}`);
+
           for (const f of selectedFields) {
             let value = "";
 
             switch (f.key) {
-              case "id_expediente":
-              case "id_import":
+              case "tipo_expediente_label":
+                value = r.tipo_expediente === "M" ? "Mejora" : "Terreno";
+                break;
+              case "desafectado_label":
+                value = r.desafectado ? "SÍ" : "NO";
+                break;
+              case "premio_aplica_label":
+                value = r.premio_aplica ? "SÍ" : "NO";
+                break;
+              case "estado_ok":
+                value = isOK ? "COMPLETADO (OK)" : "PENDIENTE";
+                break;
+              case "gps_clean":
+                value = gpsClean || "N/A";
+                break;
+              case "codigo_dbi":
+                value = r.carpeta_dbi?.codigo || "N/A";
+                break;
+              case "observaciones_gestion":
+                value = obsArr.join(" | ");
+                break;
               case "fecha_relevamiento":
-              case "gps":
-              case "tecnico":
-              case "codigo_exp":
-              case "codigo_censo":
-              case "propietario_nombre":
-              case "propietario_ci":
-              case "pareja_nombre":
-              case "pareja_ci":
-              case "id_tramo":
-              case "id_sub_tramo":
-              case "parte_a":
-              case "parte_b":
-                value = r?.[f.key] ?? "";
+                value = r.fecha_relevamiento ? String(r.fecha_relevamiento).slice(0, 10) : "";
                 break;
-
-              case "premio_aplica":
-                value = r?.premio_aplica ? "Si" : "No";
+              case "created_at_fmt":
+                value = r.created_at ? new Date(r.created_at).toLocaleDateString() : "";
                 break;
-
+              case "tramo_nombre":
+                value = r.tramo_nombre || (r.tramo ? String(r.tramo) : "N/A");
+                break;
+              case "subtramo_nombre":
+                value = r.subtramo_nombre || (r.subtramo ? String(r.subtramo) : "N/A");
+                break;
               case "doc_total":
                 value = docs?.allDocs?.length ?? 0;
                 break;
@@ -2484,62 +2532,12 @@ export default function Expedientes() {
               case "doc_urls":
                 value = docsToUrls(docs?.allDocs);
                 break;
-
               case "ci_frente":
                 value = docs?.ciFrente || "";
                 break;
               case "ci_dorso":
                 value = docs?.ciDorso || "";
                 break;
-              case "ci_adicional_frente":
-                value = docs?.ciAdicionalFrente || "";
-                break;
-              case "ci_adicional_dorso":
-                value = docs?.ciAdicionalDorso || "";
-                break;
-
-              case "docs_documentacion_nombres":
-                value = docsToNames(docs?.docsDocumentacion);
-                break;
-              case "docs_documentacion_urls":
-                value = docsToUrls(docs?.docsDocumentacion);
-                break;
-
-              case "docs_documentacion_final_nombres":
-                value = docsToNames(docs?.docsDocumentacionFinal);
-                break;
-              case "docs_documentacion_final_urls":
-                value = docsToUrls(docs?.docsDocumentacionFinal);
-                break;
-
-              case "docs_avaluo_nombres":
-                value = docsToNames(docs?.docsAvaluo);
-                break;
-              case "docs_avaluo_urls":
-                value = docsToUrls(docs?.docsAvaluo);
-                break;
-
-              case "docs_informe_pericial_nombres":
-                value = docsToNames(docs?.docsInformePericial);
-                break;
-              case "docs_informe_pericial_urls":
-                value = docsToUrls(docs?.docsInformePericial);
-                break;
-
-              case "docs_plantilla_nombres":
-                value = docsToNames(docs?.docsPlantilla);
-                break;
-              case "docs_plantilla_urls":
-                value = docsToUrls(docs?.docsPlantilla);
-                break;
-
-              case "docs_notif_conformidad_nombres":
-                value = docsToNames(docs?.docsNotifConformidad);
-                break;
-              case "docs_notif_conformidad_urls":
-                value = docsToUrls(docs?.docsNotifConformidad);
-                break;
-
               default:
                 value = r?.[f.key] ?? "";
                 break;
@@ -2617,21 +2615,45 @@ export default function Expedientes() {
   const load = async (overrides = null) => {
     setLoading(true);
     try {
-      const q = String(overrides?.q ?? filterQ ?? "").trim();
-      const tramoId = String(overrides?.tramoId ?? filterTramoId ?? "").trim();
-      const subtramoId = String(overrides?.subtramoId ?? filterSubtramoId ?? "").trim();
+      const q = String(overrides?.q !== undefined ? overrides.q : (filterQ ?? "")).trim();
+      const tramoId = String(overrides?.tramoId !== undefined ? overrides.tramoId : (filterTramoId ?? "")).trim();
+      const subtramoId = String(overrides?.subtramoId !== undefined ? overrides.subtramoId : (filterSubtramoId ?? "")).trim();
+      const dateStart = overrides?.dateStart !== undefined ? overrides.dateStart : (filterDateStart ?? "");
+      const dateEnd = overrides?.dateEnd !== undefined ? overrides.dateEnd : (filterDateEnd ?? "");
+      const estado = overrides?.estado !== undefined ? overrides.estado : (filterEstado ?? "todos");
+      const tipoExp = overrides?.tipoExp !== undefined ? overrides.tipoExp : (filterTipoExp ?? "");
+
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (tramoId) params.set("tramoId", tramoId);
       if (subtramoId) params.set("subtramoId", subtramoId);
+      if (dateStart) params.set("dateStart", dateStart);
+      if (dateEnd) params.set("dateEnd", dateEnd);
+      if (estado && estado !== "todos") params.set("estado", estado);
+      if (tipoExp) params.set("tipoExp", tipoExp);
+
       const qs = params.toString();
       const url = qs
         ? `${API}/expedientes/proyecto/${idProyecto}?${qs}`
         : `${API}/expedientes/proyecto/${idProyecto}`;
       const data = await apiGet(url);
       setRows(data);
+      
+      // Si no hay filtros, este es el total del proyecto
+      if (!qs) {
+        setTotalRecords(data.length);
+      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadTotalCount = async () => {
+    try {
+      const data = await apiGet(`${API}/expedientes/proyecto/${idProyecto}`);
+      setTotalRecords(Array.isArray(data) ? data.length : 0);
+    } catch (e) {
+      console.error("Error loading total count", e);
     }
   };
 
@@ -2646,6 +2668,29 @@ export default function Expedientes() {
       else next.delete(id);
       return Array.from(next);
     });
+  };
+
+  const eliminar = async (r) => {
+    if (!canDelete || bulkDeleting) return;
+    const ok = await alerts.confirm({
+      title: "¿Estás seguro?",
+      text: `Se eliminará el expediente "${r.codigo_unico || r.codigo_exp || r.id_expediente}". Esta acción no se puede deshacer.`,
+      confirmButtonText: "Sí, eliminar",
+      cancelButtonText: "Cancelar",
+      icon: "warning",
+    });
+    if (!ok) return;
+
+    setBulkDeleting(true);
+    try {
+      await apiDelete(`${API}/expedientes/${r.id_expediente}`);
+      alerts.toast.success("Expediente eliminado correctamente");
+      await load();
+    } catch (e) {
+      alerts.toast.error(String(e?.message || e));
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   const eliminarSeleccionados = async () => {
@@ -2772,6 +2817,7 @@ export default function Expedientes() {
 
   useEffect(() => {
     load();
+    loadTotalCount();
     loadTramosCensales();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idProyecto]);
@@ -3497,7 +3543,13 @@ export default function Expedientes() {
   }, [otherDocs]);
 
   const filtersActive = Boolean(
-    String(filterQ || "").trim() || filterTramoId || filterSubtramoId
+    String(filterQ || "").trim() ||
+      filterTramoId ||
+      filterSubtramoId ||
+      filterDateStart ||
+      filterDateEnd ||
+      (filterEstado && filterEstado !== "todos") ||
+      filterTipoExp
   );
 
   const sortedRows = useMemo(() => {
@@ -3611,185 +3663,398 @@ export default function Expedientes() {
     });
   };
 
-  return (
-    <div className="container mt-3">
-      <Row className="align-items-center mb-2">
-        <Col>
-          <h4 className="mb-0">Expedientes</h4>
-          <small className="text-muted">Proyecto: {idProyecto}</small>
-        </Col>
+  const isExpedienteOK = (exp) => {
+    if (exp?.tipo_expediente === 'M') return exp?.carpeta_mejora?.documentacion_final?.ok === true;
+    if (exp?.tipo_expediente === 'T') return exp?.carpeta_terreno?.documentacion_final?.ok === true;
+    return false;
+  };
 
-        <Col className="text-end">
+  const stats = useMemo(() => {
+    const filtered = rows.length;
+    const ok = rows.filter(isExpedienteOK).length;
+    return { 
+      filtered, 
+      total: totalRecords || filtered, 
+      ok, 
+      pending: filtered - ok 
+    };
+  }, [rows, totalRecords]);
+
+  const dateRangeInvalid = Boolean(filterDateStart && filterDateEnd && filterDateEnd < filterDateStart);
+
+  return (
+    <div className="container-fluid px-4 py-3" style={{ fontFamily: "'Inter', sans-serif" }}>
+      {/* HEADER SECTION - GeoApp Elite Minimalist */}
+      <div className="d-flex align-items-center justify-content-between mb-4 mt-2">
+        <div>
+          <h2 className="fw-bold mb-0 text-dark" style={{ letterSpacing: "-0.02em" }}>Expedientes</h2>
+          <div className="d-flex align-items-center gap-2 mt-1">
+            <span className="badge bg-light text-secondary border fw-normal py-1 px-3 shadow-sm" style={{ fontSize: '0.75rem' }}>
+              <i className="bi bi-folder2-open me-2 text-primary"></i>Proyecto: {idProyecto}
+            </span>
+            <div className="text-muted small border-start ps-2 d-none d-md-block" style={{ fontSize: '0.8rem' }}>
+              <span className="fw-bold">{stats.filtered}/{stats.total}</span> Expedientes | <span className="text-success fw-bold">{stats.ok} OK</span> | <span className="text-warning fw-bold">{stats.pending}</span> Pendientes
+              {stats.filtered < stats.total && (
+                <Badge bg="info" className="ms-2 bg-opacity-10 text-info border border-info border-opacity-25 fw-normal">Filtrado activo</Badge>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="d-flex gap-2">
           {canUpload && (
-            <>
-              <Form.Label className="me-2 mb-0">Importar Excel</Form.Label>
-              <Form.Control
-                type="file"
-                accept=".xlsx,.xls"
-                style={{ display: "inline-block", width: 260 }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onExcelPicked(f);
-                  e.target.value = "";
-                }}
-              />
-            </>
+            <Button
+              variant="light"
+              className="shadow-sm border-0 d-flex align-items-center bg-white text-secondary btn-sm px-3"
+              onClick={() => document.getElementById("excel-import-input").click()}
+            >
+              📥 <span className="ms-2 d-none d-sm-inline">Importar</span>
+            </Button>
           )}
 
           <Button
-            className="ms-2"
-            variant="outline-success"
+            variant="light"
+            className="shadow-sm border-0 d-flex align-items-center bg-white text-secondary btn-sm px-3"
             onClick={() => setShowExport(true)}
             disabled={!rows.length}
           >
-            Exportar Excel
+            📊 <span className="ms-2 d-none d-sm-inline">Exportar</span>
           </Button>
 
           {canCreate && (
-            <Button className="ms-2" onClick={openCrear}>
-              Nuevo
+            <Button
+              variant="primary"
+              className="shadow-sm border-0 px-4 fw-semibold btn-sm d-flex align-items-center"
+              style={{ backgroundColor: "#0047AB" }} // Cobalt Blue
+              onClick={openCrear}
+            >
+              <i className="bi bi-plus-lg me-2"></i> Nuevo
             </Button>
           )}
 
           <Link
-            className="btn btn-outline-success btn-sm ms-2"
+            className="btn btn-outline-success border-0 bg-white btn-sm shadow-sm d-flex align-items-center px-3"
             to={`/proyectos/${id}/gv-catastro`}
           >
-            🗺️ Dashboard Catastro
+            🗺️ <span className="ms-1 d-none d-sm-inline">Mapa</span>
           </Link>
-        </Col>
-      </Row>
+        </div>
+      </div>
 
-      <Row className="align-items-center mb-2">
-        <Col>
-          {filtersActive ? (
-            <small className="text-muted">Filtros activos</small>
-          ) : (
-            <small className="text-muted">Sin filtros</small>
-          )}
-          <span className="ms-2 text-muted">Resultados: {rows.length}</span>
-          <span className="ms-2 text-muted">Seleccionados: {selectedIds.length}</span>
-        </Col>
-        <Col className="text-end">
-          {canDelete && (
-            <>
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={!selectedIds.length || bulkDeleting}
-                onClick={eliminarSeleccionados}
+      {/* SEARCH PANEL - GeoApp Elite */}
+      <div
+        className="p-4 rounded-4 mb-4 shadow-sm border-0"
+        style={{ background: "#F9FAFB", border: "1px solid #F0F2F5" }}
+      >
+        <Row className="g-3 align-items-center">
+          {/* Main Search Minimalist */}
+          <Col lg={7}>
+            <div className="position-relative">
+              <Form.Control
+                size="lg"
+                placeholder="Buscar por Nro. Notificación Único o nombre..."
+                className="ps-5 border-0 shadow-sm rounded-3"
+                style={{ height: "50px", fontSize: "1rem" }}
+                value={filterQ}
+                onChange={(e) => setFilterQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    if (qDebounceRef.current) {
+                      clearTimeout(qDebounceRef.current);
+                      qDebounceRef.current = null;
+                    }
+                    load({ q: e.currentTarget.value });
+                  }
+                }}
+              />
+              <span
+                className="position-absolute translate-middle-y top-50 start-0 ps-3 text-muted opacity-50"
+                style={{ fontSize: "1.1rem" }}
               >
-                {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
+                🔍
+              </span>
+            </div>
+          </Col>
+
+          {/* Quick Stats & Filters Toggle */}
+          <Col lg={5}>
+            <div className="d-flex gap-2 justify-content-lg-end">
+              <Button
+                variant={dateRangeInvalid ? "secondary" : "white"}
+                size="lg"
+                className="border-0 shadow-sm rounded-3 fw-bold bg-white text-dark w-100"
+                style={{ height: "50px", fontSize: "0.9rem", backgroundColor: dateRangeInvalid ? "#E5E7EB !important" : "white" }}
+                onClick={() => load()}
+                disabled={loading || dateRangeInvalid}
+              >
+                {loading ? "Cargando..." : dateRangeInvalid ? "FECHAS INVÁLIDAS" : "BUSCAR"}
               </Button>
               <Button
-                className="ms-2"
-                variant="outline-danger"
-                size="sm"
-                disabled={bulkDeleting}
-                onClick={eliminarTodosContextual}
+                variant="light"
+                size="lg"
+                className="border-0 shadow-sm rounded-3 bg-white text-muted px-4 d-flex align-items-center justify-content-center gap-2"
+                style={{ height: "50px", fontSize: "0.9rem", fontWeight: "500" }}
+                onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
               >
-                {bulkDeleting ? "Eliminando..." : "Eliminar TODOS"}
+                <i className={`bi bi-sliders2${showAdvancedSearch ? '-vertical' : ''}`}></i>
+                <span className="d-none d-sm-inline">Filtros Avanzados</span>
               </Button>
-            </>
-          )}
-        </Col>
-      </Row>
+            </div>
+          </Col>
+        </Row>
 
-      <Row className="align-items-center mb-2">
-        <Col md={6}>
-          <Form.Control
-            placeholder="Buscar por titular/co-titular, CI, expediente, DBI o codigo censo"
-            value={filterQ}
-            onChange={(e) => setFilterQ(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                if (qDebounceRef.current) {
-                  clearTimeout(qDebounceRef.current);
-                  qDebounceRef.current = null;
-                }
-                load({ q: e.currentTarget.value });
-              }
-            }}
-          />
-        </Col>
-        <Col md="auto">
-          <Button onClick={() => load()} disabled={loading}>
-            Buscar
-          </Button>
-        </Col>
-        <Col md="auto">
-          <Button
-            variant="outline-secondary"
-            onClick={() => {
-              setFilterQ("");
-              setFilterTramoId("");
-              setFilterSubtramoId("");
-              setSubtramosCensales([]);
-              load();
-            }}
-            disabled={loading}
-          >
-            Limpiar
-          </Button>
-        </Col>
-      </Row>
+        <Collapse in={showAdvancedSearch}>
+          <div className="pt-4 border-top mt-4" style={{ transition: "all 300ms ease-in-out" }}>
+            <Row className="g-4">
+              {/* Bloque A: Identificación & Carpeta */}
+              <Col md={4}>
+                <Form.Label className="fw-medium text-uppercase mb-2" style={{ letterSpacing: '0.05em', color: '#64748B', fontSize: '12px' }}>Tipo de Carpeta</Form.Label>
+                <div className="d-flex gap-1 bg-white p-1 rounded-3 shadow-sm border">
+                  {['todo', 'M', 'T'].map((tipo) => (
+                    <Button
+                      key={tipo}
+                      size="sm"
+                      variant={(!filterTipoExp && tipo === 'todo') || (filterTipoExp === tipo) ? 'primary' : 'white'}
+                      className={`flex-grow-1 border-0 py-2 rounded-2 ${((!filterTipoExp && tipo === 'todo') || (filterTipoExp === tipo)) ? 'shadow-sm' : 'text-muted'}`}
+                      style={{ 
+                        fontSize: '11px', 
+                        fontWeight: '600', 
+                        backgroundColor: ((!filterTipoExp && tipo === 'todo') || (filterTipoExp === tipo)) ? '#0047AB' : 'transparent', 
+                        color: ((!filterTipoExp && tipo === 'todo') || (filterTipoExp === tipo)) ? '#FFFFFF' : '#64748B' 
+                      }}
+                      onClick={() => {
+                        const next = tipo === 'todo' ? null : tipo;
+                        setFilterTipoExp(next);
+                        load({ tipoExp: next });
+                      }}
+                    >
+                      {tipo === 'todo' ? 'TODAS' : tipo === 'M' ? 'MEJORA' : 'TERRENO'}
+                    </Button>
+                  ))}
+                </div>
+              </Col>
 
-      <Row className="align-items-center mb-2">
-        <Col md={4}>
-          <Form.Select
-            value={filterTramoId}
-            onChange={(e) => {
-              const v = e.target.value;
-              setFilterTramoId(v);
-              setFilterSubtramoId("");
-              if (v) {
-                const tramoId = normalizePositiveId(v);
-                if (tramoId) {
-                  apiGet(`${API}/proyectos/${idProyecto}/tramos-censales/${tramoId}/subtramos`)
-                    .then((data) => setSubtramosCensales(Array.isArray(data?.items) ? data.items : []))
-                    .catch(() => setSubtramosCensales([]));
-                } else {
-                  setSubtramosCensales([]);
-                }
-              } else {
+              {/* Bloque B: Cronología (Fechas de Proceso) */}
+              <Col md={5}>
+                <Form.Label className="fw-medium text-uppercase mb-2" style={{ letterSpacing: '0.05em', color: dateRangeInvalid ? '#DC2626' : '#64748B', fontSize: '12px' }}>
+                  Rango de Relevamiento {dateRangeInvalid && <span style={{ fontSize: '10px' }}>(REVISAR RANGO)</span>}
+                </Form.Label>
+                <div className="d-flex gap-2 align-items-center">
+                  <Form.Control
+                    type="date"
+                    size="sm"
+                    className="border-0 shadow-sm rounded-2 py-2"
+                    style={{ border: dateRangeInvalid ? '1px solid #DC2626' : '1px solid #E2E8F0', padding: '0.5rem' }}
+                    value={filterDateStart}
+                    onChange={(e) => {
+                      const start = e.target.value;
+                      setFilterDateStart(start);
+                      load({ dateStart: start });
+                    }}
+                  />
+                  <span className="text-muted small">→</span>
+                  <Form.Control
+                    type="date"
+                    size="sm"
+                    className="border-0 shadow-sm rounded-2 py-2"
+                    style={{ border: dateRangeInvalid ? '1px solid #DC2626' : '1px solid #E2E8F0', padding: '0.5rem' }}
+                    value={filterDateEnd}
+                    onChange={(e) => {
+                      const end = e.target.value;
+                      setFilterDateEnd(end);
+                      if (!filterDateStart || end >= filterDateStart) {
+                        load({ dateEnd: end });
+                      }
+                    }}
+                  />
+                </div>
+              </Col>
+
+              {/* Bloque C: Estado Operativo */}
+              <Col md={3}>
+                <Form.Label className="fw-medium text-uppercase mb-2" style={{ letterSpacing: '0.05em', color: '#64748B', fontSize: '12px' }}>Situación</Form.Label>
+                <Form.Select
+                  size="sm"
+                  className="border-0 shadow-sm rounded-2 py-2 text-secondary"
+                  style={{ border: '1px solid #E2E8F0' }}
+                  value={filterEstado}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFilterEstado(v);
+                    load({ estado: v });
+                  }}
+                >
+                  <option value="todos">Todos los estados</option>
+                  <option value="activo">Solo Activos</option>
+                  <option value="inactivo">Desafectados</option>
+                </Form.Select>
+              </Col>
+            </Row>
+
+            <Row className="g-4 mt-1">
+              <Col md={4}>
+                <Form.Label className="fw-medium text-uppercase mb-2" style={{ color: '#64748B', fontSize: '12px' }}>Tramo</Form.Label>
+                <Form.Select
+                  size="sm"
+                  className="border-0 shadow-sm rounded-2 py-2 text-secondary"
+                  style={{ border: '1px solid #E2E8F0' }}
+                  value={filterTramoId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFilterTramoId(v);
+                    setFilterSubtramoId("");
+                    if (v) {
+                      const tramoId = normalizePositiveId(v);
+                      if (tramoId) {
+                        apiGet(`${API}/proyectos/${idProyecto}/tramos-censales/${tramoId}/subtramos`)
+                          .then((data) => setSubtramosCensales(Array.isArray(data?.items) ? data.items : []))
+                          .catch(() => setSubtramosCensales([]));
+                      } else {
+                        setSubtramosCensales([]);
+                      }
+                    } else {
+                      setSubtramosCensales([]);
+                    }
+                    load({ tramoId: v, subtramoId: "" });
+                  }}
+                >
+                  <option value="">Cualquiera</option>
+                  {tramosCensales.map((t) => (
+                    <option key={t.id_proyecto_tramo} value={t.id_proyecto_tramo}>
+                      {t.descripcion}
+                    </option>
+                  ))}
+                </Form.Select>
+              </Col>
+
+              <Col md={4}>
+                <Form.Label className="fw-medium text-uppercase mb-2" style={{ color: '#64748B', fontSize: '12px' }}>Subtramo</Form.Label>
+                <Form.Select
+                  size="sm"
+                  className="border-0 shadow-sm rounded-2 py-2 text-secondary"
+                  style={{ border: '1px solid #E2E8F0' }}
+                  value={filterSubtramoId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFilterSubtramoId(v);
+                    load({ subtramoId: v });
+                  }}
+                  disabled={!filterTramoId}
+                >
+                  <option value="">Cualquiera</option>
+                  {subtramosCensales.map((st) => (
+                    <option key={st.id_proyecto_subtramo} value={st.id_proyecto_subtramo}>
+                      {st.descripcion}
+                    </option>
+                  ))}
+                </Form.Select>
+              </Col>
+
+              <Col md={4} className="d-flex align-items-end">
+                <Button
+                  variant="outline-danger"
+                  className="w-100 border-0 bg-white shadow-sm rounded-2 py-2 fw-bold"
+                  style={{ fontSize: '0.8rem' }}
+                  onClick={() => {
+                    setFilterQ("");
+                    setFilterTramoId("");
+                    setFilterSubtramoId("");
+                    setFilterDateStart("");
+                    setFilterDateEnd("");
+                    setFilterEstado("todos");
+                    setFilterTipoExp(null);
+                    setSubtramosCensales([]);
+                    load({ q: "", tramoId: "", subtramoId: "", dateStart: "", dateEnd: "", estado: "todos", tipoExp: null });
+                  }}
+                  disabled={loading}
+                >
+                  RESETEAR FILTROS
+                </Button>
+              </Col>
+            </Row>
+          </div>
+        </Collapse>
+
+        {/* ACTIVE FILTER BADGES - GeoApp Elite Style */}
+        {filtersActive && (
+          <div className="mt-4 d-flex flex-wrap gap-2 align-items-center border-top pt-3">
+            <span className="small text-secondary fw-bold text-uppercase me-2" style={{ fontSize: "0.65rem", letterSpacing: '0.1em' }}>
+              Filtros Aplicados:
+            </span>
+            {filterQ && (
+              <Badge bg="white" text="dark" className="shadow-sm border-0 px-3 py-2 fw-normal rounded-pill d-flex align-items-center" style={{ background: '#F0F9FF', color: '#0369A1' }}>
+                <span className="opacity-50 me-1">Búsqueda:</span> "{filterQ}" 
+                <span role="button" className="ms-2 text-danger fw-bold px-2 py-1" style={{ fontSize: '1.2rem', lineHeight: '1' }} onClick={() => { setFilterQ(""); load({ q: "" }); }}>×</span>
+              </Badge>
+            )}
+            {(filterDateStart || filterDateEnd) && (
+              <Badge bg="white" text="dark" className="shadow-sm border-0 px-3 py-2 fw-normal rounded-pill d-flex align-items-center" style={{ background: '#F0F9FF', color: '#0369A1' }}>
+                📅 {filterDateStart || "..."} — {filterDateEnd || "..."}
+                <span role="button" className="ms-2 text-danger fw-bold px-2 py-1" style={{ fontSize: '1.2rem', lineHeight: '1' }} onClick={() => { setFilterDateStart(""); setFilterDateEnd(""); load({ dateStart: "", dateEnd: "" }); }}>×</span>
+              </Badge>
+            )}
+            {filterEstado !== "todos" && (
+              <Badge bg="white" text="dark" className="shadow-sm border-0 px-3 py-2 fw-normal rounded-pill d-flex align-items-center" style={{ background: '#F0F9FF', color: '#0369A1' }}>
+                <span className="opacity-50 me-1">Estado:</span> {filterEstado === "activo" ? "Activo" : "Desafectado"}
+                <span role="button" className="ms-2 text-danger fw-bold px-2 py-1" style={{ fontSize: '1.2rem', lineHeight: '1' }} onClick={() => { setFilterEstado("todos"); load({ estado: "todos" }); }}>×</span>
+              </Badge>
+            )}
+            {filterTipoExp && (
+              <Badge bg="white" text="dark" className="shadow-sm border-0 px-3 py-2 fw-normal rounded-pill d-flex align-items-center" style={{ background: '#F0F9FF', color: '#0369A1' }}>
+                <span className="opacity-50 me-1">Carpeta:</span> {filterTipoExp === "M" ? "Mejora" : "Terreno"}
+                <span role="button" className="ms-2 text-danger fw-bold px-2 py-1" style={{ fontSize: '1.2rem', lineHeight: '1' }} onClick={() => { setFilterTipoExp(null); load({ tipoExp: null }); }}>×</span>
+              </Badge>
+            )}
+            <Button
+              variant="link"
+              className="p-0 small text-danger text-decoration-none fw-bold ms-auto"
+              style={{ fontSize: '0.75rem' }}
+              onClick={() => {
+                setFilterQ("");
+                setFilterTramoId("");
+                setFilterSubtramoId("");
+                setFilterDateStart("");
+                setFilterDateEnd("");
+                setFilterEstado("todos");
+                setFilterTipoExp(null);
                 setSubtramosCensales([]);
-              }
-              load({ tramoId: v, subtramoId: "" });
-            }}
-          >
-            <option value="">Tramo (todos)</option>
-            {tramosCensales.map((t) => (
-              <option key={t.id_proyecto_tramo} value={t.id_proyecto_tramo}>
-                {t.descripcion}
-              </option>
-            ))}
-          </Form.Select>
-        </Col>
-        <Col md={4}>
-          <Form.Select
-            value={filterSubtramoId}
-            onChange={(e) => {
-              const v = e.target.value;
-              setFilterSubtramoId(v);
-              load({ subtramoId: v });
-            }}
-            disabled={!filterTramoId}
-          >
-            <option value="">Subtramo (todos)</option>
-            {subtramosCensales.map((st) => (
-              <option key={st.id_proyecto_subtramo} value={st.id_proyecto_subtramo}>
-                {st.descripcion}
-              </option>
-            ))}
-          </Form.Select>
-        </Col>
-      </Row>
+                load({ q: "", tramoId: "", subtramoId: "", dateStart: "", dateEnd: "", estado: "todos", tipoExp: null });
+              }}
+            >
+              LIMPIAR TODO
+            </Button>
+          </div>
+        )}
+      </div>
 
-      <div className="table-responsive" style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
-        <Table bordered hover size="sm" className="align-middle" style={{ minWidth: 980 }}>
-          <thead>
-            <tr>
-              <th style={{ width: 36 }}>
+      {/* SMART COUNT & BULK ACTIONS */}
+      <div className="d-flex align-items-center justify-content-between mb-2">
+        <div className="text-secondary small fw-medium" style={{ fontSize: '0.85rem' }}>
+          Mostrando <span className="text-primary fw-bold">{stats.filtered}</span> de <span className="text-dark fw-bold">{stats.total}</span> expedientes
+          {stats.filtered < stats.total && (
+            <span className="ms-2 text-info opacity-75">(Viendo una parte del universo)</span>
+          )}
+        </div>
+        {selectedIds.length > 0 && (
+          <Button
+            variant="outline-danger"
+            size="sm"
+            className="rounded-pill px-3 fw-bold shadow-sm d-flex align-items-center gap-2"
+            onClick={eliminarSeleccionados}
+            disabled={bulkDeleting}
+            style={{ fontSize: '0.8rem' }}
+          >
+            <i className="bi bi-trash3-fill"></i>
+            Eliminar Seleccionados ({selectedIds.length})
+          </Button>
+        )}
+      </div>
+
+      <div className="table-responsive rounded-4 shadow-sm border" style={{ overflowX: "auto", overflowY: "auto", maxHeight: "60vh", background: "#fff" }}>
+        <Table hover size="sm" className="align-middle mb-0" style={{ minWidth: 980 }}>
+          <thead className="bg-light sticky-top" style={{ zIndex: 10 }}>
+            <tr style={{ height: "54px", backgroundColor: '#F8FAFC' }}>
+              <th className="px-3" style={{ width: 44 }}>
                 <Form.Check
                   type="checkbox"
                   ref={headerCheckboxRef}
@@ -3799,43 +4064,54 @@ export default function Expedientes() {
                   aria-label="Seleccionar todos"
                 />
               </th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("codigo_exp")}>
-                Código expediente{sortIndicator("codigo_exp")}
+              <th role="button" className="small text-uppercase text-secondary fw-bold" onClick={() => toggleSort("codigo_exp")}>
+                Nro. Notif. Único{sortIndicator("codigo_exp")}
               </th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("codigo_dbi")}>
-                Código DBI{sortIndicator("codigo_dbi")}
+              <th role="button" className="small text-uppercase text-secondary fw-bold" onClick={() => toggleSort("codigo_dbi")}>
+                DBI{sortIndicator("codigo_dbi")}
               </th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("propietario_nombre")}>
-                Propietario{sortIndicator("propietario_nombre")}
+              <th role="button" className="small text-uppercase text-secondary fw-bold" onClick={() => toggleSort("propietario_nombre")}>
+                Titular{sortIndicator("propietario_nombre")}
               </th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("propietario_ci")}>
-                C.I.{sortIndicator("propietario_ci")}
+              <th role="button" className="small text-uppercase text-secondary fw-bold" onClick={() => toggleSort("propietario_ci")}>
+                Documento{sortIndicator("propietario_ci")}
               </th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("tramo")}>
+              <th role="button" className="small text-uppercase text-secondary fw-bold" onClick={() => toggleSort("tramo")}>
                 Tramo{sortIndicator("tramo")}
               </th>
-              <th>Tipo de carpeta</th>
-              <th role="button" style={{ cursor: "pointer" }} onClick={() => toggleSort("fecha_relevamiento")}>
-                Fecha{sortIndicator("fecha_relevamiento")}
+              <th className="small text-uppercase text-secondary fw-bold">Carpeta</th>
+              <th role="button" className="small text-uppercase text-secondary fw-bold text-center" onClick={() => toggleSort("fecha_relevamiento")}>
+                📅 Fecha{sortIndicator("fecha_relevamiento")}
               </th>
-              <th style={{ width: 160 }}>Acciones</th>
+              <th className="small text-uppercase text-secondary fw-bold text-center" style={{ width: 140 }}>Acciones</th>
             </tr>
           </thead>
           <tbody>
             {!rows.length && (
               <tr>
-                <td colSpan={9} className="text-center text-muted py-4">
-                  {loading
-                    ? "Cargando..."
-                    : filtersActive
-                      ? "No se encontraron expedientes con los filtros actuales"
-                      : "Sin expedientes"}
+                <td colSpan={9} className="text-center text-muted py-5 mx-auto">
+                  {loading ? (
+                    <div className="d-flex flex-column align-items-center">
+                      <div className="spinner-border spinner-border-sm text-primary mb-2" role="status"></div>
+                      <span>Sincronizando registros...</span>
+                    </div>
+                  ) : (
+                    <div className="py-4">
+                      <span className="d-block fs-2 mb-2">📂</span>
+                      <span className="fw-semibold">No se encontraron expedientes</span>
+                      <p className="small text-muted mb-0">Intenta ajustar los criterios de búsqueda</p>
+                    </div>
+                  )}
                 </td>
               </tr>
             )}
             {sortedRows.map((r) => (
-              <tr key={r.id_expediente}>
-                <td>
+              <tr 
+                key={r.id_expediente} 
+                className={r.desafectado ? "opacity-70 grayscale-row" : ""} 
+                style={r.desafectado ? { background: '#F9FAFB', borderLeft: '4px dotted #CBD5E1' } : {}}
+              >
+                <td className="px-3">
                   <Form.Check
                     type="checkbox"
                     checked={selectedSet.has(Number(r.id_expediente))}
@@ -3843,33 +4119,61 @@ export default function Expedientes() {
                       toggleSelectOne(Number(r.id_expediente), e.target.checked)
                     }
                     disabled={bulkDeleting}
-                    aria-label={`Seleccionar expediente ${r.id_expediente}`}
                   />
                 </td>
-                <td>{r.codigo_unico || r.codigo_exp || "—"}</td>
-                <td>{r?.carpeta_dbi?.codigo || "—"}</td>
-                <td>{r.propietario_nombre}</td>
-                <td>{r.propietario_ci}</td>
-                <td>{r.tramo}</td>
+                <td className="fw-bold text-dark" style={{ fontSize: '0.9rem' }}>
+                  {r.codigo_unico || r.codigo_exp || "—"}
+                  {r.desafectado && <span className="ms-2 badge bg-secondary" style={{ fontSize: '0.6rem' }}>DESAFECTADO</span>}
+                </td>
+                <td className="small text-muted">{r?.carpeta_dbi?.codigo || "—"}</td>
+                <td className="fw-medium">{r.propietario_nombre}</td>
+                <td className="small text-muted font-monospace">{r.propietario_ci}</td>
+                <td className="small text-secondary">{r.tramo}</td>
                 <td>
                   {(() => {
                     const hasMejora = hasActiveStages(r?.carpeta_mejora);
                     const hasTerreno = hasActiveStages(r?.carpeta_terreno);
-                    if (hasMejora && !hasTerreno) return "Mejora";
-                    if (hasTerreno && !hasMejora) return "Terreno";
-                    if (hasMejora && hasTerreno) return "Legacy";
-                    return "Sin iniciar";
+                    if (hasMejora && !hasTerreno) return <Badge bg="light" text="primary" className="border fw-normal px-2 py-1">Mejora</Badge>;
+                    if (hasTerreno && !hasMejora) return <Badge bg="light" text="success" className="border fw-normal px-2 py-1">Terreno</Badge>;
+                    if (hasMejora && hasTerreno) return <Badge bg="light" text="warning" className="border fw-normal px-2 py-1">Legacy</Badge>;
+                    return <Badge bg="light" text="secondary" className="border fw-normal px-2 py-1 opacity-50">S/I</Badge>;
                   })()}
                 </td>
-                <td>{r.fecha_relevamiento ? String(r.fecha_relevamiento).slice(0, 10) : ""}</td>
-                <td>
-                  <div className="btn-group">
-                    <Button variant="secondary" size="sm" onClick={() => openVer(r)}>
-                      Ver
+                <td className="text-center small text-muted">
+                  {r.fecha_relevamiento ? String(r.fecha_relevamiento).slice(0, 10) : "—"}
+                </td>
+                <td className="text-center px-4">
+                  <div className="d-flex gap-2 justify-content-center">
+                    <Button 
+                      variant="outline-primary" 
+                      className="d-flex align-items-center gap-2 px-3 border-0 bg-transparent text-primary hover-bg-light"
+                      style={{ fontSize: '13px', fontWeight: '500' }}
+                      onClick={() => openVer(r)} 
+                    >
+                      <i className="bi bi-eye"></i>
+                      <span>Ver</span>
                     </Button>
                     {canUpdate && (
-                      <Button variant="primary" size="sm" onClick={() => openEditar(r)}>
-                        Editar
+                      <Button 
+                        variant="outline-secondary" 
+                        className="d-flex align-items-center gap-2 px-3 border-0 bg-transparent text-secondary hover-bg-light"
+                        style={{ fontSize: '13px', fontWeight: '500' }}
+                        onClick={() => openEditar(r)}
+                      >
+                        <i className="bi bi-pencil-square"></i>
+                        <span>Editar</span>
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button 
+                        variant="outline-danger" 
+                        className="d-flex align-items-center gap-2 px-3 border-0 bg-transparent text-danger hover-bg-light"
+                        style={{ fontSize: '13px', fontWeight: '500' }}
+                        onClick={() => eliminar(r)}
+                        disabled={bulkDeleting}
+                      >
+                        <i className="bi bi-trash"></i>
+                        <span>Eliminar</span>
                       </Button>
                     )}
                   </div>
@@ -6486,6 +6790,14 @@ export default function Expedientes() {
           </div>
         </Modal.Footer>
       </Modal>
+
+      <input
+        id="excel-import-input"
+        type="file"
+        style={{ display: "none" }}
+        accept=".xlsx, .xls"
+        onChange={handleExcelImport}
+      />
     </div>
   );
 }

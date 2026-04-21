@@ -296,36 +296,60 @@ function resolveRecoveredRemotePath(url) {
   }
 }
 
-function buildExpedientesListFilter({ idProyecto, q, tramoId, subtramoId }) {
+function buildExpedientesListFilter({ idProyecto, q, tramoId, subtramoId, dateStart, dateEnd, estado, tipoExp }) {
   const params = [idProyecto];
   let idx = 2;
-  let whereSql = `WHERE id_proyecto = $1`;
+  let whereSql = `WHERE e.id_proyecto = $1`;
 
   if (q) {
     params.push(`%${q}%`);
     whereSql +=
       ` AND (` +
-      `propietario_nombre ILIKE $${idx} OR ` +
-      `propietario_ci ILIKE $${idx} OR ` +
-      `pareja_nombre ILIKE $${idx} OR ` +
-      `pareja_ci ILIKE $${idx} OR ` +
-      `codigo_exp ILIKE $${idx} OR ` +
-      `codigo_censo ILIKE $${idx} OR ` +
-      `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${idx}` +
+      `e.propietario_nombre ILIKE $${idx} OR ` +
+      `e.propietario_ci ILIKE $${idx} OR ` +
+      `e.pareja_nombre ILIKE $${idx} OR ` +
+      `e.pareja_ci ILIKE $${idx} OR ` +
+      `e.codigo_exp ILIKE $${idx} OR ` +
+      `e.codigo_censo ILIKE $${idx} OR ` +
+      `COALESCE(e.carpeta_dbi->>'codigo','') ILIKE $${idx}` +
       `)`;
     idx += 1;
   }
 
   if (Number.isFinite(tramoId) && tramoId > 0) {
     params.push(tramoId);
-    whereSql += ` AND id_tramo = $${idx}`;
+    whereSql += ` AND e.id_tramo = $${idx}`;
     idx += 1;
   }
 
   if (Number.isFinite(subtramoId) && subtramoId > 0) {
     params.push(subtramoId);
-    whereSql += ` AND id_sub_tramo = $${idx}`;
+    whereSql += ` AND e.id_sub_tramo = $${idx}`;
     idx += 1;
+  }
+
+  if (dateStart) {
+    params.push(dateStart);
+    whereSql += ` AND e.fecha_relevamiento >= $${idx}`;
+    idx += 1;
+  }
+
+  if (dateEnd) {
+    params.push(dateEnd);
+    whereSql += ` AND e.fecha_relevamiento <= $${idx}`;
+    idx += 1;
+  }
+
+  if (estado === "activo") {
+    whereSql += ` AND (e.desafectado IS FALSE OR e.desafectado IS NULL)`;
+  } else if (estado === "inactivo") {
+    whereSql += ` AND e.desafectado IS TRUE`;
+  }
+
+  if (tipoExp === "M") {
+    whereSql += ` AND e.tipo_expediente = 'M'`;
+  } else if (tipoExp === "T") {
+    whereSql += ` AND e.tipo_expediente = 'T'`;
   }
 
   return { whereSql, params };
@@ -908,14 +932,31 @@ exports.listByProyecto = async (req, res) => {
   const q = String(req.query.q || "").trim();
   const tramoId = Number(req.query.tramoId);
   const subtramoId = Number(req.query.subtramoId);
+  const dateStart = req.query.dateStart || null;
+  const dateEnd = req.query.dateEnd || null;
+  const estado = req.query.estado || "todos";
 
   const { whereSql, params } = buildExpedientesListFilter({
     idProyecto,
     q,
     tramoId,
     subtramoId,
+    dateStart,
+    dateEnd,
+    estado,
+    tipoExp: req.query.tipoExp || null,
   });
-  const sql = `SELECT * FROM ema.expedientes ${whereSql} ORDER BY created_at DESC`;
+  const sql = `
+    SELECT 
+      e.*, 
+      t.descripcion AS tramo_nombre, 
+      st.descripcion AS subtramo_nombre
+    FROM ema.expedientes e
+    LEFT JOIN ema.proyecto_tramos t ON e.id_tramo = t.id_proyecto_tramo
+    LEFT JOIN ema.proyecto_subtramos st ON e.id_sub_tramo = st.id_proyecto_subtramo
+    ${whereSql} 
+    ORDER BY e.created_at DESC
+  `;
 
   const { rows } = await pool.query(sql, params);
   res.json(rows);
