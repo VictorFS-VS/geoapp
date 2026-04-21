@@ -2347,6 +2347,7 @@ export default function InformeBuilder() {
                                 {sec.visible_if ? <Badge bg="info">Condicional</Badge> : null}
                               </div>
 
+<<<<<<< HEAD
                               <div className="d-flex gap-2">
                                 <Button size="sm" variant="outline-primary" onClick={() => openCrearPregunta(sec.id_seccion)}>
                                   <i className="bi bi-plus-circle me-1"></i>
@@ -2359,6 +2360,33 @@ export default function InformeBuilder() {
                                 <Button size="sm" variant="outline-danger" onClick={() => borrarSeccion(sec.id_seccion)}>
                                   <i className="bi bi-trash me-1"></i>
                                   <span className="small">Eliminar Sección</span>
+=======
+                              <div className="d-flex gap-2 flex-wrap">
+                                <Button
+                                  size="sm"
+                                  variant="outline-primary"
+                                  onClick={() => openCrearPregunta(sec.id_seccion)}
+                                >
+                                  + Pregunta
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant="outline-secondary"
+                                  onClick={() => openEditarSeccion(sec)}
+                                  title="Editar sección"
+                                >
+                                  Editar
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant="outline-danger"
+                                  onClick={() => borrarSeccion(sec.id_seccion)}
+                                  title="Eliminar sección"
+                                >
+                                  Eliminar
+>>>>>>> 0e94a339b3dc4f166653a7799ab33363db154427
                                 </Button>
                               </div>
                             </div>
@@ -2399,6 +2427,7 @@ export default function InformeBuilder() {
                                               <td className="small">{tiposLabel[preg.tipo] || preg.tipo}</td>
                                               <td className="text-center">{preg.obligatorio ? <i className="bi bi-check-circle-fill text-success"></i> : "—"}</td>
                                               <td className="text-end">
+<<<<<<< HEAD
                                                 <div className="d-flex justify-content-end flex-wrap align-items-center gap-2">
                                                   <div className="btn-group btn-group-sm" role="group" aria-label="Mover pregunta">
                                                     <Button
@@ -2457,6 +2486,56 @@ export default function InformeBuilder() {
                                                       <span className="d-none d-md-inline small">Eliminar</span>
                                                     </Button>
                                                   </div>
+=======
+                                                <div className="d-inline-flex gap-1 flex-wrap justify-content-end">
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline-secondary"
+                                                    disabled={idx === 0}
+                                                    onClick={() =>
+                                                      moverPregunta(preg.id_pregunta, {
+                                                        to_seccion_id: sec.id_seccion,
+                                                        to_orden: idx,
+                                                      })
+                                                    }
+                                                    title="Subir"
+                                                  >
+                                                    ↑
+                                                  </Button>
+
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline-secondary"
+                                                    disabled={idx === arr.length - 1}
+                                                    onClick={() =>
+                                                      moverPregunta(preg.id_pregunta, {
+                                                        to_seccion_id: sec.id_seccion,
+                                                        to_orden: idx + 2,
+                                                      })
+                                                    }
+                                                    title="Bajar"
+                                                  >
+                                                    ↓
+                                                  </Button>
+
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline-primary"
+                                                    onClick={() => openEditarPregunta(sec.id_seccion, preg)}
+                                                    title="Editar pregunta"
+                                                  >
+                                                    Editar
+                                                  </Button>
+
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline-danger"
+                                                    onClick={() => borrarPregunta(preg.id_pregunta)}
+                                                    title="Eliminar pregunta"
+                                                  >
+                                                    Eliminar
+                                                  </Button>
+>>>>>>> 0e94a339b3dc4f166653a7799ab33363db154427
                                                 </div>
                                               </td>
                                             </tr>

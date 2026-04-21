@@ -751,6 +751,80 @@ const actualizarEstadoProyectoController = async (req, res) => {
   }
 };
 
+//APP EMA-Censo
+const listarProyectosSelectMios = async (req, res) => {
+  try {
+    let scope = getScope(req.user, "proyectos.read");
+    scope = await normalizeReadScope(req.user, scope);
+
+    if (scope === "none") {
+      return res.status(403).json({ message: "Sin permiso proyectos.read" });
+    }
+
+    const miIdConsultor = req.user?.id_consultor ? parseInt(req.user.id_consultor, 10) : null;
+    const miIdCliente = req.user?.id_cliente ? parseInt(req.user.id_cliente, 10) : null;
+
+    const where = [];
+    const params = [];
+    let idx = 1;
+
+    if (scope === "all") {
+      // sin filtro
+    } else if (scope === "own") {
+      if (miIdConsultor) {
+        where.push(`p.id_consultor = $${idx++}`);
+        params.push(miIdConsultor);
+      } else if (miIdCliente) {
+        where.push(`COALESCE(p.id_proponente, p.id_cliente) = $${idx++}`);
+        params.push(miIdCliente);
+      } else {
+        return res.json([]);
+      }
+    } else if (scope === "project") {
+      const idsProponentes = await getClientesPermitidosRBAC(req.user || {});
+      const partes = [];
+
+      if (Array.isArray(idsProponentes) && idsProponentes.length > 0) {
+        partes.push(`COALESCE(p.id_proponente, p.id_cliente) = ANY($${idx++}::int[])`);
+        params.push(idsProponentes);
+      }
+
+      if (miIdConsultor) {
+        partes.push(`p.id_consultor = $${idx++}`);
+        params.push(miIdConsultor);
+      }
+
+      if (!partes.length) {
+        return res.json([]);
+      }
+
+      where.push(`(${partes.join(" OR ")})`);
+    } else {
+      return res.status(403).json({
+        message: `Scope inválido para proyectos.read: ${scope}`,
+      });
+    }
+
+    const sql = `
+      SELECT
+        p.gid AS id,
+        COALESCE(NULLIF(TRIM(p.nombre), ''), CONCAT('Proyecto #', p.gid)) AS nombre
+      FROM ema.proyectos p
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY nombre ASC, id ASC
+    `;
+
+    const { rows } = await pool.query(sql, params);
+
+    return res.json(rows);
+  } catch (err) {
+    console.error("Error al listar proyectos select/mios:", err);
+    return res.status(500).json({
+      message: "Error al obtener proyectos del usuario",
+    });
+  }
+};
+
 module.exports = {
   crearProyecto,
   actualizarProyecto,
@@ -770,6 +844,8 @@ module.exports = {
 
   obtenerPrimeroPorProponente,
   obtenerCapasProyecto,
+  //APP EMA-Censo
+  listarProyectosSelectMios,
 
   obtenerPoligonosSmart: async (req, res) => {
     try {

@@ -304,6 +304,13 @@ router.get(
   informesCtrl.generarWordProyecto
 );
 
+router.get(
+  "/proyecto/:idProyecto/docx-rango-unico",
+  verifyToken,
+  requirePerm("informes.export.docx"),
+  informesCtrl.generarWordProyectoRangoUnico
+);
+
 // ✅ compat antigua
 router.get(
   "/proyecto/:idProyecto/export/excel",

@@ -1,4 +1,3 @@
-// server/routes/proyectos.routes.js
 "use strict";
 
 const express = require("express");
@@ -26,6 +25,7 @@ const {
   obtenerHermanos,
   obtenerComIndigenaPorProyecto,
   actualizarEstadoProyectoController,
+  listarProyectosSelectMios,
 } = require("../controllers/proyectos.controller");
 
 const { procesarArchivosMantenimiento } = require("../controllers/mantenimiento.controller");
@@ -40,8 +40,8 @@ router.use(verifyToken);
    proyectos.create
    proyectos.update
    proyectos.delete
-   proyectos.mantenimiento   (opcional, recomendado)
-   proyectos.estado.update   (opcional, recomendado)
+   proyectos.mantenimiento
+   proyectos.estado.update
 */
 
 // =======================
@@ -50,6 +50,9 @@ router.use(verifyToken);
 
 // Crear proyecto
 router.post("/", requirePerm("proyectos.create"), crearProyecto);
+
+// ✅ EMA-Censo: cartera de proyectos del usuario logueado
+router.get("/select/mios", requirePerm("proyectos.read"), listarProyectosSelectMios);
 
 // Actualizar proyecto
 router.put("/:id", requirePerm("proyectos.update"), actualizarProyecto);
@@ -64,7 +67,7 @@ router.post(
   procesarArchivosMantenimiento
 );
 
-// Cambiar estado por etapa (para el modal)
+// Cambiar estado por etapa
 router.patch(
   "/:id/estado",
   requirePerm("proyectos.estado.update"),
@@ -75,7 +78,7 @@ router.patch(
 // Lectura
 // =======================
 
-// Listado paginado de proyectos (la cartera / onlyMyProjects se filtra en controller)
+// Listado paginado de proyectos
 router.get("/", requirePerm("proyectos.read"), listarProyectos);
 
 // Capas generales de un proyecto
@@ -87,7 +90,7 @@ router.get("/:id/geom", requirePerm("proyectos.read"), obtenerGeomProyecto);
 // Polígonos del proyecto
 router.get("/:id/poligonos", requirePerm("proyectos.read"), obtenerPoligonosPorProyecto);
 
-// ✅ Área de Influencia por proyecto
+// Área de Influencia por proyecto
 router.get(
   "/area-influencia/:id",
   requirePerm("proyectos.read"),
@@ -120,10 +123,10 @@ router.get(
 // Comunidad indígena asociada al proyecto
 router.get("/com-indigena/:id", requirePerm("proyectos.read"), obtenerComIndigenaPorProyecto);
 
-// Polígonos “smart”
+// Polígonos smart
 router.get("/:id/poligonos-smart", requirePerm("proyectos.read"), obtenerPoligonosSmart);
 
-// Proyectos “hermanos”
+// Proyectos hermanos
 router.get("/:id/hermanos", requirePerm("proyectos.read"), obtenerHermanos);
 
 // ⚠️ El GET genérico por id va al final
