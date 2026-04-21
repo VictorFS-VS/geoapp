@@ -1,0 +1,25 @@
+const { Pool } = require('pg');
+require('dotenv').config({path: './.env'});
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  port: process.env.DB_PORT || 5432
+});
+
+async function main() {
+  try {
+    const r = await pool.query(`
+      SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = 'ema' AND tablename = 'informe'
+    `);
+    console.table(r.rows);
+  } catch(e) {
+    console.error(e);
+  } finally {
+    pool.end();
+  }
+}
+main();

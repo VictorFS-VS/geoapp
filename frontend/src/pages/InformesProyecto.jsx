@@ -41,6 +41,24 @@ const Toast = Swal.mixin({
   },
 });
 
+const fireSwalTop = (options) =>
+  Swal.fire({
+    target: document.body,
+    heightAuto: false,
+    allowOutsideClick: true,
+    allowEscapeKey: true,
+    ...options,
+    didOpen: (popup) => {
+      const container = Swal.getContainer();
+      if (container) {
+        container.style.zIndex = "3000";
+      }
+      if (typeof options.didOpen === "function") {
+        options.didOpen(popup);
+      }
+    },
+  });
+
 function getFilenameFromContentDisposition(cd) {
   if (!cd) return "";
   const m = cd.match(/filename\*=UTF-8''([^;]+)|filename="([^"]+)"/i);
@@ -100,6 +118,7 @@ function kmzPickStorageKey(idProyecto, idPlantillaFiltro) {
   const pl = idPlantillaFiltro ? String(idPlantillaFiltro) : "ALL";
   return `kmz_pick_global:p${idProyecto}:pl${pl}`;
 }
+
 function kmzPickByInformeKey(idInforme) {
   return `kmz_pick_informe:${idInforme}`;
 }
@@ -201,6 +220,8 @@ const InformesProyecto = () => {
   const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
 
   const [showWordConfig, setShowWordConfig] = useState(false);
+  const [reopenWordConfigAfterSwalCancel, setReopenWordConfigAfterSwalCancel] = useState(false);
+
   const [wordConfig, setWordConfig] = useState({
     modo: "normal",
     incluirFotos: true,
@@ -210,6 +231,8 @@ const InformesProyecto = () => {
     limit: 10,
     preguntas: [],
     secciones: [],
+    orderBy: "fecha",
+    orderDir: "asc",
   });
 
   const [wordRange, setWordRange] = useState({
@@ -549,12 +572,30 @@ const InformesProyecto = () => {
     params.set("fotosEnTabla", wordConfig.fotosEnTabla ? "1" : "0");
     params.set("maxFotos", String(Math.max(0, Number(wordConfig.maxFotos || 0))));
     params.set("limit", String(Math.max(1, Number(wordConfig.limit || 10))));
+    params.set("orderBy", String(wordConfig.orderBy || "fecha"));
+    params.set("orderDir", String(wordConfig.orderDir || "asc"));
 
     if (page != null) {
       params.set("page", String(page));
     }
 
     return params;
+  };
+
+  const askDownloadConfirmOutsideModal = async (options) => {
+    setReopenWordConfigAfterSwalCancel(true);
+    setShowWordConfig(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const result = await fireSwalTop(options);
+
+    if (!result.isConfirmed) {
+      setShowWordConfig(true);
+    }
+
+    setReopenWordConfigAfterSwalCancel(false);
+    return result;
   };
 
   const descargarPdfInforme = async (idInforme) => {
@@ -679,7 +720,7 @@ const InformesProyecto = () => {
       const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
       const totalLotes = to - from + 1;
 
-      const confirm = await Swal.fire({
+      const confirm = await askDownloadConfirmOutsideModal({
         icon: "question",
         title: "¿Descargar rango de lotes en varios archivos?",
         html: `
@@ -690,6 +731,7 @@ const InformesProyecto = () => {
             <div><b>Rango elegido:</b> ${from} a ${to}</div>
             <div><b>Cantidad de lotes:</b> ${totalLotes}</div>
             <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+            <div><b>Orden:</b> ${wordConfig.orderBy} / ${wordConfig.orderDir}</div>
           </div>
         `,
         showCancelButton: true,
@@ -720,7 +762,7 @@ const InformesProyecto = () => {
         await sleep(900);
       }
 
-      await Swal.fire({
+      await fireSwalTop({
         icon: "success",
         title: "Descarga finalizada",
         text: `Se descargaron los lotes ${from} al ${to}.`,
@@ -750,7 +792,18 @@ const InformesProyecto = () => {
       const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
       const totalLotes = to - from + 1;
 
-      const confirm = await Swal.fire({
+      const maxLotesUnSoloWord = wordConfig.incluirFotos ? 20 : 80;
+      if (totalLotes > maxLotesUnSoloWord) {
+        Toast.fire({
+          icon: "error",
+          title: wordConfig.incluirFotos
+            ? `Con fotos, el máximo para un solo Word es ${maxLotesUnSoloWord} lotes. Usá "Rango en varios Word".`
+            : `El máximo para un solo Word es ${maxLotesUnSoloWord} lotes. Reduce el rango o usá "Rango en varios Word".`,
+        });
+        return;
+      }
+
+      const confirm = await askDownloadConfirmOutsideModal({
         icon: "question",
         title: "¿Descargar rango en un solo Word?",
         html: `
@@ -761,6 +814,8 @@ const InformesProyecto = () => {
             <div><b>Rango elegido:</b> ${from} a ${to}</div>
             <div><b>Cantidad de lotes unidos:</b> ${totalLotes}</div>
             <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+            <div><b>Orden:</b> ${wordConfig.orderBy} / ${wordConfig.orderDir}</div>
+            <div><b>Límite permitido:</b> ${maxLotesUnSoloWord} lotes</div>
           </div>
         `,
         showCancelButton: true,
@@ -957,7 +1012,7 @@ const InformesProyecto = () => {
       return;
     }
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: `¿Eliminar informe #${idInforme}?`,
       text: "Esta acción no se puede deshacer.",
@@ -984,7 +1039,7 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "success", title: "Informe eliminado correctamente." });
     } catch (err) {
       console.error("Error eliminando informe:", err);
-      Toast.fire({ icon: "error", title: "No se pudo eliminar el informe." });
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar el informe." });
     }
   };
 
@@ -993,13 +1048,15 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
       return;
     }
+
     if (!idPlantillaFiltro) {
       Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
       return;
     }
+
     if (selectedIds.length === 0) return;
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: `¿Eliminar ${selectedIds.length} informes?`,
       text: `Plantilla #${idPlantillaFiltro}. Esta acción no se puede deshacer.`,
@@ -1013,11 +1070,15 @@ const InformesProyecto = () => {
 
     try {
       setBulkDeleting(true);
+
       const resp = await fetch(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
         {
           method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ ids: selectedIds }),
         }
       );
@@ -1029,10 +1090,17 @@ const InformesProyecto = () => {
 
       setSelectedIds([]);
       await cargarInformes();
-      Toast.fire({ icon: "success", title: "Informes eliminados correctamente." });
+
+      Toast.fire({
+        icon: "success",
+        title: "Informes eliminados correctamente.",
+      });
     } catch (err) {
       console.error("Error eliminando informes en masa:", err);
-      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo eliminar los informes.",
+      });
     } finally {
       setBulkDeleting(false);
     }
@@ -1043,6 +1111,7 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
       return;
     }
+
     if (!idPlantillaFiltro) {
       Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
       return;
@@ -1050,10 +1119,12 @@ const InformesProyecto = () => {
 
     const total = informes?.length || 0;
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: "¿Eliminar TODOS los informes de la plantilla?",
-      text: `Plantilla #${idPlantillaFiltro}. Esta acción es irreversible${total ? ` y eliminará al menos ${total} registros cargados.` : "."}`,
+      text: `Plantilla #${idPlantillaFiltro}. Esta acción es irreversible${
+        total ? ` y eliminará al menos ${total} registros cargados.` : "."
+      }`,
       showCancelButton: true,
       confirmButtonText: "Sí, eliminar todo",
       cancelButtonText: "Cancelar",
@@ -1064,29 +1135,38 @@ const InformesProyecto = () => {
 
     try {
       setBulkDeleting(true);
+
       const resp = await fetch(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
         {
           method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ all: true }),
         }
       );
 
       const data = await resp.json().catch(() => ({}));
+
       if (!resp.ok) {
         throw new Error(data.error || `Error ${resp.status}`);
       }
 
       setSelectedIds([]);
       await cargarInformes();
+
       Toast.fire({
         icon: "success",
         title: `Informes eliminados correctamente (${data.deleted_count || 0}).`,
       });
     } catch (err) {
       console.error("Error eliminando todos los informes:", err);
-      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo eliminar los informes.",
+      });
     } finally {
       setBulkDeleting(false);
     }
@@ -1431,6 +1511,8 @@ const InformesProyecto = () => {
         }}
         centered
         size="lg"
+        enforceFocus={false}
+        restoreFocus={false}
       >
         <Modal.Header closeButton>
           <Modal.Title>{modalTitle}</Modal.Title>
@@ -1498,9 +1580,13 @@ const InformesProyecto = () => {
 
       <Modal
         show={showWordConfig}
-        onHide={() => setShowWordConfig(false)}
+        onHide={() => {
+          if (!reopenWordConfigAfterSwalCancel) setShowWordConfig(false);
+        }}
         centered
         size="lg"
+        enforceFocus={false}
+        restoreFocus={false}
       >
         <Modal.Header closeButton>
           <Modal.Title>
@@ -1609,12 +1695,53 @@ const InformesProyecto = () => {
               </Form.Group>
             </div>
 
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Ordenar por</Form.Label>
+                <Form.Select
+                  value={wordConfig.orderBy}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      orderBy: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="fecha">Fecha de creación</option>
+                  <option value="progresiva">Progresiva</option>
+                  <option value="tramo">Tramo</option>
+                </Form.Select>
+                <div className="form-text">
+                  Si existe ese campo en los informes, se usará para ordenar.
+                </div>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Dirección</Form.Label>
+                <Form.Select
+                  value={wordConfig.orderDir}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      orderDir: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="asc">Ascendente</option>
+                  <option value="desc">Descendente</option>
+                </Form.Select>
+              </Form.Group>
+            </div>
+
             <div className="col-12">
               <Alert variant="info" className="mb-0">
                 <div><strong>Total registros:</strong> {totalRegistrosExport}</div>
                 <div><strong>Total páginas:</strong> {totalPaginasWord}</div>
                 <div><strong>Rango actual:</strong> {rangoDesdeWord} - {rangoHastaWord}</div>
                 <div><strong>Página actual:</strong> {wordConfig.page} de {totalPaginasWord}</div>
+                <div><strong>Orden:</strong> {wordConfig.orderBy} / {wordConfig.orderDir}</div>
               </Alert>
             </div>
 
@@ -1681,6 +1808,7 @@ const InformesProyecto = () => {
               <Alert variant="warning" className="mb-0">
                 <div><strong>Rango de descarga:</strong> {wordRange.from} a {wordRange.to}</div>
                 <div><strong>Cantidad de lotes:</strong> {Math.max(0, Number(wordRange.to) - Number(wordRange.from) + 1)}</div>
+                <div><strong>Límite para un solo Word:</strong> {wordConfig.incluirFotos ? 20 : 80} lotes</div>
               </Alert>
             </div>
 

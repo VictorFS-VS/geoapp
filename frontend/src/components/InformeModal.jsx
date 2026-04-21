@@ -4,6 +4,7 @@ import { Modal, Button, Row, Col, Form, Spinner, Alert, Badge } from "react-boot
 import Swal from "sweetalert2";
 
 import GoogleMapaCoordenadas from "./GoogleMapaCoordenadas";
+import ScoringResultPanel from "@/modules/diagnostico/ScoringResultPanel";
 
 const ENV_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const HOST_BASE = ENV_BASE.replace(/\/api\/?$/i, "");
@@ -413,6 +414,7 @@ export default function InformeModal({
   const [saving, setSaving] = useState(false);
 
   const [data, setData] = useState(null);
+  const [idRegistro, setIdRegistro] = useState(null);
   const [titulo, setTitulo] = useState("");
 
   const [respuestas, setRespuestas] = useState({});
@@ -441,6 +443,9 @@ export default function InformeModal({
         const applyPayload = (p0) => {
           setData(p0);
           setTitulo(p0?.informe?.titulo || "");
+          
+          const regId = p0?.respuestas?.[0]?.id_registro || p0?.informe?.id_registro;
+          if (regId) setIdRegistro(Number(regId));
 
           const preguntasById = new Map(
             (p0?.preguntas || []).map((p) => [Number(p.id_pregunta), p])
@@ -1258,6 +1263,12 @@ export default function InformeModal({
         ) : (
           <>
             {headerInfo}
+
+            {idRegistro && (
+              <div className="mt-4">
+                <ScoringResultPanel idRegistro={idRegistro} canEditOverride={!readOnly} />
+              </div>
+            )}
 
             {!readOnly && (
               <div className="mb-3 mt-3">
