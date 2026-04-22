@@ -904,7 +904,7 @@ const ProjectHomePage = () => {
                       color="#3b82f6"
                       icon="Socioambiental"
                       onClick={() => setActiveTab("informes")}
-                      ctaUrl={`/proyectos/${effectiveProjectId}/informes`}
+                      ctaUrl={`/dashboardinformes?id_proyecto=${effectiveProjectId}`}
                       ctaLabel="Ver Gestión"
                       lastActivityLabel="Último informe"
                     />
