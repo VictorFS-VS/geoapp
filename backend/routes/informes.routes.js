@@ -277,6 +277,13 @@ router.post(
   informesCtrl.bulkDeleteInformesByProyectoPlantilla
 );
 
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete-fotos",
+  verifyToken,
+  requirePerm("informes.delete"),
+  informesCtrl.bulkDeleteFotosByProyectoPlantilla
+);
+
 /* =========================================================
    IMPORTADOR MASIVO (ZIP)
    ========================================================= */
