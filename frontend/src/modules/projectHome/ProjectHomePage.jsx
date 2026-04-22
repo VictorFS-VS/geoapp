@@ -466,12 +466,58 @@ const ProjectHomePage = () => {
   const informeStats = data?.general || {};
   const expedienteStats = data?.expedientes || {};
   const quejasStats = data?.quejas || {};
+  const catastroSummary = data?.catastro_summary || null;
   const activity = data?.activity || {};
   const plantillas = Array.isArray(data?.plantillas) ? data.plantillas : [];
   const fieldSummaries = Array.isArray(data?.field_summaries) ? data.field_summaries : [];
   const temporalSources = Array.isArray(data?.temporal_sources) ? data.temporal_sources : [];
   const focus = data?.focus || null;
   const plantillaFocus = data?.informes?.plantilla_focus || null;
+
+  const catastroHomeCard = useMemo(() => {
+    if (!catastroSummary) return null;
+
+    const hero = catastroSummary.hero || {};
+    const totalRelevados = Number(hero.total_relevados || 0);
+    const totalTarget = Number(hero.total_target || 0);
+    const coberturaPctRaw = Number(hero.cobertura_pct);
+    const coberturaPct = Number.isFinite(coberturaPctRaw)
+      ? coberturaPctRaw
+      : (totalTarget > 0 ? (totalRelevados / totalTarget) * 100 : 0);
+    const pendientesRaw = Number(hero.pendientes);
+    const pendientes = Number.isFinite(pendientesRaw)
+      ? pendientesRaw
+      : Math.max(0, totalTarget - totalRelevados);
+
+    const isHealthySummary =
+      catastroSummary._error !== true &&
+      catastroSummary._fallback !== true &&
+      catastroSummary._forced !== true;
+
+    if (!isHealthySummary) {
+      return {
+        totalGlobal: null,
+        focoLabel: "Cobertura",
+        foco: null,
+        desglose: [],
+        lastActivity: null,
+      };
+    }
+
+    return {
+      totalGlobal: totalRelevados,
+      focoLabel: "Cobertura (%)",
+      foco: Number(coberturaPct.toFixed(1)),
+      desglose: [
+        {
+          label: "Pendientes",
+          valor: pendientes,
+          pct: totalTarget > 0 ? Math.round((pendientes / totalTarget) * 100) : 0,
+        },
+      ],
+      lastActivity: hero.last_activity || null,
+    };
+  }, [catastroSummary]);
 
   const visibleHeaderCards = useMemo(() => {
     if (!data) return [];
@@ -677,7 +723,8 @@ const ProjectHomePage = () => {
     const catastro = data?.catastro_summary;
     if (!catastro) return null;
 
-    const { hero, calidad, operativa, economico, stats_estados, stats_dbi } = catastro;
+    const { hero, operativa, economico, stats_estados, stats_dbi } = catastro;
+    const lastActivityText = timeAgo(hero?.last_activity);
 
     return (
       <div className="ph-catastro-section">
@@ -707,9 +754,7 @@ const ProjectHomePage = () => {
           <div className="ph-catastro-footer-metrics-line">
             <span>Ubicación Geo: <strong>{hero.geolocalizacion_pct?.toFixed(1)}%</strong></span>
             <span className="ph-metric-sep">|</span>
-            {calidad && (
-              <span>Calidad Cartográfica: <strong>{calidad.precision_cartografica_pct.toFixed(1)}%</strong></span>
-            )}
+            <span>Última actividad: <strong>{lastActivityText}</strong></span>
           </div>
 
           {economico && (
@@ -865,14 +910,10 @@ const ProjectHomePage = () => {
                     />
                   )}
 
-                  {canSeeExpedientes && executiveData.catastro && (
+                  {canSeeExpedientes && catastroHomeCard && (
                     <ExecutiveHealthCard 
                       title="Catastro y Expedientes"
-                      data={{
-                        ...executiveData.catastro,
-                        focoLabel: executiveData.catastro.focoLabel || "Validados",
-                        foco: executiveData.catastro.foco
-                      }}
+                      data={catastroHomeCard}
                       color="#22c55e"
                       icon="Expedientes"
                       onClick={() => setActiveTab("expedientes")}

@@ -192,6 +192,7 @@ const InformesProyecto = () => {
   const [error, setError] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeletingFotos, setBulkDeletingFotos] = useState(false);
 
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -1306,6 +1307,78 @@ const InformesProyecto = () => {
     }
   };
 
+  const eliminarTodasLasFotosPlantilla = async () => {
+    if (!puedeEliminarAdmin) {
+      Toast.fire({ icon: "error", title: "No tiene permisos para eliminar fotos." });
+      return;
+    }
+
+    if (!idPlantillaFiltro) {
+      Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar fotos en masa." });
+      return;
+    }
+
+    const total = informes?.length || 0;
+
+    const result = await fireSwalTop({
+      icon: "warning",
+      title: "¿Eliminar TODAS las fotos de la plantilla?",
+      html: `
+        <div style="text-align:left">
+          <div><b>Proyecto:</b> #${idProyecto}</div>
+          <div><b>Plantilla:</b> #${idPlantillaFiltro}</div>
+          <div><b>Informes visibles:</b> ${total}</div>
+          <br/>
+          <div>Se eliminarán solamente las imágenes/fotos asociadas a los informes de esta plantilla.</div>
+          <div>Los informes y sus respuestas seguirán existiendo.</div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Sí, eliminar fotos",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#d33",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setBulkDeletingFotos(true);
+
+      const resp = await fetch(
+        `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete-fotos`,
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok) {
+        throw new Error(data.error || `Error ${resp.status}`);
+      }
+
+      setSelectedIds([]);
+      await cargarInformes();
+
+      Toast.fire({
+        icon: "success",
+        title: `Fotos eliminadas correctamente (${data.deleted_count || 0}).`,
+      });
+    } catch (err) {
+      console.error("Error eliminando fotos en masa:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudieron eliminar las fotos.",
+      });
+    } finally {
+      setBulkDeletingFotos(false);
+    }
+  };
+
   const anyDownloading =
     downloading.pdf ||
     downloading.docx ||
@@ -1387,25 +1460,36 @@ const InformesProyecto = () => {
 
         <div className="d-flex gap-2 flex-wrap justify-content-end">
           {puedeEliminarAdmin ? (
-            <div className="d-flex align-items-center gap-2">
+            <div className="d-flex align-items-center gap-2 flex-wrap">
               <Badge bg={selectedIds.length ? "danger" : "secondary"}>
                 Seleccionados: {selectedIds.length}
               </Badge>
+
               <Button
                 variant="danger"
-                disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting}
+                disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting || bulkDeletingFotos}
                 onClick={eliminarSeleccionados}
                 title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar seleccionados"}
               >
                 {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
               </Button>
+
               <Button
                 variant="outline-danger"
-                disabled={!idPlantillaFiltro || bulkDeleting}
+                disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
                 onClick={eliminarTodosPlantilla}
                 title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
               >
                 {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
+              </Button>
+
+              <Button
+                variant="outline-warning"
+                disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
+                onClick={eliminarTodasLasFotosPlantilla}
+                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todas las imágenes de la plantilla"}
+              >
+                {bulkDeletingFotos ? "Eliminando fotos..." : "Eliminar fotos (plantilla)"}
               </Button>
             </div>
           ) : null}

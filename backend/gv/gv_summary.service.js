@@ -40,10 +40,18 @@ async function getCatastroSummary(id_proyecto) {
       [id_proyecto]
     );
 
+    const { rows: lastActivityRows } = await pool.query(
+      `SELECT MAX(COALESCE(updated_at, created_at, fecha_relevamiento::timestamp)) AS last_activity
+       FROM ema.expedientes
+       WHERE id_proyecto = $1`,
+      [id_proyecto]
+    );
+
     const relevados = expedientes.length;
     const target_total = dbTarget || relevados;
     const pendientes_total = Math.max(0, target_total - relevados);
     const con_poligono = expedientes.filter(e => e.has_geom === 1).length;
+    const last_activity = lastActivityRows?.[0]?.last_activity || null;
 
     // Métricas Hero
     const cobertura_pct = target_total > 0 ? (relevados / target_total) * 100 : 0;
@@ -162,6 +170,7 @@ async function getCatastroSummary(id_proyecto) {
         geolocalizacion_pct,
         total_relevados,
         total_target,
+        last_activity,
         insight
       },
       stats_estados: {
@@ -188,7 +197,7 @@ async function getCatastroSummary(id_proyecto) {
       console.warn("[catastro_summary] resultado vacío o inválido");
       return {
         has_access: true,
-        hero: { pendientes: 0, cobertura_pct: 0, geolocalizacion_pct: 0, insight: "Datos no disponibles" },
+        hero: { pendientes: 0, cobertura_pct: 0, geolocalizacion_pct: 0, last_activity: null, insight: "Datos no disponibles" },
         calidad: null,
         operativa: null,
         economico: null,
@@ -206,6 +215,7 @@ async function getCatastroSummary(id_proyecto) {
         pendientes: 0,
         cobertura_pct: 0,
         geolocalizacion_pct: 0,
+        last_activity: null,
         insight: "Error en carga de datos"
       },
       calidad: null,

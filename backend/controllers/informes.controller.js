@@ -3675,6 +3675,110 @@ async function deletePregunta(req, res) {
     }
   }
 
+  /* ---------------------------------------------------------
+   POST /api/informes/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete-fotos
+   Borra SOLO las fotos de todos los informes de esa plantilla/proyecto
+   (admin)
+  --------------------------------------------------------- */
+  async function bulkDeleteFotosByProyectoPlantilla(req, res) {
+    const idProyecto = Number(req.params.idProyecto);
+    const idPlantilla = Number(req.params.idPlantilla);
+
+    if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+      return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+    }
+
+    if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+      return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
+    }
+
+    const adminRoleId = Number(req.user?.tipo_usuario ?? req.user?.group_id);
+    if (adminRoleId !== 1) {
+      return res.status(403).json({ ok: false, error: "Solo admin puede borrar fotos en masa" });
+    }
+
+    const client = await pool.connect();
+    let fotosRows = [];
+
+    try {
+      await client.query("BEGIN");
+
+      const informesRes = await client.query(
+        `
+        SELECT id_informe
+        FROM ema.informe
+        WHERE id_proyecto = $1
+          AND id_plantilla = $2
+        FOR UPDATE
+        `,
+        [idProyecto, idPlantilla]
+      );
+
+      const idsInforme = informesRes.rows
+        .map((r) => Number(r.id_informe))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      if (!idsInforme.length) {
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          deleted_count: 0,
+          informes_count: 0,
+          cleanup: { total: 0, deleted: 0, skipped: 0, failed: 0 },
+        });
+      }
+
+      const fotosRes = await client.query(
+        `
+        SELECT id_foto, id_informe, id_pregunta, ruta_archivo
+        FROM ema.informe_foto
+        WHERE id_informe = ANY($1::bigint[])
+        ORDER BY id_informe, id_pregunta, orden, id_foto
+        `,
+        [idsInforme]
+      );
+
+      fotosRows = fotosRes.rows || [];
+
+      const delRes = await client.query(
+        `
+        DELETE FROM ema.informe_foto
+        WHERE id_informe = ANY($1::bigint[])
+        `,
+        [idsInforme]
+      );
+
+      await client.query("COMMIT");
+
+      const cleanup = await cleanupInformeFiles(fotosRows);
+
+      return res.json({
+        ok: true,
+        deleted_count: delRes.rowCount || 0,
+        informes_count: idsInforme.length,
+        cleanup: {
+          total: cleanup.total,
+          deleted: cleanup.deleted,
+          skipped: cleanup.skipped,
+          failed: cleanup.failed,
+        },
+      });
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+
+      console.error("bulkDeleteFotosByProyectoPlantilla error:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err?.detail || err?.message || "Error al borrar fotos en masa",
+      });
+    } finally {
+      client.release();
+    }
+  }
+
   /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SHARE LINKS (PRIVADO) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   function buildPublicUrl(req, token) {
     const baseRaw = process.env.PUBLIC_FORM_BASE_URL || "";
@@ -7923,6 +8027,7 @@ module.exports = {
   deleteInformeFoto,
   deleteInforme,
   bulkDeleteInformesByProyectoPlantilla,
+  bulkDeleteFotosByProyectoPlantilla,
 
   // Proyecto helpers
   listPlantillasByProyecto,
