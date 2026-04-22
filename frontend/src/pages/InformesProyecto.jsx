@@ -1,4 +1,3 @@
-// src/pages/InformesProyecto.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstrap";
@@ -233,6 +232,7 @@ const InformesProyecto = () => {
     secciones: [],
     orderBy: "fecha",
     orderDir: "asc",
+    orderPreguntaId: "",
   });
 
   const [wordRange, setWordRange] = useState({
@@ -260,6 +260,7 @@ const InformesProyecto = () => {
             secciones: [],
             page: 1,
             limit: 10,
+            orderPreguntaId: "",
           }));
         })
         .catch((err) => {
@@ -276,6 +277,7 @@ const InformesProyecto = () => {
         secciones: [],
         page: 1,
         limit: 10,
+        orderPreguntaId: "",
       }));
     }
   }, [idPlantillaFiltro]);
@@ -447,13 +449,18 @@ const InformesProyecto = () => {
     setWordConfig((prev) => {
       const preguntasPrev = Array.isArray(prev.preguntas) ? prev.preguntas : [];
       const seccionesPrev = Array.isArray(prev.secciones) ? prev.secciones : [];
+      const orderPreguntaActual = Number(prev.orderPreguntaId || 0);
 
       const nuevasPreguntas = preguntasPrev.filter((id) => idsPreguntasValidas.has(Number(id)));
       const nuevasSecciones = seccionesPrev.filter((id) => idsSeccionesValidas.has(Number(id)));
 
+      const orderPreguntaSigueValida =
+        !orderPreguntaActual || idsPreguntasValidas.has(orderPreguntaActual);
+
       if (
         nuevasPreguntas.length === preguntasPrev.length &&
-        nuevasSecciones.length === seccionesPrev.length
+        nuevasSecciones.length === seccionesPrev.length &&
+        orderPreguntaSigueValida
       ) {
         return prev;
       }
@@ -462,6 +469,7 @@ const InformesProyecto = () => {
         ...prev,
         preguntas: nuevasPreguntas,
         secciones: nuevasSecciones,
+        orderPreguntaId: orderPreguntaSigueValida ? prev.orderPreguntaId : "",
       };
     });
   }, [preguntasFiltradasPorSeccion, seccionesDisponibles]);
@@ -575,6 +583,10 @@ const InformesProyecto = () => {
     params.set("orderBy", String(wordConfig.orderBy || "fecha"));
     params.set("orderDir", String(wordConfig.orderDir || "asc"));
 
+    if (wordConfig.orderBy === "pregunta" && wordConfig.orderPreguntaId) {
+      params.set("orderPreguntaId", String(wordConfig.orderPreguntaId));
+    }
+
     if (page != null) {
       params.set("page", String(page));
     }
@@ -679,6 +691,11 @@ const InformesProyecto = () => {
     const key = modoFinal === "tabla" ? "docxTabla" : "docx";
 
     try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
       setDownloading((s) => ({ ...s, [key]: true }));
 
       const params = buildWordParams(modoFinal, Math.max(1, Number(wordConfig.page || 1)));
@@ -711,6 +728,11 @@ const InformesProyecto = () => {
     const key = modoFinal === "tabla" ? "docxTablaRange" : "docxRange";
 
     try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
       if (!totalRegistrosExport || totalPaginasWord <= 0) {
         Toast.fire({ icon: "error", title: "No hay registros para exportar." });
         return;
@@ -719,6 +741,11 @@ const InformesProyecto = () => {
       const from = Math.min(Math.max(1, Number(wordRange.from || 1)), totalPaginasWord);
       const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
       const totalLotes = to - from + 1;
+
+      const labelOrden =
+        wordConfig.orderBy === "pregunta"
+          ? `pregunta #${wordConfig.orderPreguntaId} / ${wordConfig.orderDir}`
+          : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
 
       const confirm = await askDownloadConfirmOutsideModal({
         icon: "question",
@@ -731,7 +758,7 @@ const InformesProyecto = () => {
             <div><b>Rango elegido:</b> ${from} a ${to}</div>
             <div><b>Cantidad de lotes:</b> ${totalLotes}</div>
             <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
-            <div><b>Orden:</b> ${wordConfig.orderBy} / ${wordConfig.orderDir}</div>
+            <div><b>Orden:</b> ${labelOrden}</div>
           </div>
         `,
         showCancelButton: true,
@@ -783,6 +810,11 @@ const InformesProyecto = () => {
     const key = modoFinal === "tabla" ? "docxTablaSingleRange" : "docxSingleRange";
 
     try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
       if (!totalRegistrosExport || totalPaginasWord <= 0) {
         Toast.fire({ icon: "error", title: "No hay registros para exportar." });
         return;
@@ -803,6 +835,11 @@ const InformesProyecto = () => {
         return;
       }
 
+      const labelOrden =
+        wordConfig.orderBy === "pregunta"
+          ? `pregunta #${wordConfig.orderPreguntaId} / ${wordConfig.orderDir}`
+          : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
+
       const confirm = await askDownloadConfirmOutsideModal({
         icon: "question",
         title: "¿Descargar rango en un solo Word?",
@@ -814,7 +851,7 @@ const InformesProyecto = () => {
             <div><b>Rango elegido:</b> ${from} a ${to}</div>
             <div><b>Cantidad de lotes unidos:</b> ${totalLotes}</div>
             <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
-            <div><b>Orden:</b> ${wordConfig.orderBy} / ${wordConfig.orderDir}</div>
+            <div><b>Orden:</b> ${labelOrden}</div>
             <div><b>Límite permitido:</b> ${maxLotesUnSoloWord} lotes</div>
           </div>
         `,
@@ -1225,6 +1262,11 @@ const InformesProyecto = () => {
   const isDownloadingRange = downloading[wordConfig.modo === "tabla" ? "docxTablaRange" : "docxRange"];
   const isDownloadingSingleRange =
     downloading[wordConfig.modo === "tabla" ? "docxTablaSingleRange" : "docxSingleRange"];
+
+  const labelOrdenActual =
+    wordConfig.orderBy === "pregunta"
+      ? `pregunta #${wordConfig.orderPreguntaId || "-"} / ${wordConfig.orderDir}`
+      : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
 
   return (
     <div className="container mt-3">
@@ -1695,7 +1737,7 @@ const InformesProyecto = () => {
               </Form.Group>
             </div>
 
-            <div className="col-md-6">
+            <div className="col-md-4">
               <Form.Group>
                 <Form.Label>Ordenar por</Form.Label>
                 <Form.Select
@@ -1704,20 +1746,18 @@ const InformesProyecto = () => {
                     setWordConfig((prev) => ({
                       ...prev,
                       orderBy: e.target.value,
+                      orderPreguntaId: e.target.value === "pregunta" ? prev.orderPreguntaId : "",
                     }))
                   }
                 >
                   <option value="fecha">Fecha de creación</option>
-                  <option value="progresiva">Progresiva</option>
-                  <option value="tramo">Tramo</option>
+                  <option value="id">ID informe</option>
+                  <option value="pregunta">Respuesta de una pregunta</option>
                 </Form.Select>
-                <div className="form-text">
-                  Si existe ese campo en los informes, se usará para ordenar.
-                </div>
               </Form.Group>
             </div>
 
-            <div className="col-md-6">
+            <div className="col-md-4">
               <Form.Group>
                 <Form.Label>Dirección</Form.Label>
                 <Form.Select
@@ -1735,13 +1775,37 @@ const InformesProyecto = () => {
               </Form.Group>
             </div>
 
+            <div className="col-md-4">
+              {wordConfig.orderBy === "pregunta" && (
+                <Form.Group>
+                  <Form.Label>Pregunta para ordenar</Form.Label>
+                  <Form.Select
+                    value={wordConfig.orderPreguntaId || ""}
+                    onChange={(e) =>
+                      setWordConfig((prev) => ({
+                        ...prev,
+                        orderPreguntaId: e.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Seleccione una pregunta</option>
+                    {preguntasFiltradasPorSeccion.map((preg) => (
+                      <option key={preg.id_pregunta} value={preg.id_pregunta}>
+                        {preg.etiqueta || `Pregunta ${preg.id_pregunta}`}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Form.Group>
+              )}
+            </div>
+
             <div className="col-12">
               <Alert variant="info" className="mb-0">
                 <div><strong>Total registros:</strong> {totalRegistrosExport}</div>
                 <div><strong>Total páginas:</strong> {totalPaginasWord}</div>
                 <div><strong>Rango actual:</strong> {rangoDesdeWord} - {rangoHastaWord}</div>
                 <div><strong>Página actual:</strong> {wordConfig.page} de {totalPaginasWord}</div>
-                <div><strong>Orden:</strong> {wordConfig.orderBy} / {wordConfig.orderDir}</div>
+                <div><strong>Orden:</strong> {labelOrdenActual}</div>
               </Alert>
             </div>
 
@@ -1847,10 +1911,18 @@ const InformesProyecto = () => {
                               })
                               .map((p) => Number(p.id_pregunta));
 
+                            const nuevaOrderPreguntaId =
+                              prev.orderBy === "pregunta" &&
+                              prev.orderPreguntaId &&
+                              !preguntasValidas.includes(Number(prev.orderPreguntaId))
+                                ? ""
+                                : prev.orderPreguntaId;
+
                             return {
                               ...prev,
                               secciones: nuevasSecciones,
                               preguntas: prev.preguntas.filter((x) => preguntasValidas.includes(Number(x))),
+                              orderPreguntaId: nuevaOrderPreguntaId,
                             };
                           });
                         }}
@@ -1884,12 +1956,25 @@ const InformesProyecto = () => {
                         checked={selectedPreguntasSet.has(Number(preg.id_pregunta))}
                         onChange={(e) => {
                           const id = Number(preg.id_pregunta);
-                          setWordConfig((prev) => ({
-                            ...prev,
-                            preguntas: e.target.checked
+                          setWordConfig((prev) => {
+                            const nuevasPreguntas = e.target.checked
                               ? [...prev.preguntas, id]
-                              : prev.preguntas.filter((x) => x !== id),
-                          }));
+                              : prev.preguntas.filter((x) => x !== id);
+
+                            const nuevaOrderPreguntaId =
+                              prev.orderBy === "pregunta" &&
+                              prev.orderPreguntaId &&
+                              Number(prev.orderPreguntaId) === id &&
+                              !e.target.checked
+                                ? ""
+                                : prev.orderPreguntaId;
+
+                            return {
+                              ...prev,
+                              preguntas: nuevasPreguntas,
+                              orderPreguntaId: nuevaOrderPreguntaId,
+                            };
+                          });
                         }}
                       />
                     ))

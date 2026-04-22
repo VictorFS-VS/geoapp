@@ -4856,14 +4856,35 @@ async function generarPdfProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
-  if (!idProyecto) return res.status(400).send("idProyecto invÃ¡lido");
+  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
+  const orderDir = String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
+
+  const modo = String(req.query.modo || "normal").toLowerCase();
+  const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
+
+  const preguntasIds = String(req.query.preguntas || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const seccionesIds = String(req.query.secciones || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const incluirFotos = String(req.query.incluirFotos ?? "1") !== "0";
+  const maxFotos = Math.max(0, Number(req.query.maxFotos || 2));
+
+  if (!idProyecto) return res.status(400).send("idProyecto inválido");
 
   try {
-    // âœ… proyecto label (ema.proyectos PK = gid)
     const proyQ = await pool.query(
-      `SELECT gid, nombre, codigo
-       FROM ema.proyectos
-       WHERE gid = $1`,
+      `
+      SELECT gid, nombre, codigo
+      FROM ema.proyectos
+      WHERE gid = $1
+      `,
       [idProyecto]
     );
 
@@ -4872,91 +4893,309 @@ async function generarPdfProyecto(req, res) {
       ? `${proy.codigo ? proy.codigo + " - " : ""}${proy.nombre || ""}`.trim()
       : String(idProyecto);
 
-    const params = [idProyecto];
-    let whereExtra = "";
-    if (idPlantilla) {
-      params.push(idPlantilla);
-      whereExtra = ` AND i.id_plantilla = $${params.length} `;
+    let informes = [];
+
+    if (orderBy === "pregunta" && orderPreguntaId > 0) {
+      const baseParams = [idProyecto];
+      let baseWhere = "";
+
+      if (idPlantilla) {
+        baseParams.push(idPlantilla);
+        baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+      }
+
+      baseParams.push(orderPreguntaId);
+      const idxPregunta = baseParams.length;
+      const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+      const q = await pool.query(
+        `
+        SELECT
+          i.*,
+          p.nombre AS nombre_plantilla,
+          COALESCE(
+            NULLIF(TRIM(r.valor_texto), ''),
+            NULLIF(TRIM(r.valor_json::text), ''),
+            CASE
+              WHEN r.valor_bool IS TRUE THEN 'SI'
+              WHEN r.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) AS valor_orden
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p
+          ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_respuesta r
+          ON r.id_informe = i.id_informe
+         AND r.id_pregunta = $${idxPregunta}
+        WHERE i.id_proyecto = $1
+        ${baseWhere}
+        ORDER BY
+          COALESCE(
+            NULLIF(TRIM(r.valor_texto), ''),
+            NULLIF(TRIM(r.valor_json::text), ''),
+            CASE
+              WHEN r.valor_bool IS TRUE THEN 'SI'
+              WHEN r.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) ${orderSql},
+          i.id_informe ${orderSql}
+        `,
+        baseParams
+      );
+
+      informes = q.rows || [];
+    } else {
+      const params = [idProyecto];
+      let whereExtra = "";
+
+      if (idPlantilla) {
+        params.push(idPlantilla);
+        whereExtra = ` AND i.id_plantilla = $${params.length} `;
+      }
+
+      let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+      if (orderBy === "fecha") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.fecha_creado DESC, i.id_informe DESC"
+            : "i.fecha_creado ASC, i.id_informe ASC";
+      } else if (orderBy === "id") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.id_informe DESC"
+            : "i.id_informe ASC";
+      }
+
+      const q = await pool.query(
+        `
+        SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_proyecto = $1
+        ${whereExtra}
+        ORDER BY ${orderClause}
+        `,
+        params
+      );
+
+      informes = q.rows || [];
     }
 
-    // 1) lista de informes
-    const infQ = await pool.query(
-      `SELECT i.*, p.nombre AS nombre_plantilla
-       FROM ema.informe i
-       JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-       WHERE i.id_proyecto = $1
-       ${whereExtra}
-       ORDER BY i.fecha_creado DESC, i.id_informe DESC`,
-      params
-    );
-
-    const informes = infQ.rows || [];
-    if (!informes.length) return res.status(404).send("No hay informes para exportar.");
+    if (!informes.length) {
+      return res.status(404).send("No hay informes para exportar.");
+    }
 
     const uploadsRoot = path.join(__dirname, "..", "uploads");
-
-    // 2) para cada informe...
     const informesBlocks = [];
 
+    function escapeHtml(v) {
+      return String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatRespuesta(r) {
+      let val = r?.valor_texto;
+
+      if (r?.valor_bool !== null && r?.valor_bool !== undefined) {
+        val = r.valor_bool ? "Sí" : "No";
+      } else if (r?.valor_json !== null && r?.valor_json !== undefined) {
+        try {
+          const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
+
+          if (Array.isArray(parsed)) {
+            val = parsed.join(", ");
+          } else if (parsed && typeof parsed === "object") {
+            if ("lat" in parsed && "lng" in parsed) {
+              val = `${parsed.lat}, ${parsed.lng}`;
+            } else {
+              val = JSON.stringify(parsed);
+            }
+          } else {
+            val = String(parsed);
+          }
+        } catch {
+          val = String(r.valor_json);
+        }
+      }
+
+      return val || "-";
+    }
+
+    function buildRespuestasMapLocal(respuestas) {
+      const map = {};
+      for (const r of respuestas) {
+        map[Number(r.id_pregunta)] = formatRespuesta(r);
+      }
+      return map;
+    }
+
+    function renderTablaUnicaHTML({
+      informeRows,
+      preguntasTodas,
+      respuestasMapPorInforme,
+      fotosPorInformePorPregunta,
+    }) {
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
+      const headers = [
+        `<th style="white-space:nowrap;">ID</th>`,
+        `<th style="white-space:nowrap;">Fecha</th>`,
+        ...preguntasOrdenadas.map(
+          (p) => `<th>${escapeHtml(p.etiqueta || "")}</th>`
+        ),
+      ].join("");
+
+      const rows = informeRows
+        .map((inf) => {
+          const cols = [
+            `<td>${escapeHtml(inf.id_informe)}</td>`,
+            `<td style="white-space:nowrap;">${escapeHtml(_formatFechaPY(inf.fecha_creado))}</td>`,
+          ];
+
+          for (const p of preguntasOrdenadas) {
+            const val =
+              respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
+
+            let html = `<div>${escapeHtml(val)}</div>`;
+
+            if (incluirFotos) {
+              const fotosListOriginal =
+                fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
+              const fotosList = fotosListOriginal.slice(0, maxFotos);
+
+              for (const f of fotosList) {
+                if (!f?.dataUri) continue;
+
+                html += `
+                  <div style="margin-top:6px;">
+                    <img src="${f.dataUri}" style="max-width:120px; max-height:80px; display:block;" />
+                    ${
+                      f.descripcion
+                        ? `<div style="font-size:10px;color:#666;margin-top:2px;">${escapeHtml(f.descripcion)}</div>`
+                        : ""
+                    }
+                  </div>
+                `;
+              }
+            }
+
+            cols.push(`<td>${html}</td>`);
+          }
+
+          return `<tr>${cols.join("")}</tr>`;
+        })
+        .join("");
+
+      return `
+        <table class="tabla-general">
+          <thead>
+            <tr>${headers}</tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
     for (const informe of informes) {
+      const seccParams = [informe.id_plantilla];
+      let seccWhereExtra = "";
+
+      if (seccionesIds.length) {
+        seccParams.push(seccionesIds);
+        seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+      }
+
       const { rows: secciones } = await pool.query(
-        `SELECT * FROM ema.informe_seccion
-         WHERE id_plantilla = $1
-         ORDER BY orden`,
-        [informe.id_plantilla]
+        `
+        SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ${seccWhereExtra}
+        ORDER BY orden
+        `,
+        seccParams
       );
+
+      if (!secciones.length) continue;
+
+      const seccionesFiltradasIds = secciones
+        .map((s) => Number(s.id_seccion))
+        .filter(Boolean);
+
+      const pregParams = [informe.id_plantilla];
+      let pregWhereExtra = "";
+
+      if (seccionesFiltradasIds.length) {
+        pregParams.push(seccionesFiltradasIds);
+        pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
+      }
+
+      if (preguntasIds.length) {
+        pregParams.push(preguntasIds);
+        pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+      }
 
       const { rows: preguntas } = await pool.query(
-        `SELECT q.*
-         FROM ema.informe_pregunta q
-         JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-         WHERE s.id_plantilla = $1
-         ORDER BY s.orden, q.orden`,
-        [informe.id_plantilla]
+        `
+        SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ${pregWhereExtra}
+        ORDER BY s.orden, q.orden
+        `,
+        pregParams
       );
+
+      if (!preguntas.length) continue;
+
+      const preguntasIdsFiltradas = preguntas.map((p) => Number(p.id_pregunta)).filter(Boolean);
 
       const { rows: respuestas } = await pool.query(
-        `SELECT r.*
-         FROM ema.informe_respuesta r
-         WHERE r.id_informe = $1`,
-        [informe.id_informe]
+        `
+        SELECT *
+        FROM ema.informe_respuesta
+        WHERE id_informe = $1
+          AND id_pregunta = ANY($2::int[])
+        `,
+        [informe.id_informe, preguntasIdsFiltradas]
       );
 
-      const { rows: fotos } = await pool.query(
-        `SELECT *
-         FROM ema.informe_foto
-         WHERE id_informe = $1
-         ORDER BY orden`,
-        [informe.id_informe]
-      );
-
-      // âœ… respuestasMap (fix [object Object] + coords)
-      const respuestasMap = {};
-      for (const r of respuestas) {
-        let val = r.valor_texto;
-
-        if (r.valor_bool !== null && r.valor_bool !== undefined) {
-          val = r.valor_bool ? "SÃ­" : "No";
-        } else if (r.valor_json !== null && r.valor_json !== undefined) {
-          try {
-            const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-
-            if (Array.isArray(parsed)) {
-              val = parsed.join(", ");
-            } else if (parsed && typeof parsed === "object") {
-              // âœ… caso ubicaciÃ³n {lat,lng}
-              if ("lat" in parsed && "lng" in parsed) val = `${parsed.lat}, ${parsed.lng}`;
-              else val = JSON.stringify(parsed, null, 2);
-            } else {
-              val = String(parsed);
-            }
-          } catch {
-            val = String(r.valor_json);
-          }
-        }
-
-        respuestasMap[r.id_pregunta] = val || "-";
+      let fotos = [];
+      if (incluirFotos && maxFotos > 0) {
+        const fotosQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_foto
+          WHERE id_informe = $1
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_pregunta, orden
+          `,
+          [informe.id_informe, preguntasIdsFiltradas]
+        );
+        fotos = fotosQ.rows || [];
       }
+
+      const respuestasMap = buildRespuestasMapLocal(respuestas);
 
       const fotosPorPregunta = {};
       for (const f of fotos) {
@@ -4967,18 +5206,223 @@ async function generarPdfProyecto(req, res) {
         if (!dataUri) continue;
 
         if (!fotosPorPregunta[f.id_pregunta]) fotosPorPregunta[f.id_pregunta] = [];
-        fotosPorPregunta[f.id_pregunta].push({ descripcion: f.descripcion, dataUri });
+        if (fotosPorPregunta[f.id_pregunta].length >= maxFotos) continue;
+
+        fotosPorPregunta[f.id_pregunta].push({
+          descripcion: f.descripcion || "",
+          dataUri,
+        });
       }
 
-      const oneHtml = htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotosPorPregunta);
-      const bodyMatch = oneHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-      const bodyInner = bodyMatch ? bodyMatch[1] : oneHtml;
+      let blockHtml = "";
 
-      informesBlocks.push(bodyInner);
+      if (!isTabla) {
+        const seccionesConPreguntas = secciones.filter((sec) =>
+          preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
+        );
+
+        const seccionesHtml = seccionesConPreguntas
+          .map((sec) => {
+            const preguntasSec = preguntas.filter(
+              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
+            );
+
+            if (!preguntasSec.length) return "";
+
+            const rowsHtml = preguntasSec
+              .map((p) => {
+                const valor = respuestasMap[p.id_pregunta] ?? "-";
+
+                let fotosHtml = "";
+                if (incluirFotos) {
+                  const fotosList = (fotosPorPregunta[p.id_pregunta] || []).slice(0, maxFotos);
+                  if (fotosList.length) {
+                    fotosHtml = `
+                      <div class="fotos-wrap">
+                        ${fotosList
+                          .map(
+                            (fx) => `
+                              <div class="foto-item">
+                                <img src="${fx.dataUri}" />
+                                ${fx.descripcion ? `<div class="foto-desc">${escapeHtml(fx.descripcion)}</div>` : ""}
+                              </div>
+                            `
+                          )
+                          .join("")}
+                      </div>
+                    `;
+                  }
+                }
+
+                return `
+                  <tr>
+                    <td class="pregunta-col">${escapeHtml(p.etiqueta)}</td>
+                    <td class="respuesta-col">
+                      <div>${escapeHtml(valor)}</div>
+                      ${fotosHtml}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
+
+            return `
+              <h3>${escapeHtml(sec.titulo || "Sección")}</h3>
+              <table class="detalle-table">
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            `;
+          })
+          .join("");
+
+        blockHtml = `
+          <div class="informe-block">
+            <h2>${escapeHtml(informe.titulo || informe.nombre_plantilla || "INFORME")}</h2>
+            <div class="meta-line">
+              <strong>ID Informe:</strong> ${escapeHtml(informe.id_informe)}
+              &nbsp;&nbsp;&nbsp;
+              <strong>Fecha:</strong> ${escapeHtml(_formatFechaPY(informe.fecha_creado))}
+            </div>
+            ${seccionesHtml}
+          </div>
+        `;
+      } else {
+        const tablaHtml = renderTablaUnicaHTML({
+          informeRows: [informe],
+          preguntasTodas: preguntas,
+          respuestasMapPorInforme: {
+            [informe.id_informe]: respuestasMap,
+          },
+          fotosPorInformePorPregunta: {
+            [informe.id_informe]: fotosPorPregunta,
+          },
+        });
+
+        blockHtml = `
+          <div class="informe-block">
+            <h2>${escapeHtml(informe.nombre_plantilla || "Plantilla")}</h2>
+            ${tablaHtml}
+          </div>
+        `;
+      }
+
+      informesBlocks.push(blockHtml);
     }
 
-    // âœ… Multi usa las mismas clases/CSS => mismo formato que individual
-    const html = htmlTemplateMultiInformes({ proyectoLabel, informesBlocks });
+    if (!informesBlocks.length) {
+      return res.status(404).send("No hay datos para exportar con esos filtros.");
+    }
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Informes del proyecto</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            font-size: 11px;
+            color: #222;
+            margin: 0;
+            padding: 0;
+          }
+          .page {
+            padding: 10px 6px;
+          }
+          h1 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+          }
+          h2 {
+            margin: 14px 0 8px 0;
+            font-size: 18px;
+          }
+          h3 {
+            margin: 12px 0 6px 0;
+            font-size: 14px;
+          }
+          .top-meta {
+            margin-bottom: 12px;
+            line-height: 1.5;
+          }
+          .meta-line {
+            margin-bottom: 8px;
+          }
+          .informe-block {
+            margin-bottom: 20px;
+            page-break-inside: avoid;
+          }
+          .detalle-table,
+          .tabla-general {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            margin-bottom: 12px;
+          }
+          .detalle-table td,
+          .tabla-general th,
+          .tabla-general td {
+            border: 1px solid #999;
+            padding: 4px;
+            vertical-align: top;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+          }
+          .tabla-general th {
+            background: #f1f1f1;
+            font-weight: bold;
+          }
+          .pregunta-col {
+            width: 35%;
+            font-weight: bold;
+            background: #fafafa;
+          }
+          .respuesta-col {
+            width: 65%;
+          }
+          .fotos-wrap {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .foto-item img {
+            max-width: 180px;
+            max-height: 120px;
+            display: block;
+            border: 1px solid #ccc;
+          }
+          .foto-desc {
+            font-size: 10px;
+            color: #666;
+            margin-top: 2px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="page">
+          <h1>INFORMES DEL PROYECTO</h1>
+          <div class="top-meta">
+            <div><strong>Proyecto:</strong> ${escapeHtml(proyectoLabel)}</div>
+            <div><strong>Generado:</strong> ${escapeHtml(_formatFechaPY(new Date()))}</div>
+            <div><strong>Formato:</strong> ${escapeHtml(isTabla ? "TABLA (tipo Excel)" : "NORMAL")}</div>
+            <div><strong>Fotos:</strong> ${escapeHtml(incluirFotos ? `Sí (máx. ${maxFotos} por pregunta)` : "No")}</div>
+            <div><strong>Orden:</strong> ${
+              escapeHtml(
+                orderBy === "pregunta" && orderPreguntaId > 0
+                  ? `pregunta #${orderPreguntaId} (${orderDir})`
+                  : `${orderBy} (${orderDir})`
+              )
+            }</div>
+          </div>
+          ${informesBlocks.join("")}
+        </div>
+      </body>
+      </html>
+    `;
 
     const browser = await puppeteer.launch({
       headless: true,
@@ -4993,10 +5437,15 @@ async function generarPdfProyecto(req, res) {
       const pdfBuffer = await page.pdf({
         format: "A4",
         printBackground: true,
+        landscape: isTabla,
         margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
       });
 
-      const fileName = `Proyecto_${idProyecto}_Informes${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}.pdf`;
+      const fileName =
+        `Proyecto_${idProyecto}_Informes` +
+        `${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}` +
+        `${isTabla ? `_TABLA` : `_NORMAL`}.pdf`;
+
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
       res.setHeader("Content-Length", pdfBuffer.length);
@@ -5314,15 +5763,9 @@ async function generarWordProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
-  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
-  const orderDir = String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
-
   const modo = String(req.query.modo || "normal").toLowerCase();
   const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
 
-  // -------------------------
-  // filtros / opciones
-  // -------------------------
   const preguntasIds = String(req.query.preguntas || "")
     .split(",")
     .map((x) => Number(String(x).trim()))
@@ -5346,9 +5789,6 @@ async function generarWordProyecto(req, res) {
   }
 
   try {
-    // =========================
-    // proyecto label
-    // =========================
     const proyQ = await pool.query(
       `
       SELECT gid, nombre, codigo
@@ -5363,9 +5803,6 @@ async function generarWordProyecto(req, res) {
       ? `${proy.codigo ? proy.codigo + " - " : ""}${proy.nombre || ""}`.trim()
       : String(idProyecto);
 
-    // =========================
-    // total de informes
-    // =========================
     const totalParams = [idProyecto];
     let totalWhereExtra = "";
 
@@ -5386,51 +5823,115 @@ async function generarWordProyecto(req, res) {
 
     const totalInformes = Number(totalQ.rows?.[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(totalInformes / limit));
-
-    // rango real del lote
     const desde = totalInformes === 0 ? 0 : offset + 1;
 
-    // =========================
-    // informes (lote)
-    // =========================
-    const params = [idProyecto];
-    let whereExtra = "";
+    let informes = [];
 
-    if (idPlantilla) {
-      params.push(idPlantilla);
-      whereExtra = ` AND i.id_plantilla = $${params.length} `;
+    if (orderBy === "pregunta" && orderPreguntaId > 0) {
+      const baseParams = [idProyecto];
+      let baseWhere = "";
+
+      if (idPlantilla) {
+        baseParams.push(idPlantilla);
+        baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+      }
+
+      baseParams.push(orderPreguntaId);
+      const idxPregunta = baseParams.length;
+      const idxLimit = idxPregunta + 1;
+      const idxOffset = idxPregunta + 2;
+      const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+      const q = await pool.query(
+        `
+        SELECT
+          i.*,
+          p.nombre AS nombre_plantilla,
+          COALESCE(
+            NULLIF(TRIM(ir.valor_texto), ''),
+            NULLIF(TRIM(ir.valor_json::text), ''),
+            CASE
+              WHEN ir.valor_bool IS TRUE THEN 'SI'
+              WHEN ir.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) AS valor_orden
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p
+          ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_respuesta ir
+          ON ir.id_informe = i.id_informe
+         AND ir.id_pregunta = $${idxPregunta}
+        WHERE i.id_proyecto = $1
+        ${baseWhere}
+        ORDER BY
+          COALESCE(
+            NULLIF(TRIM(ir.valor_texto), ''),
+            NULLIF(TRIM(ir.valor_json::text), ''),
+            CASE
+              WHEN ir.valor_bool IS TRUE THEN 'SI'
+              WHEN ir.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) ${orderSql},
+          i.id_informe ${orderSql}
+        LIMIT $${idxLimit} OFFSET $${idxOffset}
+        `,
+        [...baseParams, limit, offset]
+      );
+
+      informes = q.rows || [];
+    } else {
+      const params = [idProyecto];
+      let whereExtra = "";
+
+      if (idPlantilla) {
+        params.push(idPlantilla);
+        whereExtra = ` AND i.id_plantilla = $${params.length} `;
+      }
+
+      let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+      if (orderBy === "fecha") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.fecha_creado DESC, i.id_informe DESC"
+            : "i.fecha_creado ASC, i.id_informe ASC";
+      } else if (orderBy === "id") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.id_informe DESC"
+            : "i.id_informe ASC";
+      }
+
+      params.push(limit);
+      const idxLimit = params.length;
+
+      params.push(offset);
+      const idxOffset = params.length;
+
+      const q = await pool.query(
+        `
+        SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_proyecto = $1
+        ${whereExtra}
+        ORDER BY ${orderClause}
+        LIMIT $${idxLimit} OFFSET $${idxOffset}
+        `,
+        params
+      );
+
+      informes = q.rows || [];
     }
 
-    params.push(limit);
-    const idxLimit = params.length;
-
-    params.push(offset);
-    const idxOffset = params.length;
-
-    const infQ = await pool.query(
-      `
-      SELECT i.*, p.nombre AS nombre_plantilla
-      FROM ema.informe i
-      JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-      WHERE i.id_proyecto = $1
-      ${whereExtra}
-      ORDER BY i.fecha_creado DESC, i.id_informe DESC
-      LIMIT $${idxLimit} OFFSET $${idxOffset}
-      `,
-      params
-    );
-
-    const informes = infQ.rows || [];
     if (!informes.length) {
       return res.status(404).send("No hay informes para exportar en ese lote.");
     }
 
     const hasta = offset + informes.length;
     const uploadsRoot = path.join(__dirname, "..", "uploads");
-
-    // =========================
-    // DOCX children
-    // =========================
     const children = [];
 
     children.push(
@@ -5472,18 +5973,24 @@ async function generarWordProyecto(req, res) {
         children: [
           new TextRun({ text: "Fotos: ", bold: true }),
           new TextRun({
-            text: incluirFotos
-              ? `Sí (máx. ${maxFotos} por pregunta)`
-              : "No",
+            text: incluirFotos ? `Sí (máx. ${maxFotos} por pregunta)` : "No",
+          }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Orden: ", bold: true }),
+          new TextRun({
+            text:
+              orderBy === "pregunta" && orderPreguntaId > 0
+                ? `pregunta #${orderPreguntaId} (${orderDir})`
+                : `${orderBy} (${orderDir})`,
           }),
         ],
       }),
       new Paragraph({ text: " " })
     );
 
-    // =========================
-    // agrupar informes por plantilla
-    // =========================
     const informesPorPlantilla = new Map();
     for (const inf of informes) {
       const k = Number(inf.id_plantilla);
@@ -5491,9 +5998,6 @@ async function generarWordProyecto(req, res) {
       informesPorPlantilla.get(k).push(inf);
     }
 
-    // =========================
-    // helper imagen optimizada
-    // =========================
     async function readImageForDocx(absPath, maxWidth = 1400) {
       if (!absPath || !fs.existsSync(absPath)) return null;
 
@@ -5525,15 +6029,24 @@ async function generarWordProyecto(req, res) {
       }
     }
 
-    // =========================
-    // helper tabla por sección
-    // =========================
-    async function buildTablaSeccion({
-      preguntasSec,
+    async function buildTablaUnica({
+      preguntasTodas,
       informesPlantilla,
       respuestasMapPorInforme,
       fotosPorInformePorPregunta,
     }) {
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
       const headerCells = [
         new TableCell({
           width: { size: 7, type: WidthType.PERCENTAGE },
@@ -5553,9 +6066,9 @@ async function generarWordProyecto(req, res) {
         }),
       ];
 
-      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasSec.length)));
+      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasOrdenadas.length)));
 
-      for (const p of preguntasSec) {
+      for (const p of preguntasOrdenadas) {
         headerCells.push(
           new TableCell({
             width: { size: perQ, type: WidthType.PERCENTAGE },
@@ -5576,9 +6089,7 @@ async function generarWordProyecto(req, res) {
       const rows = [new TableRow({ children: headerCells })];
 
       for (const inf of informesPlantilla) {
-        const rowCells = [];
-
-        rowCells.push(
+        const rowCells = [
           new TableCell({
             width: { size: 7, type: WidthType.PERCENTAGE },
             children: [new Paragraph(String(inf.id_informe))],
@@ -5586,12 +6097,11 @@ async function generarWordProyecto(req, res) {
           new TableCell({
             width: { size: 13, type: WidthType.PERCENTAGE },
             children: [new Paragraph(_formatFechaPY(inf.fecha_creado))],
-          })
-        );
+          }),
+        ];
 
-        for (const p of preguntasSec) {
-          const val =
-            respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
+        for (const p of preguntasOrdenadas) {
+          const val = respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
 
           const cellChildren = [
             new Paragraph({
@@ -5652,9 +6162,6 @@ async function generarWordProyecto(req, res) {
       });
     }
 
-    // =========================
-    // recorrer plantillas
-    // =========================
     for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
       const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
 
@@ -5666,9 +6173,6 @@ async function generarWordProyecto(req, res) {
         new Paragraph({ text: " " })
       );
 
-      // -------------------------
-      // secciones filtradas
-      // -------------------------
       const seccParams = [idPlant];
       let seccWhereExtra = "";
 
@@ -5694,9 +6198,6 @@ async function generarWordProyecto(req, res) {
         .map((s) => Number(s.id_seccion))
         .filter(Boolean);
 
-      // -------------------------
-      // preguntas filtradas
-      // -------------------------
       const pregParams = [idPlant];
       let pregWhereExtra = "";
 
@@ -5726,12 +6227,10 @@ async function generarWordProyecto(req, res) {
         .map((x) => Number(x.id_pregunta))
         .filter(Boolean);
 
-      // ✅ NUEVO: solo dejar secciones que realmente tengan preguntas
       const seccionesConPreguntas = secciones.filter((sec) =>
         preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
       );
 
-      // si con el filtro no quedó ninguna sección con preguntas, salta
       if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
         continue;
       }
@@ -5740,12 +6239,8 @@ async function generarWordProyecto(req, res) {
         .map((x) => Number(x.id_informe))
         .filter(Boolean);
 
-      // -------------------------
-      // respuestas del lote
-      // -------------------------
       let respuestasAll = [];
       if (idsInformes.length && preguntasIdsFiltradas.length) {
-        const respParams = [idsInformes, preguntasIdsFiltradas];
         const respQ = await pool.query(
           `
           SELECT *
@@ -5753,14 +6248,11 @@ async function generarWordProyecto(req, res) {
           WHERE id_informe = ANY($1::int[])
             AND id_pregunta = ANY($2::int[])
           `,
-          respParams
+          [idsInformes, preguntasIdsFiltradas]
         );
         respuestasAll = respQ.rows || [];
       }
 
-      // -------------------------
-      // fotos del lote
-      // -------------------------
       let fotosAll = [];
       if (incluirFotos && idsInformes.length && preguntasIdsFiltradas.length && maxFotos > 0) {
         const fotosQ = await pool.query(
@@ -5776,9 +6268,6 @@ async function generarWordProyecto(req, res) {
         fotosAll = fotosQ.rows || [];
       }
 
-      // -------------------------
-      // map respuestas por informe
-      // -------------------------
       const respuestasMapPorInforme = {};
       for (const inf of idsInformes) respuestasMapPorInforme[inf] = {};
 
@@ -5790,9 +6279,6 @@ async function generarWordProyecto(req, res) {
         respuestasMapPorInforme[infId][pId] = val || "-";
       }
 
-      // -------------------------
-      // fotos por informe y pregunta
-      // -------------------------
       const fotosPorInformePorPregunta = {};
       for (const infId of idsInformes) fotosPorInformePorPregunta[infId] = {};
 
@@ -5806,7 +6292,6 @@ async function generarWordProyecto(req, res) {
 
           const key = `${infId}_${pId}`;
           contadorFotos[key] = contadorFotos[key] || 0;
-
           if (contadorFotos[key] >= maxFotos) continue;
 
           const abs = path.join(
@@ -5830,9 +6315,6 @@ async function generarWordProyecto(req, res) {
         }
       }
 
-      // =========================
-      // render según modo
-      // =========================
       if (!isTabla) {
         for (const informe of infosPlantilla) {
           const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
@@ -5858,7 +6340,6 @@ async function generarWordProyecto(req, res) {
               (p) => Number(p.id_seccion) === Number(sec.id_seccion)
             );
 
-            // ✅ no mostrar secciones sin preguntas
             if (!preguntasSec.length) continue;
 
             children.push(
@@ -5956,38 +6437,24 @@ async function generarWordProyecto(req, res) {
           children.push(new Paragraph({ children: [], pageBreakBefore: true }));
         }
       } else {
-        for (const sec of seccionesConPreguntas) {
-          const preguntasSec = preguntas.filter(
-            (p) => Number(p.id_seccion) === Number(sec.id_seccion)
-          );
+        const preguntasTodas = [...preguntas];
 
-          // ✅ no mostrar secciones sin preguntas
-          if (!preguntasSec.length) continue;
-
-          children.push(
-            new Paragraph({
-              text: safeStr(sec.titulo || "Sección"),
-              heading: HeadingLevel.HEADING_2,
-            })
-          );
-
-          const tabla = await buildTablaSeccion({
-            preguntasSec,
+        if (preguntasTodas.length) {
+          const tabla = await buildTablaUnica({
+            preguntasTodas,
             informesPlantilla: infosPlantilla,
             respuestasMapPorInforme,
             fotosPorInformePorPregunta,
           });
 
-          children.push(tabla, new Paragraph({ text: " " }));
+          children.push(tabla);
+          children.push(new Paragraph({ text: " " }));
         }
 
         children.push(new Paragraph({ children: [], pageBreakBefore: true }));
       }
     }
 
-    // =========================
-    // documento final
-    // =========================
     const doc = new Document({
       sections: [
         {
@@ -6031,6 +6498,10 @@ async function generarWordProyecto(req, res) {
 async function generarWordProyectoRangoUnico(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
+
+  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
+  const orderDir = String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
 
   const modo = String(req.query.modo || "normal").toLowerCase();
   const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
@@ -6143,6 +6614,17 @@ async function generarWordProyectoRangoUnico(req, res) {
           }),
         ],
       }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Orden: ", bold: true }),
+          new TextRun({
+            text:
+              orderBy === "pregunta" && orderPreguntaId > 0
+                ? `pregunta #${orderPreguntaId} (${orderDir})`
+                : `${orderBy} (${orderDir})`,
+          }),
+        ],
+      }),
       new Paragraph({ text: " " })
     );
 
@@ -6176,12 +6658,24 @@ async function generarWordProyectoRangoUnico(req, res) {
       }
     }
 
-    async function buildTablaSeccion({
-      preguntasSec,
+    async function buildTablaUnica({
+      preguntasTodas,
       informesPlantilla,
       respuestasMapPorInforme,
       fotosPorInformePorPregunta,
     }) {
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
       const headerCells = [
         new TableCell({
           width: { size: 7, type: WidthType.PERCENTAGE },
@@ -6193,9 +6687,9 @@ async function generarWordProyectoRangoUnico(req, res) {
         }),
       ];
 
-      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasSec.length)));
+      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasOrdenadas.length)));
 
-      for (const p of preguntasSec) {
+      for (const p of preguntasOrdenadas) {
         headerCells.push(
           new TableCell({
             width: { size: perQ, type: WidthType.PERCENTAGE },
@@ -6224,7 +6718,7 @@ async function generarWordProyectoRangoUnico(req, res) {
           })
         );
 
-        for (const p of preguntasSec) {
+        for (const p of preguntasOrdenadas) {
           const val = respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
 
           const cellChildren = [
@@ -6236,6 +6730,7 @@ async function generarWordProyectoRangoUnico(req, res) {
           if (incluirFotos && fotosEnTabla) {
             const fotosListOriginal =
               fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
+
             const fotosList = fotosListOriginal.slice(0, maxFotos);
 
             for (const f of fotosList) {
@@ -6285,56 +6780,125 @@ async function generarWordProyectoRangoUnico(req, res) {
       });
     }
 
-    for (let page = fromPage; page <= toPage; page++) {
-      const offset = (page - 1) * limit;
+    for (let currentPage = fromPage; currentPage <= toPage; currentPage++) {
+      const offset = (currentPage - 1) * limit;
+      let infosPagina = [];
 
-      const params = [idProyecto];
-      let whereExtra = "";
+      if (orderBy === "pregunta" && orderPreguntaId > 0) {
+        const baseParams = [idProyecto];
+        let baseWhere = "";
 
-      if (idPlantilla) {
-        params.push(idPlantilla);
-        whereExtra = ` AND i.id_plantilla = $${params.length} `;
+        if (idPlantilla) {
+          baseParams.push(idPlantilla);
+          baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+        }
+
+        baseParams.push(orderPreguntaId);
+        const idxPregunta = baseParams.length;
+        const idxLimit = idxPregunta + 1;
+        const idxOffset = idxPregunta + 2;
+        const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+        const q = await pool.query(
+          `
+          SELECT
+            i.*,
+            p.nombre AS nombre_plantilla,
+            COALESCE(
+              NULLIF(TRIM(ir.valor_texto), ''),
+              NULLIF(TRIM(ir.valor_json::text), ''),
+              CASE
+                WHEN ir.valor_bool IS TRUE THEN 'SI'
+                WHEN ir.valor_bool IS FALSE THEN 'NO'
+                ELSE ''
+              END
+            ) AS valor_orden
+          FROM ema.informe i
+          JOIN ema.informe_plantilla p
+            ON p.id_plantilla = i.id_plantilla
+          LEFT JOIN ema.informe_respuesta ir
+            ON ir.id_informe = i.id_informe
+           AND ir.id_pregunta = $${idxPregunta}
+          WHERE i.id_proyecto = $1
+          ${baseWhere}
+          ORDER BY
+            COALESCE(
+              NULLIF(TRIM(ir.valor_texto), ''),
+              NULLIF(TRIM(ir.valor_json::text), ''),
+              CASE
+                WHEN ir.valor_bool IS TRUE THEN 'SI'
+                WHEN ir.valor_bool IS FALSE THEN 'NO'
+                ELSE ''
+              END
+            ) ${orderSql},
+            i.id_informe ${orderSql}
+          LIMIT $${idxLimit} OFFSET $${idxOffset}
+          `,
+          [...baseParams, limit, offset]
+        );
+
+        infosPagina = q.rows || [];
+      } else {
+        const params = [idProyecto];
+        let whereExtra = "";
+
+        if (idPlantilla) {
+          params.push(idPlantilla);
+          whereExtra = ` AND i.id_plantilla = $${params.length} `;
+        }
+
+        let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+        if (orderBy === "fecha") {
+          orderClause =
+            orderDir === "desc"
+              ? "i.fecha_creado DESC, i.id_informe DESC"
+              : "i.fecha_creado ASC, i.id_informe ASC";
+        } else if (orderBy === "id") {
+          orderClause =
+            orderDir === "desc"
+              ? "i.id_informe DESC"
+              : "i.id_informe ASC";
+        }
+
+        params.push(limit);
+        const idxLimit = params.length;
+
+        params.push(offset);
+        const idxOffset = params.length;
+
+        const q = await pool.query(
+          `
+          SELECT i.*, p.nombre AS nombre_plantilla
+          FROM ema.informe i
+          JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+          WHERE i.id_proyecto = $1
+          ${whereExtra}
+          ORDER BY ${orderClause}
+          LIMIT $${idxLimit} OFFSET $${idxOffset}
+          `,
+          params
+        );
+
+        infosPagina = q.rows || [];
       }
 
-      params.push(limit);
-      const idxLimit = params.length;
-
-      params.push(offset);
-      const idxOffset = params.length;
-
-      const infQ = await pool.query(
-        `
-        SELECT i.*, p.nombre AS nombre_plantilla
-        FROM ema.informe i
-        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-        WHERE i.id_proyecto = $1
-        ${whereExtra}
-        ORDER BY i.fecha_creado DESC, i.id_informe DESC
-        LIMIT $${idxLimit} OFFSET $${idxOffset}
-        `,
-        params
-      );
-
-      const informes = infQ.rows || [];
-      if (!informes.length) continue;
-
-      const desde = offset + 1;
-      const hasta = offset + informes.length;
-
-      children.push(
-        new Paragraph({
-          text: `LOTE ${page} (${desde} - ${hasta})`,
-          heading: HeadingLevel.HEADING_1,
-        }),
-        new Paragraph({ text: " " })
-      );
+      if (!infosPagina.length) continue;
 
       const informesPorPlantilla = new Map();
-      for (const inf of informes) {
+      for (const inf of infosPagina) {
         const k = Number(inf.id_plantilla);
         if (!informesPorPlantilla.has(k)) informesPorPlantilla.set(k, []);
         informesPorPlantilla.get(k).push(inf);
       }
+
+      children.push(
+        new Paragraph({
+          text: `LOTE ${currentPage} (${offset + 1} - ${offset + infosPagina.length})`,
+          heading: HeadingLevel.HEADING_1,
+        }),
+        new Paragraph({ text: " " })
+      );
 
       for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
         const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
@@ -6368,7 +6932,9 @@ async function generarWordProyectoRangoUnico(req, res) {
 
         if (!secciones.length) continue;
 
-        const seccionesFiltradasIds = secciones.map((s) => Number(s.id_seccion)).filter(Boolean);
+        const seccionesFiltradasIds = secciones
+          .map((s) => Number(s.id_seccion))
+          .filter(Boolean);
 
         const pregParams = [idPlant];
         let pregWhereExtra = "";
@@ -6395,14 +6961,21 @@ async function generarWordProyectoRangoUnico(req, res) {
           pregParams
         );
 
-        const preguntasIdsFiltradas = preguntas.map((x) => Number(x.id_pregunta)).filter(Boolean);
+        const preguntasIdsFiltradas = preguntas
+          .map((x) => Number(x.id_pregunta))
+          .filter(Boolean);
+
         const seccionesConPreguntas = secciones.filter((sec) =>
           preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
         );
 
-        if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) continue;
+        if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
+          continue;
+        }
 
-        const idsInformes = infosPlantilla.map((x) => Number(x.id_informe)).filter(Boolean);
+        const idsInformes = infosPlantilla
+          .map((x) => Number(x.id_informe))
+          .filter(Boolean);
 
         let respuestasAll = [];
         if (idsInformes.length && preguntasIdsFiltradas.length) {
@@ -6457,7 +7030,6 @@ async function generarWordProyectoRangoUnico(req, res) {
 
             const key = `${infId}_${pId}`;
             contadorFotos[key] = contadorFotos[key] || 0;
-
             if (contadorFotos[key] >= maxFotos) continue;
 
             const abs = path.join(
@@ -6591,27 +7163,18 @@ async function generarWordProyectoRangoUnico(req, res) {
             children.push(new Paragraph({ text: " " }));
           }
         } else {
-          for (const sec of seccionesConPreguntas) {
-            const preguntasSec = preguntas.filter(
-              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
-            );
-            if (!preguntasSec.length) continue;
+          const preguntasTodas = [...preguntas];
 
-            children.push(
-              new Paragraph({
-                text: safeStr(sec.titulo || "Sección"),
-                heading: HeadingLevel.HEADING_3,
-              })
-            );
-
-            const tabla = await buildTablaSeccion({
-              preguntasSec,
+          if (preguntasTodas.length) {
+            const tabla = await buildTablaUnica({
+              preguntasTodas,
               informesPlantilla: infosPlantilla,
               respuestasMapPorInforme,
               fotosPorInformePorPregunta,
             });
 
-            children.push(tabla, new Paragraph({ text: " " }));
+            children.push(tabla);
+            children.push(new Paragraph({ text: " " }));
           }
         }
       }
