@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { useParams } from "react-router-dom";
 import { gvGetDashboard, gvGetTramosCensales, gvGetSubtramosCensales, gvGetAvanceTemporal, gvGetDetalleTemporal, gvGetEconomico } from "./gv_service";
 import GVCharts from "./GVCharts";
@@ -8,8 +7,6 @@ import GVTemporalCharts from "./GVTemporalCharts";
 import GVEconomicPanel from "./GVEconomicPanel";
 import GvExpedienteModal from "./GvExpedienteModal";
 import GvPhaseChip from "./GvPhaseChip";
-import { getPhaseHex } from "./gv_colors";
-import { Collapse, Button } from "react-bootstrap";
 import "./gv.css";
 
 function normalizePhaseCounts(dashboard, tipo, maxFases = 7) {
@@ -83,8 +80,6 @@ export default function GVCatastroDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [isMapVisible, setIsMapVisible] = useState(true);
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
 
   const initialFilters = {
     q: "",
@@ -111,13 +106,15 @@ export default function GVCatastroDashboard() {
   const [selectedTramo, setSelectedTramo] = useState("");
   const [selectedSubtramo, setSelectedSubtramo] = useState("");
 
+  // States para el nuevo Modal Aislado
   const [modalShow, setModalShow] = useState(false);
   const [modalExpId, setModalExpId] = useState(null);
   const [modalSeedProps, setModalSeedProps] = useState(null);
 
+  // Temporal analytics state (local)
   const today = new Date();
-  const [fechaInicio, setFechaInicio] = useState("");
-  const [fechaFin, setFechaFin] = useState("");
+  const [fechaInicio, setFechaInicio] = useState(toYmd(addDays(today, -30)));
+  const [fechaFin, setFechaFin] = useState(toYmd(today));
   const [tempGranularidad, setTempGranularidad] = useState("semana");
   const [tempSelectedCategoria, setTempSelectedCategoria] = useState("");
   const [tempModoDetalle, setTempModoDetalle] = useState("fases");
@@ -128,116 +125,10 @@ export default function GVCatastroDashboard() {
   const [tempErrorAvance, setTempErrorAvance] = useState("");
   const [tempErrorDetalle, setTempErrorDetalle] = useState("");
 
+  // Economic panel state
   const [ecoData, setEcoData] = useState(null);
   const [ecoLoading, setEcoLoading] = useState(false);
   const [ecoError, setEcoError] = useState("");
-  const [phaseTab, setPhaseTab] = useState("global"); // Fase 3: Tabs de composición
-  const [isPanning, setIsPanning] = useState(false);
-  const [mapType, setMapType] = useState('roadmap'); // Roadmap or Satellite
-  const [activeWidgets, setActiveWidgets] = useState({
-    cobertura: true,
-    temporal: true,
-    operativa: true,
-    economico: true
-  });
-  const closeButtonColor = mapType === 'satellite' ? '#FFFFFF' : '#0F172A';
-  const closeButtonBackground = mapType === 'satellite' ? 'rgba(255,255,255,0.12)' : 'rgba(15, 23, 42, 0.05)';
-
-  const toggleWidget = (w) => setActiveWidgets(prev => ({ ...prev, [w]: !prev[w] }));
-
-  // FASE 2: Lógica de Persistencia y Drag & Drop
-  const mapContainerRef = useRef(null);
-  const [widgetPositions, setWidgetPositions] = useState(() => {
-    const saved = localStorage.getItem('gv_dashboard_layout');
-    try {
-      return saved ? JSON.parse(saved) : {
-        cobertura: { x: 0, y: 0 },
-        temporal: { x: 0, y: 0 },
-        operativa: { x: 0, y: 0 },
-        economico: { x: 0, y: 0 }
-      };
-    } catch {
-      return { cobertura: { x: 0, y: 0 }, temporal: { x: 0, y: 0 }, operativa: { x: 0, y: 0 }, economico: { x: 0, y: 0 } };
-    }
-  });
-
-  const [widgetZIndexes, setWidgetZIndexes] = useState({
-    cobertura: 21,
-    temporal: 21,
-    operativa: 21,
-    economico: 21
-  });
-
-  const widgetVariants = {
-    hidden: { opacity: 0, y: 20, scale: 0.95 },
-    visible: (i) => ({
-      opacity: 1,
-      y: 0,
-      scale: 1,
-      transition: { delay: i * 0.15, duration: 0.5, ease: "easeOut" }
-    })
-  };
-
-  const GVEmptyState = ({ message = "Sin datos disponibles" }) => (
-    <div className="gv-empty-state my-auto">
-      <i className="bi bi-clipboard-x"></i>
-      <p>{message}</p>
-    </div>
-  );
-
-  const renderHeroKpiGrid = () => (
-    <div className="row g-4 mb-4">
-      <div className="col-md-3">
-        <div className="card gv-card border-0 shadow-sm p-4 h-100">
-          <h6 className="text-secondary fw-bold text-uppercase mb-3" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>Avance Físico</h6>
-          <div className="display-5 fw-bold text-dark mb-1">
-            {formatPct01(safePct(mapStats?.totalFeatures || data?.censados || 0, data?.target_total || 0))}
-          </div>
-          <div className="text-muted small fw-bold">
-            {mapStats?.totalFeatures || data?.censados || 0} DE {data?.target_total || 0} RELEVADOS
-          </div>
-        </div>
-      </div>
-      <div className="col-md-5">
-        <div className="card gv-card border-0 shadow-sm p-4 overflow-hidden" style={{ minHeight: '160px' }}>
-          <h6 className="text-secondary fw-bold text-uppercase mb-3" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>Ritmo de Ejecución</h6>
-          <div style={{ height: "100px" }}>
-            {!tempAvance ? <GVEmptyState /> : <GVTemporalCharts avance={tempAvance} detalle={tempDetalle} selectedCategoria={tempSelectedCategoria} modoDetalle={tempModoDetalle} onSelectCategoria={setTempSelectedCategoria} compact />}
-          </div>
-        </div>
-      </div>
-      <div className="col-md-4">
-        <div className="card gv-card border-0 shadow-sm p-4 h-100">
-          <h6 className="text-secondary fw-bold text-uppercase mb-3" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>Consola Financiera</h6>
-          <div className="row g-2">
-            <div className="col-12">
-              <div className="text-secondary small fw-bold" style={{ fontSize: '0.6rem' }}>TOTAL FINAL ESTIMADO</div>
-              <div className="h4 fw-bold text-primary mb-0">${(ecoData?.total_final || 0).toLocaleString()}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const bringToFront = (w) => {
-    setWidgetZIndexes(prev => {
-      const maxZ = Math.max(...Object.values(prev));
-      return { ...prev, [w]: maxZ + 1 };
-    });
-  };
-
-  const handleDragEnd = (widget, info) => {
-    const updated = { 
-      ...widgetPositions, 
-      [widget]: { 
-        x: widgetPositions[widget].x + info.offset.x, 
-        y: widgetPositions[widget].y + info.offset.y 
-      } 
-    };
-    setWidgetPositions(updated);
-    localStorage.setItem('gv_dashboard_layout', JSON.stringify(updated));
-  };
 
   const handleFilterChange = (e) => {
     const { name, value } = e.target;
@@ -393,6 +284,8 @@ export default function GVCatastroDashboard() {
   if (mapFilters.tipo) mapFilterBadges.push(`Tipo: ${humanizeTipo(mapFilters.tipo)}`);
   if (mapFilters.q) mapFilterBadges.push(`Busqueda: ${mapFilters.q}`);
 
+  const anyMapFiltersActive = Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "");
+
   const temporalFilterBadges = [];
   if (fechaInicio || fechaFin) {
     temporalFilterBadges.push(
@@ -415,8 +308,6 @@ export default function GVCatastroDashboard() {
   if (mapFilters.tramo) economicoContext.push(`Tramo ${mapFilters.tramo}`);
   if (mapFilters.subtramo) economicoContext.push(`Subtramo ${mapFilters.subtramo}`);
   if (mapFilters.tipo) economicoContext.push(`Tipo ${humanizeTipo(mapFilters.tipo)}`);
-
-  const economicoContextLabel = economicoContext.length ? economicoContext.join(" • ") : "Visión Global";
 
   const economicoParamsKey = JSON.stringify({
     proyectoId: id,
@@ -616,546 +507,602 @@ export default function GVCatastroDashboard() {
       pct
     };
   });
+  const isProjectLevel = !selectedTramo || selectedHierarchyLevel === "proyecto";
+  const hierarchyBar = (() => {
+    if (isProjectLevel) {
+      const labels = tramoCards.map((t) => t.descripcion);
+      return {
+        level: "proyecto",
+        title: "Tramos",
+        labels,
+        censados: tramoCards.map((t) => t.censados),
+        universo: tramoCards.map((t) => t.universo),
+        pct: tramoCards.map((t) => t.pct),
+        selectedIndex: selectedTramo ? labels.indexOf(selectedTramo) : null,
+        onBarClick: (idx) => {
+          const desc = labels[idx];
+          if (desc) handleSelectTramoCard(desc);
+        }
+      };
+    }
+
+    const labels = subtramoCards.map((t) => t.descripcion);
+    return {
+      level: selectedSubtramo ? "subtramo" : "tramo",
+      title: selectedTramo ? `Subtramos de ${selectedTramo}` : "Subtramos",
+      labels,
+      censados: subtramoCards.map((t) => t.censados),
+      universo: subtramoCards.map((t) => t.universo),
+      pct: subtramoCards.map((t) => t.pct),
+      selectedIndex: selectedSubtramo ? labels.indexOf(selectedSubtramo) : null,
+      onBarClick: (idx) => {
+        const desc = labels[idx];
+        if (desc) handleSelectSubtramo(desc);
+      }
+    };
+  })();
+
   return (
-    <div className="container-fluid gv-page px-4 py-3">
-      {/* FASE 1: CABECERA & FILTRO MAESTRO */}
-      <div className="gv-toolbar sticky-top shadow-sm border-0 mb-4 px-4 py-3 d-flex align-items-center justify-content-between" style={{ zIndex: 1020, top: '10px' }}>
-        <div>
-          <h2 className="fw-bold mb-0 text-dark" style={{ letterSpacing: "-0.03em" }}>Gestión de Notificaciones Catastrales</h2>
-          <div className="text-secondary small fw-medium mt-1">Proyecto ID: {id} • {data?.proponente_nombre || 'Dashboard Elite v2.1'}</div>
-        </div>
-        
-        <div className="d-flex align-items-center gap-3">
-          <button 
-            className={`btn btn-sm rounded-pill px-3 fw-bold ${isMapVisible ? 'btn-primary' : 'btn-light'}`} 
-            onClick={() => setIsMapVisible((current) => !current)}
-            style={{ border: '1px solid #e2e8f0' }}
-          >
-            <i className={`bi ${isMapVisible ? 'bi-arrows-collapse' : 'bi-arrows-expand'} me-1`}></i>
-            {isMapVisible ? 'Colapsar Mapa' : 'Expandir Mapa'}
-          </button>
+    <div className="container-fluid gv-page">
+      <h2 className="mb-4">Catastro Dashboard - Proyecto {id}</h2>
 
-          <Button 
-            variant="outline-primary" 
-            size="sm" 
-            className="rounded-pill px-3 fw-bold border-2" 
-            onClick={() => setFiltersExpanded(!filtersExpanded)}
-            aria-controls="filters-collapse"
-            aria-expanded={filtersExpanded}
-          >
-            <i className={`bi ${filtersExpanded ? 'bi-chevron-up' : 'bi-gear-fill'} me-1`}></i> 
-            Ajustar Filtros
-          </Button>
-          <button className="btn btn-outline-secondary btn-sm rounded-pill px-3 fw-bold" onClick={handleResetFilters}>
-            <i className="bi bi-arrow-counterclockwise me-1"></i> Limpiar
-          </button>
-        </div>
-      </div>
+      {/* Guardrails: compute once, safely */}
+      {(() => {
+        const targetTotal = safeNumber(data?.target_total, 0);
+        const censados = safeNumber(data?.censados, 0);
+        const hasDenom = targetTotal > 0;
+        const rawPct = safeNumber(data?.coverage_pct, null);
+        const coveragePct = rawPct !== null && rawPct >= 0 ? rawPct : safePct(censados, targetTotal);
+        const gap = hasDenom ? Math.max(targetTotal - censados, 0) : 0;
 
-      {/* Panel de Filtros Colapsable (The Brain) */}
-      <Collapse in={filtersExpanded}>
-        <div id="filters-collapse">
-          <div className="card gv-card border-0 shadow-sm bg-light mb-4">
-              <div className="card-body py-4 px-4">
-                  <div className="row g-3">
-                     <div className="col-md-5">
-                        <label className="form-label small fw-bold text-secondary">Búsqueda amplia</label>
-                        <div className="position-relative">
-                           <span className="position-absolute top-50 start-0 translate-middle-y ps-3 text-muted"><i className="bi bi-search"></i></span>
-                           <input 
-                            type="text" 
-                            className="form-control ps-5 shadow-none border-0 rounded-3" 
-                            style={{ background: '#fff' }}
-                            value={qInput} 
-                            onChange={(e) => setQInput(e.target.value)} 
-                            placeholder="Buscar por Titular, CI, Expediente, DBI o Código Censo..." 
-                           />
-                        </div>
-                     </div>
-                     <div className="col-sm-6 col-md-3">
-                        <label className="form-label small fw-bold text-secondary">Fecha Inicio</label>
-                        <input type="date" className="form-control border-0 rounded-3" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} />
-                     </div>
-                     <div className="col-sm-6 col-md-3">
-                        <label className="form-label small fw-bold text-secondary">Fecha Fin</label>
-                        <input type="date" className="form-control border-0 rounded-3" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} />
-                     </div>
-                     <div className="col-md-2 mt-3">
-                        <label className="form-label small fw-bold text-secondary">Tipo Carpeta</label>
-                        <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="tipo" value={mapFilters.tipo} onChange={handleFilterChange}>
-                           <option value="">Todos</option>
-                           <option value="mejora">Mejora</option>
-                           <option value="terreno">Terreno</option>
-                        </select>
-                     </div>
-                     <div className="col-md-2 mt-3">
-                        <label className="form-label small fw-bold text-secondary">Fase Mínima</label>
-                        <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="faseMin" value={mapFilters.faseMin} onChange={handleFilterChange}>
-                          <option value="">Todos</option>
-                          {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
-                        </select>
-                     </div>
-                     <div className="col-md-2 mt-3">
-                        <label className="form-label small fw-bold text-secondary">Fase Máxima</label>
-                        <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="faseMax" value={mapFilters.faseMax} onChange={handleFilterChange}>
-                          <option value="">Todos</option>
-                          {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
-                        </select>
-                     </div>
-                     <div className="col-md-3 mt-3">
-                        <label className="form-label small fw-bold text-secondary">Tramo</label>
-                        <select
-                          className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }}
-                          value={mapFilters.tramo}
-                          onChange={(e) => {
-                            const desc = e.target.value;
-                            setMapFilters((prev) => ({ ...prev, tramo: desc, subtramo: "" }));
-                            setSelectedTramo(desc);
-                            setSelectedSubtramo("");
-                            setSelectedHierarchyLevel(desc ? "tramo" : "proyecto");
-                            setSubtramosCensales([]);
-                            if (desc) loadSubtramosForTramoDesc(desc);
-                          }}
-                        >
-                          <option value="">Todos</option>
-                          {tramosCensales.map((t) => (
-                            <option key={t.id_proyecto_tramo} value={t.descripcion}>{t.descripcion}</option>
-                          ))}
-                        </select>
-                     </div>
-                     <div className="col-md-3 mt-3">
-                        <label className="form-label small fw-bold text-secondary">Subtramo</label>
-                        <select
-                          className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }}
-                          value={mapFilters.subtramo}
-                          onChange={(e) => {
-                            const next = e.target.value;
-                            setMapFilters((prev) => ({ ...prev, subtramo: next }));
-                            setSelectedSubtramo(next);
-                            setSelectedHierarchyLevel(next ? "subtramo" : (selectedTramo ? "tramo" : "proyecto"));
-                          }}
-                          disabled={!mapFilters.tramo}
-                        >
-                          <option value="">Todos</option>
-                          {subtramosCensales.map((st) => (
-                            <option key={st.id_proyecto_subtramo} value={st.descripcion}>
-                              {st.descripcion}
-                            </option>
-                          ))}
-                        </select>
-                     </div>
-                  </div>
-                  
-                  {/* Fila de Filtros Booleanos */}
-                  <div className="row g-3 mt-1">
-                    <div className="col-md-3">
-                      <label className="form-label small fw-bold text-secondary">Geometría (Polígono)</label>
-                      <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="hasPolygon" value={mapFilters.hasPolygon} onChange={handleFilterChange}>
-                        <option value="">Todos</option>
-                        <option value="true">Sí (Mapeado)</option>
-                        <option value="false">No (Sin Mapeo)</option>
-                      </select>
-                    </div>
-                    <div className="col-md-3">
-                      <label className="form-label small fw-bold text-secondary">Documentación Tumba</label>
-                      <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="hasDocs" value={mapFilters.hasDocs} onChange={handleFilterChange}>
-                        <option value="">Todos</option>
-                        <option value="true">Con Documentos</option>
-                        <option value="false">Sin Documentos</option>
-                      </select>
-                    </div>
-                    <div className="col-md-3">
-                      <label className="form-label small fw-bold text-secondary">Cédula de Identidad (CI)</label>
-                      <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="hasCI" value={mapFilters.hasCI} onChange={handleFilterChange}>
-                        <option value="">Todos</option>
-                        <option value="true">Validado</option>
-                        <option value="false">Pendiente</option>
-                      </select>
-                    </div>
-                    <div className="col-md-3">
-                      <label className="form-label small fw-bold text-secondary">Inscripción DBI</label>
-                      <select className="form-select shadow-none border-0 rounded-3" style={{ background: '#fff' }} name="hasDBI" value={mapFilters.hasDBI} onChange={handleFilterChange}>
-                        <option value="">Todos</option>
-                        <option value="true">SÍ Aplica</option>
-                        <option value="false">NO Aplica</option>
-                      </select>
-                    </div>
-                  </div>
-              </div>
-          </div>
-        </div>
-      </Collapse>
-
-      {!isMapVisible && (
-        <>
-          <GVEconomicPanel data={ecoData} loading={ecoLoading} error={ecoError} contextLabel={economicoContextLabel} />
-          {renderHeroKpiGrid()}
-        </>
-      )}
-
-      {/* NIVEL 1: VISOR TERRITORIAL & FLOATING UI (SITUATIONAL CONSOLE - ONLY VISIBLE IF isMapVisible is true) */}
-      <div 
-        ref={mapContainerRef}
-        className={`card gv-card border-0 shadow-sm mb-4 overflow-hidden rounded-4 position-relative ${mapType === 'satellite' || mapType === 'hybrid' ? 'is-satellite-mode' : ''}`}
-        style={{ height: isMapVisible ? '620px' : '0px', opacity: isMapVisible ? 1 : 0, transition: 'all 0.5s cubic-bezier(0.4, 0, 0.2, 1)', marginBottom: isMapVisible ? '1.5rem' : '0' }}
-      >
-        {isMapVisible && (
-          <>
-            <div className="gv-map-container h-100">
-               <GVMapaCatastroGoogle
-                 proyectoId={id}
-                 filters={mapFilters}
-                 tramoId={selectedTramoId}
-                 subtramoId={selectedSubtramoId}
-                 onStatsChange={setMapStats}
-                 onSelectExpediente={handleSelectExpediente}
-                 onPanningChange={setIsPanning}
-                 onMapTypeChange={setMapType}
-               />
-            </div>
-
-            {/* FLOATING OVERLAY LAYER */}
-            <div className="gv-map-overlay-wrapper">
-               <AnimatePresence>
-                 {/* 1. Cobertura (Top Left) */}
-                 {activeWidgets.cobertura && (
-                   <motion.div 
-                     key="widget-cobertura"
-                     drag dragListener={false} dragConstraints={mapContainerRef} dragMomentum={false} dragElastic={0}
-                     variants={widgetVariants} initial="hidden" animate="visible" exit="hidden" custom={0}
-                     onDragStart={() => bringToFront('cobertura')}
-                     onDragEnd={(e, info) => handleDragEnd('cobertura', info)}
-                     className={`gv-floating-card p-4 d-flex flex-column ${isPanning ? 'is-map-panning' : ''}`}
-                     style={{ top: 20, left: 20, width: '320px', x: widgetPositions.cobertura.x, y: widgetPositions.cobertura.y, zIndex: widgetZIndexes.cobertura }}
-                     onClick={(e) => { e.stopPropagation(); bringToFront('cobertura'); }}
-                   >
-                     <div className="gv-drag-handle d-flex align-items-center justify-content-between" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                       <h6 className="text-secondary fw-bold text-uppercase mb-0" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>
-                         <i className="bi bi-grip-vertical me-1"></i> Avance Físico
-                       </h6>
-                       <button className="gv-card-close-btn position-static" onClick={() => toggleWidget('cobertura')} style={{ color: closeButtonColor, background: closeButtonBackground }}><i className="bi bi-x-lg" style={{ color: closeButtonColor }}></i></button>
-                     </div>
-                     {(() => {
-                       const targetTotal = safeNumber(data?.target_total, 0);
-                       const censados = mapStats ? safeNumber(mapStats.totalFeatures, 0) : safeNumber(data?.censados, 0);
-                       if (targetTotal === 0 && !loading) return <GVEmptyState message="Sin meta definida" />;
-                       const coveragePct = safePct(censados, targetTotal);
-                       return (
-                         <div className="text-center mt-3">
-                           <div className="display-6 fw-bold text-dark mb-1">{formatPct01(coveragePct)}</div>
-                           <div className="progress mb-2 bg-secondary bg-opacity-10" style={{ height: "6px" }}>
-                             <div className="progress-bar rounded-pill bg-primary" role="progressbar" style={{ width: `${coveragePct * 100}%` }}></div>
-                           </div>
-                           <div className="d-flex justify-content-between text-secondary small fw-bold">
-                             <span>{censados} RELEVADOS</span>
-                             <span>META: {targetTotal}</span>
-                           </div>
-                         </div>
-                       );
-                     })()}
-                   </motion.div>
-                 )}
-
-                 {/* 2. Temporal (Top Right) */}
-                 {activeWidgets.temporal && (
-                   <motion.div 
-                     key="widget-temporal"
-                     drag dragListener={false} dragConstraints={mapContainerRef} dragMomentum={false} dragElastic={0}
-                     variants={widgetVariants} initial="hidden" animate="visible" exit="hidden" custom={1}
-                     onDragStart={() => bringToFront('temporal')}
-                     onDragEnd={(e, info) => handleDragEnd('temporal', info)}
-                     className={`gv-floating-card p-4 d-flex flex-column ${isPanning ? 'is-map-panning' : ''}`}
-                     style={{ top: 20, right: 20, width: '380px', x: widgetPositions.temporal.x, y: widgetPositions.temporal.y, zIndex: widgetZIndexes.temporal }}
-                     onClick={(e) => { e.stopPropagation(); bringToFront('temporal'); }}
-                   >
-                     <div className="gv-drag-handle d-flex align-items-center justify-content-between mb-2" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                        <h6 className="text-secondary fw-bold text-uppercase mb-0" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>
-                           <i className="bi bi-grip-vertical me-1"></i> Ritmo de Ejecución
-                        </h6>
-                        <div className="d-flex align-items-center gap-2">
-                           <div className="dropdown">
-                              <button className="btn btn-sm btn-light border-0 rounded-pill bg-dark bg-opacity-5 text-secondary fw-bold dropdown-toggle" type="button" data-bs-toggle="dropdown" style={{ fontSize: "0.65rem" }}>
-                                <i className="bi bi-calendar-event me-1"></i> Rango
-                              </button>
-                              <div className="dropdown-menu dropdown-menu-end p-3 shadow-lg border-0 rounded-4" style={{ minWidth: "260px", zIndex: 1050 }}>
-                                 <div className="mb-2">
-                                    <label className="form-label small text-secondary fw-medium mb-1">Inicio</label>
-                                    <input type="date" className="form-control form-control-sm border-light" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} />
-                                 </div>
-                                 <div className="mb-3">
-                                    <label className="form-label small text-secondary fw-medium mb-1">Fin</label>
-                                    <input type="date" className="form-control form-control-sm border-light" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} />
-                                 </div>
-                                 <div className="row g-2">
-                                   <div className="col-6">
-                                     <label className="form-label small text-secondary fw-medium mb-1">Agrupar</label>
-                                     <select className="form-select form-select-sm border-light" value={tempGranularidad} onChange={(e) => setTempGranularidad(e.target.value)}>
-                                       <option value="dia">Dia</option>
-                                       <option value="semana">Semana</option>
-                                       <option value="mes">Mes</option>
-                                     </select>
-                                   </div>
-                                 </div>
-                              </div>
-                           </div>
-                           <button className="gv-card-close-btn position-static" onClick={() => toggleWidget('temporal')} style={{ color: closeButtonColor, background: closeButtonBackground }}><i className="bi bi-x-lg" style={{ color: closeButtonColor }}></i></button>
-                        </div>
-                     </div>
-                     <div style={{ height: "180px" }}>
-                        {(!tempAvance || tempAvance.buckets?.length === 0) && !tempLoadingAvance ? (
-                           <GVEmptyState message="Sin actividad en este rango" />
-                        ) : (
-                           <GVTemporalCharts
-                             avance={tempAvance || []}
-                             detalle={tempDetalle || []}
-                             selectedCategoria={tempSelectedCategoria}
-                             modoDetalle={tempModoDetalle}
-                             onSelectCategoria={setTempSelectedCategoria}
-                             loadingAvance={tempLoadingAvance}
-                             errorAvance={tempErrorAvance}
-                             compact
-                           />
-                        )}
-                     </div>
-                   </motion.div>
-                 )}
-
-                 {/* 3. Operativa (Middle Right) */}
-                 {activeWidgets.operativa && (
-                   <motion.div 
-                     key="widget-operativa"
-                     drag dragListener={false} dragConstraints={mapContainerRef} dragMomentum={false} dragElastic={0}
-                     variants={widgetVariants} initial="hidden" animate="visible" exit="hidden" custom={2}
-                     onDragStart={() => bringToFront('operativa')}
-                     onDragEnd={(e, info) => handleDragEnd('operativa', info)}
-                     className={`gv-floating-card p-4 d-flex flex-column ${isPanning ? 'is-map-panning' : ''}`}
-                     style={{ top: 250, right: 20, width: '320px', maxHeight: '320px', x: widgetPositions.operativa.x, y: widgetPositions.operativa.y, zIndex: widgetZIndexes.operativa }}
-                     onClick={(e) => { e.stopPropagation(); bringToFront('operativa'); }}
-                   >
-                     <div className="gv-drag-handle d-flex align-items-center justify-content-between mb-2" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                        <h6 className="text-secondary fw-bold text-uppercase mb-0" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>
-                           <i className="bi bi-grip-vertical me-1"></i> {selectedTramo ? "Subtramos" : "Tramos"}
-                        </h6>
-                        <div className="d-flex align-items-center gap-2">
-                           {selectedHierarchyLevel !== "proyecto" && (
-                              <button className="btn btn-sm btn-link text-decoration-none p-0 text-primary small fw-bold" onClick={() => resetHierarchyToProject()}>
-                                Volver
-                              </button>
-                           )}
-                           <button className="gv-card-close-btn position-static" onClick={() => toggleWidget('operativa')} style={{ color: closeButtonColor, background: closeButtonBackground }}><i className="bi bi-x-lg" style={{ color: closeButtonColor }}></i></button>
-                        </div>
-                     </div>
-                     <div className="overflow-y-auto gv-scrollbar pe-1" style={{ flexGrow: 1, gap: "6px" }}>
-                        {(selectedTramo ? subtramoCards : tramoCards).length === 0 ? (
-                           <GVEmptyState message="Sin tramos registrados" />
-                        ) : (
-                           (selectedTramo ? subtramoCards : tramoCards).map(t => (
-                              <div 
-                                 key={t.id} 
-                                 className="card-internal px-3 py-2 mb-2 rounded-3 border border-secondary border-opacity-10 bg-white hover-shadow-sm transition-all text-dark"
-                                 onClick={() => selectedTramo ? handleSelectSubtramo(t.descripcion) : handleSelectTramoCard(t.descripcion)}
-                                 style={{ cursor: 'pointer' }}
-                              >
-                                 <div className="d-flex justify-content-between align-items-center small">
-                                    <span className="text-truncate pe-1 fw-bold">{t.descripcion}</span>
-                                    <span className="badge bg-primary bg-opacity-10 text-primary rounded-pill">{t.pct.toFixed(0)}%</span>
-                                 </div>
-                                 <div className="progress mt-2 mb-1" style={{ height: '4px' }}>
-                                    <div className="progress-bar rounded-pill" style={{ width: `${t.pct}%` }}></div>
-                                 </div>
-                              </div>
-                           ))
-                        )}
-                     </div>
-                   </motion.div>
-                 )}
-
-                 {/* 4. Económico (Bottom Left - The Financial Console) */}
-                 {activeWidgets.economico && (
-                   <motion.div 
-                     key="widget-economico"
-                     drag dragListener={false} dragConstraints={mapContainerRef} dragMomentum={false} dragElastic={0}
-                     variants={widgetVariants} initial="hidden" animate="visible" exit="hidden" custom={3}
-                     onDragStart={() => bringToFront('economico')}
-                     onDragEnd={(e, info) => handleDragEnd('economico', info)}
-                     className={`gv-floating-card p-4 ${isPanning ? 'is-map-panning' : ''}`}
-                     style={{ bottom: 20, left: 20, width: '480px', x: widgetPositions.economico.x, y: widgetPositions.economico.y, zIndex: widgetZIndexes.economico }}
-                     onClick={(e) => { e.stopPropagation(); bringToFront('economico'); }}
-                   >
-                     <div className="gv-drag-handle d-flex align-items-center justify-content-between mb-3" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                        <h6 className="text-secondary fw-bold text-uppercase mb-0" style={{ fontSize: "0.65rem", letterSpacing: "0.1em" }}>
-                           <i className="bi bi-grip-vertical me-1"></i> Consola Financiera {selectedTramo ? `/ ${selectedTramo}` : ""}
-                        </h6>
-                        <button className="gv-card-close-btn position-static" onClick={() => toggleWidget('economico')} style={{ color: closeButtonColor, background: closeButtonBackground }}><i className="bi bi-x-lg" style={{ color: closeButtonColor }}></i></button>
-                     </div>
-
-                     {ecoLoading ? <div className="text-center py-4"><div className="spinner-border spinner-border-sm text-primary"></div></div> : (
-                        <div className="row g-3">
-                           {/* Lado Izquierdo: Inversión */}
-                           <div className="col-6 border-end">
-                              <div className="mb-3">
-                                 <div className="text-secondary small fw-bold mb-1" style={{ fontSize: '0.6rem' }}>TOTAL PARTE A (MEJORAS)</div>
-                                 <div className="h5 fw-bold text-dark mb-0">${(ecoData?.total_parte_a || 0).toLocaleString()}</div>
-                              </div>
-                              <div className="mb-3">
-                                 <div className="text-secondary small fw-bold mb-1" style={{ fontSize: '0.6rem' }}>TOTAL PARTE B (EDILICIA)</div>
-                                 <div className="h5 fw-bold text-dark mb-0">${(ecoData?.total_parte_b || 0).toLocaleString()}</div>
-                              </div>
-                              <div className="p-2 rounded-3 bg-primary bg-opacity-10 border border-primary border-opacity-20">
-                                 <div className="text-primary small fw-bold mb-0" style={{ fontSize: '0.6rem' }}>TOTAL FINAL ESTIMADO</div>
-                                 <div className="h4 fw-bold text-primary mb-0">${(ecoData?.total_final || 0).toLocaleString()}</div>
-                              </div>
-                           </div>
-                           {/* Lado Derecho: Eficiencia */}
-                           <div className="col-6 ps-3">
-                              <div className="mb-3">
-                                 <div className="text-secondary small fw-bold mb-1" style={{ fontSize: '0.6rem' }}>PROM. BASE / EXPEDIENTE</div>
-                                 <div className="fw-bold text-dark mb-0">${(ecoData?.avg_base || 0).toLocaleString()}</div>
-                              </div>
-                              <div className="mb-3">
-                                 <div className="text-secondary small fw-bold mb-1" style={{ fontSize: '0.6rem' }}>PROM. FINAL / EXPEDIENTE</div>
-                                 <div className="fw-bold text-dark mb-0">${(ecoData?.avg_final || 0).toLocaleString()}</div>
-                              </div>
-                              <div>
-                                 <div className="text-secondary small fw-bold mb-1" style={{ fontSize: '0.6rem' }}>COSTO X UNIDAD CENSAL</div>
-                                 <div className="fw-bold text-dark mb-0">${(ecoData?.cost_per_unit || 0).toLocaleString()}</div>
-                              </div>
-                           </div>
-                        </div>
-                     )}
-                   </motion.div>
-                 )}
-               </AnimatePresence>
-
-               {/* DOCK FOR MINIMIZED WIDGETS */}
-               <div className="gv-widget-dock">
-                  {!activeWidgets.cobertura && <div className="gv-dock-pill" onClick={() => toggleWidget('cobertura')}><i className="bi bi-circle-fill text-primary me-2" style={{ fontSize: '6px' }}></i> Cobertura</div>}
-                  {!activeWidgets.temporal && <div className="gv-dock-pill" onClick={() => toggleWidget('temporal')}><i className="bi bi-circle-fill text-success me-2" style={{ fontSize: '6px' }}></i> Ejecución</div>}
-                  {!activeWidgets.operativa && <div className="gv-dock-pill" onClick={() => toggleWidget('operativa')}><i className="bi bi-circle-fill text-warning me-2" style={{ fontSize: '6px' }}></i> Operativa</div>}
-                  {!activeWidgets.economico && <div className="gv-dock-pill" onClick={() => toggleWidget('economico')}><i className="bi bi-circle-fill text-danger me-2" style={{ fontSize: '6px' }}></i> Económico</div>}
-               </div>
-            </div>
-
-            {/* Footer Información contextual (Territorio) */}
-            <div className="position-absolute bottom-0 start-0 w-100 p-2 bg-white bg-opacity-90 border-top text-center" style={{ fontSize: '10px', pointerEvents: 'none', zIndex: 5 }}>
-               <span className="text-secondary fw-bold px-3">
-                  <i className="bi bi-pin-map-fill me-1"></i> {mapStats?.totalFeatures || 0} Expedientes en el visor actual
-               </span>
-               <span className="text-secondary fw-bold px-3 border-start">
-                  <i className="bi bi-layers-fill me-1"></i> Modo: {mapType.toUpperCase()}
-               </span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* NIVEL 2: COMPOSICIÓN TÉCNICA (Análisis de Fases) */}
-      <div className="card shadow-sm border-0 rounded-4 overflow-hidden mb-4 bg-white">
-        <div className="card-header bg-white border-0 py-4 px-4 d-flex justify-content-between align-items-center">
-          <div>
-            <h5 className="mb-1 fw-bold text-dark">Detalle de Composición Operativa</h5>
-            <p className="text-muted small mb-0">Seguimiento de fases {selectedTramo ? `en ${selectedTramo}` : "globales"}</p>
-          </div>
-          <div className="d-flex bg-light p-1 rounded-pill">
-            <button className={`btn btn-sm rounded-pill px-4 transition-all ${phaseTab === 'global' ? 'bg-white shadow-sm text-primary fw-bold' : 'text-secondary border-0'}`} onClick={() => setPhaseTab("global")}>Global</button>
-            <button className={`btn btn-sm rounded-pill px-4 transition-all ${phaseTab === 'mejora' ? 'bg-white shadow-sm text-primary fw-bold' : 'text-secondary border-0'}`} onClick={() => setPhaseTab("mejora")}>Mejoras</button>
-            <button className={`btn btn-sm rounded-pill px-4 transition-all ${phaseTab === 'terreno' ? 'bg-white shadow-sm text-primary fw-bold' : 'text-secondary border-0'}`} onClick={() => setPhaseTab("terreno")}>Terrenos</button>
-          </div>
-        </div>
-        
-        <div className="card-body px-4 pb-4">
-          <div className="row g-4">
-            <div className="col-md-7">
-              <GVCharts
-                dashboard={data}
-                onCompositionSelect={applyCompositionFilter}
-                onMejoraPhaseSelect={(idx) => applyBarPhaseFilter("mejora", idx)}
-                onTerrenoPhaseSelect={(idx) => applyBarPhaseFilter("terreno", idx)}
-              />
-            </div>
-            <div className="col-md-5">
-              <div className="d-flex flex-column h-100">
-                <div className="flex-grow-1">
-                  {(() => {
-                    const sinIniciarCount = Number(data?.phases?.sin_iniciar?.counts?.[0]) || 0;
-                    const showSinIniciar = sinIniciarCount > 0;
-                    
-                    const renderPhaseTable = (tipo, maxFases, title) => {
-                      const counts = normalizePhaseCounts(data, tipo, maxFases);
-                      const totalTipo = data?.by_tipo?.[tipo] || 0;
-                      
-                      return (
-                        <div className="table-responsive">
-                          <table className="table table-sm table-hover table-borderless align-middle gv-table mb-0">
-                            <thead className="table-light text-muted small">
-                              <tr>
-                                <th>Etapa {title}</th>
-                                <th className="text-end">Cant.</th>
-                                <th className="text-end">%</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {counts.map((count, i) => {
-                                const isActive = mapFilters.tipo === tipo && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
-                                return (
-                                  <tr
-                                    key={`${tipo}-${i}`}
-                                    className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
-                                    onClick={() => applyPhaseFilter(tipo, i)}
-                                    style={{ cursor: "pointer" }}
-                                  >
-                                    <td>
-                                      <div className="d-flex align-items-center gap-2">
-                                        <div className="gv-dot" style={{ background: getPhaseHex(i, maxFases) }}></div>
-                                        <span className={isActive ? "fw-bold" : ""}>{i === maxFases ? 'FINAL' : `Fase ${i}`}</span>
-                                      </div>
-                                    </td>
-                                    <td className="text-end fw-bold">{count}</td>
-                                    <td className="text-end text-muted small">
-                                      {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : "0.0"}%
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      );
-                    };
-
-                    if (phaseTab === 'global') {
-                      return (
-                        <div className="d-flex flex-column gap-3">
-                           <div className="p-3 bg-light rounded-3">
-                               <h6 className="small fw-bold text-secondary mb-2">Resumen de Composición</h6>
-                               <div className="d-flex justify-content-between mb-1 small">
-                                  <span>Catastro Mejora:</span>
-                                  <span className="fw-bold">{data?.by_tipo?.mejora || 0}</span>
-                                </div>
-                                <div className="d-flex justify-content-between small">
-                                  <span>Catastro Terreno:</span>
-                                  <span className="fw-bold">{data?.by_tipo?.terreno || 0}</span>
-                                </div>
-                           </div>
-                           {showSinIniciar && (
-                              <div className="gv-alert-soft">
-                                <p className="mb-0 small">Hay <strong>{sinIniciarCount}</strong> registros sin tipo definido.</p>
-                              </div>
-                           )}
-                           <div className="text-muted small mt-auto">Seleccione una categoría para filtrar el visor.</div>
-                        </div>
-                      );
-                    }
-                    if (phaseTab === 'mejora') return renderPhaseTable('mejora', 5, 'Mejora');
-                    if (phaseTab === 'terreno') return renderPhaseTable('terreno', 7, 'Terreno');
-                  })()}
+        return (
+          <div className="row g-4 mb-4">
+            {/* Card 1: Cobertura */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#198754" }}>
+                <h5 className="text-success mb-3">Cobertura</h5>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Meta (Universo)</span>
+                  <span className="gv-kpi text-dark">{hasDenom ? targetTotal : "—"}</span>
+                </div>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Relevados</span>
+                  <span className="gv-kpi text-dark">{censados}</span>
+                </div>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Pendientes</span>
+                  <span className="gv-kpi text-secondary">{hasDenom ? gap : "—"}</span>
+                </div>
+                <div className="d-flex justify-content-between mt-3 pt-3 border-top">
+                  <span className="gv-muted fw-bold text-dark">Avance</span>
+                  <span className="gv-kpi text-success">
+                    {hasDenom ? formatPct01(coveragePct) : <small className="text-muted">Sin universo definido</small>}
+                  </span>
                 </div>
               </div>
             </div>
+
+            {/* Card 2: Temporal */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#0d6efd" }}>
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <h5 className="text-primary mb-0">Temporal</h5>
+                  <div className="d-flex gap-2">
+                    <select
+                      className="form-select form-select-sm"
+                      value={tempGranularidad}
+                      onChange={(e) => setTempGranularidad(e.target.value)}
+                    >
+                      <option value="dia">Dia</option>
+                      <option value="semana">Semana</option>
+                      <option value="mes">Mes</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="row g-2 mb-2">
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha inicio</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaInicio}
+                      onChange={(e) => setFechaInicio(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha fin</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaFin}
+                      onChange={(e) => setFechaFin(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="d-flex align-items-center gap-2 mb-2">
+                  <label className="form-label small mb-0">Modo</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={tempModoDetalle}
+                    onChange={(e) => setTempModoDetalle(e.target.value)}
+                  >
+                    <option value="fases">Fases</option>
+                    <option value="dbi">DBI</option>
+                  </select>
+                </div>
+
+                {temporalFilterBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Universo actual: {temporalFilterBadges.join(" / ")}
+                  </div>
+                )}
+                {temporalSecondaryBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Filtros activos en mapa (no afectan temporal): {temporalSecondaryBadges.join(" / ")}
+                  </div>
+                )}
+
+                <GVTemporalCharts
+                  avance={tempAvance}
+                  detalle={tempDetalle}
+                  selectedCategoria={tempSelectedCategoria}
+                  modoDetalle={tempModoDetalle}
+                  onSelectCategoria={setTempSelectedCategoria}
+                  isFiltered={temporalFilterBadges.length > 0}
+                  loadingAvance={tempLoadingAvance}
+                  loadingDetalle={tempLoadingDetalle}
+                  errorAvance={tempErrorAvance}
+                  errorDetalle={tempErrorDetalle}
+                />
+              </div>
+            </div>
+
+            {/* Card 3: Tramos */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#f59e0b" }}>
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                  <h5 className="mb-0" style={{ color: "#d97706" }}>Tramos</h5>
+                  {selectedHierarchyLevel !== "proyecto" && (
+                    <button
+                      className="btn btn-sm btn-outline-warning"
+                      onClick={() => resetHierarchyToProject()}
+                    >
+                      Ver todos
+                    </button>
+                  )}
+                </div>
+                {tramoCards.length === 0 ? (
+                  <div className="text-muted small">Sin tramos censales cargados.</div>
+                ) : (
+                  <div className="d-flex flex-column gap-2">
+                    {tramoCards.map((t) => {
+                      const isActive = selectedHierarchyLevel === "tramo" && selectedTramo === t.descripcion;
+                      return (
+                        <button
+                          key={t.id}
+                          className={`btn btn-sm text-start ${isActive ? "btn-warning" : "btn-outline-warning"}`}
+                          onClick={() => handleSelectTramoCard(t.descripcion)}
+                        >
+                          <div className="fw-semibold">{t.descripcion}</div>
+                          <div className="d-flex justify-content-between small">
+                            <span>Universo: {t.universo || "--"}</span>
+                            <span>Relevados: {t.censados}</span>
+                          </div>
+                          <div className="small text-muted">{t.pct.toFixed(1)}%</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
+        );
+      })()}
+
+      <GVCharts
+        dashboard={data}
+        onCompositionSelect={applyCompositionFilter}
+        onMejoraPhaseSelect={(idx) => applyBarPhaseFilter("mejora", idx)}
+        onTerrenoPhaseSelect={(idx) => applyBarPhaseFilter("terreno", idx)}
+        hierarchyBar={hierarchyBar}
+      />
+      <div className="d-flex flex-wrap align-items-center gap-2 mt-2">
+        <span className="badge bg-light text-dark border">Proyecto</span>
+        {selectedTramo && (
+          <>
+            <span className="text-muted">›</span>
+            <span className="badge bg-warning text-dark">{selectedTramo}</span>
+          </>
+        )}
+        {selectedSubtramo && (
+          <>
+            <span className="text-muted">›</span>
+            <span className="badge bg-primary">{selectedSubtramo}</span>
+          </>
+        )}
+        <div className="ms-auto d-flex gap-2">
+          {selectedHierarchyLevel === "subtramo" && (
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => handleSelectSubtramo("")}
+            >
+              Volver a Tramo
+            </button>
+          )}
+          {selectedHierarchyLevel !== "proyecto" && (
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => resetHierarchyToProject()}
+            >
+              Volver a Proyecto
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Distribución Global por fases */}
+      <div className="card shadow-sm mt-4">
+        <div className="card-body">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h5 className="card-title text-secondary mb-0">Distribución por fases (Global)</h5>
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => setMapFilters(prev => ({ ...prev, tipo: "", faseMin: "", faseMax: "" }))}
+            >
+              Limpiar filtro de fase
+            </button>
+          </div>
+          <p className="small text-muted mb-3">
+            F0 = Relevamiento | F1 = Documentación | Final = Carpeta finalizada
+          </p>
+          {(() => {
+            const sinIniciarCount = Number(data?.phases?.sin_iniciar?.counts?.[0]) || 0;
+            const sinIniciarPctBase = Number(data?.censados) || Number(data?.target_total) || 0;
+            const showSinIniciar = sinIniciarCount > 0;
+            const colClass = showSinIniciar ? "col-md-4" : "col-md-6";
+
+            return (
+              <div className="row g-4">
+                {/* Tabla Mejora */}
+                <div className={colClass}>
+                  <h6 className="text-primary border-bottom pb-2">Mejora</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'mejora', 5);
+                          const totalTipo = data.by_tipo?.mejora || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "mejora" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`m-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("mejora", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={5} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Tabla Terreno */}
+                <div className={colClass}>
+                  <h6 className="text-warning border-bottom pb-2">Terreno</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'terreno', 7);
+                          const totalTipo = data.by_tipo?.terreno || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "terreno" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`t-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("terreno", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={7} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {showSinIniciar && (
+                  <div className={colClass}>
+                    <h6 className="text-secondary border-bottom pb-2">Sin tipo definido</h6>
+                    <div className="table-responsive">
+                      <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                        <thead className="table-light text-muted small">
+                          <tr>
+                            <th>Fase</th>
+                            <th>Cantidad</th>
+                            <th>%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>
+                              <span className="badge text-bg-secondary">F0</span>
+                            </td>
+                            <td className="fw-semibold">{sinIniciarCount}</td>
+                            <td className="text-muted small">
+                              {sinIniciarPctBase > 0 ? ((sinIniciarCount / sinIniciarPctBase) * 100).toFixed(1) : "0.0"}%
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-muted small mt-2">
+                      Corresponde a expedientes relevados sin tipo definido todavia.
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
+      <GVEconomicPanel
+        data={ecoData}
+        loading={ecoLoading}
+        error={ecoError}
+        contextLabel={economicoContext.length > 0 ? `Universo actual: ${economicoContext.join(" / ")}` : "Universo actual: sin filtros"}
+      />
+
+      {/* Row map layout and Filters */}
+      <div className="card shadow-sm mt-4 mb-4">
+        <div className="card-body bg-light">
+          <h5 className="card-title text-secondary mb-3">Filtros del Mapa</h5>
+          <div className="row g-2 mb-2">
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha inicio</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaInicio}
+                onChange={(e) => setFechaInicio(e.target.value)}
+              />
+            </div>
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha fin</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaFin}
+                onChange={(e) => setFechaFin(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="mb-2">
+            {anyMapFiltersActive ? (
+              <div className="d-flex flex-wrap align-items-center gap-2">
+                <small className="text-muted">Filtros activos:</small>
+                {mapFilterBadges.length > 0 ? (
+                  mapFilterBadges.map((label) => (
+                    <span key={label} className="badge bg-light text-dark border">
+                      {label}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-muted small">Otros filtros activos</span>
+                )}
+              </div>
+            ) : (
+              <small className="text-muted">Sin filtros</small>
+            )}
+          </div>
+          <div className="row g-3 gv-filtros">
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Búsqueda</label>
+              <input
+                type="text"
+                className="form-control form-control-sm"
+                value={qInput}
+                onChange={(e) => setQInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    if (qDebounceRef.current) {
+                      clearTimeout(qDebounceRef.current);
+                      qDebounceRef.current = null;
+                    }
+                    setMapFilters((prev) => ({ ...prev, q: e.currentTarget.value }));
+                  }
+                }}
+                placeholder="Buscar por titular/co-titular, CI, expediente, DBI o código censo"
+              />
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Tipo</label>
+              <select className="form-select form-select-sm" name="tipo" value={mapFilters.tipo} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="mejora">Mejora</option>
+                <option value="terreno">Terreno</option>
+              </select>
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Fase Min</label>
+              <select className="form-select form-select-sm" name="faseMin" value={mapFilters.faseMin} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
+              </select>
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Fase Max</label>
+              <select className="form-select form-select-sm" name="faseMax" value={mapFilters.faseMax} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
+              </select>
+            </div>
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Tramo</label>
+              <select
+                className="form-select form-select-sm"
+                value={mapFilters.tramo}
+                onChange={(e) => {
+                  const desc = e.target.value;
+                  setMapFilters((prev) => ({ ...prev, tramo: desc, subtramo: "" }));
+                  setSelectedTramo(desc);
+                  setSelectedSubtramo("");
+                  setSelectedHierarchyLevel(desc ? "tramo" : "proyecto");
+                  setSubtramosCensales([]);
+                  if (desc) {
+                    loadSubtramosForTramoDesc(desc);
+                  }
+                }}
+              >
+                <option value="">Todos</option>
+                {tramosCensales.map((t) => (
+                  <option key={t.id_proyecto_tramo} value={t.descripcion}>
+                    {t.descripcion}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Subtramo</label>
+              <select
+                className="form-select form-select-sm"
+                value={mapFilters.subtramo}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setMapFilters((prev) => ({ ...prev, subtramo: next }));
+                  setSelectedSubtramo(next);
+                  setSelectedHierarchyLevel(next ? "subtramo" : (selectedTramo ? "tramo" : "proyecto"));
+                }}
+                disabled={!mapFilters.tramo}
+              >
+                <option value="">Todos</option>
+                {subtramosCensales.map((st) => (
+                  <option key={st.id_proyecto_subtramo} value={st.descripcion}>
+                    {st.descripcion}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Booleans Toggle Selects */}
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con Polígono</label>
+              <select className="form-select form-select-sm" name="hasPolygon" value={mapFilters.hasPolygon} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con Docs (Tumba)</label>
+              <select className="form-select form-select-sm" name="hasDocs" value={mapFilters.hasDocs} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con CI</label>
+              <select className="form-select form-select-sm" name="hasCI" value={mapFilters.hasCI} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con DBI</label>
+              <select className="form-select form-select-sm" name="hasDBI" value={mapFilters.hasDBI} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+
+            <div className="col-12 mt-3 text-end pt-2 border-top">
+              <button className="btn btn-outline-secondary btn-sm" onClick={handleResetFilters}>Limpiar Filtros</button>
+            </div>
+          </div>
+
+          <div className="alert alert-secondary py-2 mt-3 mb-0" role="alert">
+            <strong>Registros encontrados en el mapa:</strong>{" "}
+            {mapStats ? mapStats.totalFeatures : "..."}
+          </div>
+          {mapStats && mapStats.totalFeatures === 0 && Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "") && (
+            <div className="alert alert-warning py-2 mt-2 mb-0" role="alert">
+              No se encontraron expedientes con los filtros actuales.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="row mt-4">
+        {/* Mapa (7 u 8 columnas según si hay selección) */}
+        <div className="col-12">
+          {(mapFilters.tipo === "mejora" || mapFilters.tipo === "terreno") && (() => {
+            const isPhaseStrict = mapFilters.faseMin !== "" && mapFilters.faseMin === mapFilters.faseMax;
+            const labelTipo = mapFilters.tipo === "mejora" ? "Mejora" : "Terreno";
+
+            return (
+              <div className="alert alert-info py-2 d-flex justify-content-between align-items-center">
+                <span>
+                  Filtro activo: <strong>{labelTipo} {isPhaseStrict ? `/ F${mapFilters.faseMin}` : ""}</strong>
+                </span>
+                <button
+                  className="btn btn-sm btn-outline-primary"
+                  onClick={() => handleResetFilters()}
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+            );
+          })()}
+          <GVMapaCatastroGoogle
+            proyectoId={id}
+            filters={mapFilters}
+            tramoId={selectedTramoId}
+            subtramoId={selectedSubtramoId}
+            onStatsChange={setMapStats}
+            onSelectExpediente={handleSelectExpediente}
+          />
+        </div>
+
+      </div>
+
+      {/* Modal Aislado */}
       <GvExpedienteModal
         show={modalShow}
         onHide={() => setModalShow(false)}

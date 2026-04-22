@@ -11,6 +11,7 @@ build/
 **/dist/
 **/build/
 
+backup_old/
 frontend/dist/
 frontend/build/
 backend/dist/
