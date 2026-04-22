@@ -56,6 +56,17 @@ async function apiDelete(url) {
   return r.json();
 }
 
+function extractApiErrorMessage(err, fallback = "Error inesperado") {
+  const raw = String(err?.message || err || "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return String(parsed?.message || parsed?.error || parsed?.detail || fallback);
+  } catch {
+    return raw;
+  }
+}
+
 function normalizeDocName(doc) {
   return String(
     doc?.nombre_archivo ||
@@ -128,15 +139,40 @@ function normalizePositiveId(value) {
 function extractSimpleBase(s) {
   const raw = String(s || "").trim();
   if (!raw) return "";
-  const basePart = raw.split("/")[0];
+  const prefixed = raw.split("-")[0];
+  const parts = raw.split("-");
+  const basePart =
+    /^(?:ST|TR)[A-Z0-9.]+$/i.test(prefixed) && parts.length >= 2 ? parts[1] : raw.split("/")[0];
   const digits = basePart.replace(/\D/g, "");
   if (!digits) return "";
   return String(parseInt(digits, 10));
 }
 
+function extractCodigoUnicoBase(code) {
+  const raw = String(code || "").trim();
+  if (!raw) return "";
+  const parts = raw.split("-");
+  const basePart = /^(?:ST|TR)[A-Z0-9.]+$/i.test(parts[0] || "") && parts.length >= 2 ? parts[1] : parts[0];
+  const digits = String(basePart || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return String(parseInt(digits, 10));
+}
+
+function normalizeCodigoJerarquicoLabel(raw) {
+  return String(raw || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\b(?:sub\s*tramo|subtramo|tramo)\b/gi, " ")
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, " ")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isCodigoUnicoValid(code) {
   if (!code) return true;
-  return /^\d+-\d+-(T|M)$/.test(String(code).trim().toUpperCase());
+  return /^(?:(?:ST|TR)[A-Z0-9.]+-)?\d+-\d+-(T|M)$/.test(String(code).trim().toUpperCase());
 }
 
 function isCodigoUnicoConsistent(code, baseNotificacion) {
@@ -144,7 +180,7 @@ function isCodigoUnicoConsistent(code, baseNotificacion) {
   const normalizedBase = extractSimpleBase(baseNotificacion);
   if (!normalizedBase) return true;
 
-  const codeBase = String(code).split("-")[0];
+  const codeBase = extractCodigoUnicoBase(code);
   return codeBase === normalizedBase;
 }
 
@@ -452,7 +488,8 @@ function isConvertibleExt(ext) {
 }
 
 /* =========================
-   ✅ Regla: nombre debe incluir TERRENO o MEJORA(S)
+   ✅ Regla: validación contextual por Carpeta + Input (ILIKE-style)
+   Permite nombres técnicos: NOT1_POL.TITULO_MEJORAS.kmz, AFECTACION_PREDIO.kmz, etc.
    ========================= */
 function normNameForRule(s) {
   return String(s || "")
@@ -461,13 +498,41 @@ function normNameForRule(s) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^A-Z0-9]+/g, "_");
 }
-function ruleKeywords(tipoCarpeta) {
-  return tipoCarpeta === "terreno" ? ["TERRENO"] : ["MEJORA", "MEJORAS"];
+
+/**
+ * Devuelve keywords segmentadas:
+ * - folderKeywords: términos que identifican la Carpeta (Terreno vs Mejora)
+ * - inputKeywords:  términos que identifican el Uso (Proyecto vs Afectación)
+ */
+function ruleKeywords(tipoCarpeta, tipoPoligono) {
+  const folderKeywords =
+    tipoCarpeta === "terreno"
+      ? ["TERRENO", "TITULO", "SUELO", "PREDIO"]
+      : ["MEJORA", "MEJORAS", "EDIF", "CONSTR", "BLOQUE"];
+
+  const inputKeywords =
+    tipoPoligono === "afectacion"
+      ? ["AFEC", "AFECTACION", "ZONA", "LIMIT"]
+      : ["TITULO", "PROYECTO", "POL", "PLANO"];
+
+  return { folderKeywords, inputKeywords };
 }
-function matchesTipoRule(nameOrBase, tipoCarpeta) {
+
+/**
+ * Validación ILIKE contextual:
+ * Devuelve true si el nombre cumple con AL MENOS UNA keyword de Carpeta
+ * O AL MENOS UNA keyword de Input.
+ * Esto permite nombres técnicos (ej. NOT1_POL.TITULO_MEJORAS.kmz) sin requerir
+ * exactamente "TERRENO" o "MEJORA" siempre que el contexto del input lo defina.
+ */
+function matchesTipoRule(nameOrBase, tipoCarpeta, tipoPoligono) {
   const N = normNameForRule(nameOrBase);
-  const keys = ruleKeywords(tipoCarpeta);
-  return keys.some((k) => N.includes(k));
+  const { folderKeywords, inputKeywords } = ruleKeywords(tipoCarpeta, tipoPoligono);
+
+  const matchesFolder = folderKeywords.some((k) => new RegExp(k, "i").test(N));
+  const matchesInput  = inputKeywords.some((k)  => new RegExp(k, "i").test(N));
+
+  return matchesFolder || matchesInput;
 }
 
 const POLY_TYPES = [
@@ -622,6 +687,9 @@ export default function Expedientes() {
     documentacion_presentada: [],
   });
 
+  // Estado para errores de carga de polígonos (Feedback amigable)
+  const [uploadError, setUploadError] = useState(null);
+
   // Catálogos Censales
   const [tramosCensales, setTramosCensales] = useState([]);
   const [subtramosCensales, setSubtramosCensales] = useState([]);
@@ -643,23 +711,43 @@ export default function Expedientes() {
     checked: false,
     available: true,
     existing: [],
+    related: [],
   });
+  const [codigoSugerido, setCodigoSugerido] = useState("");
+  const [codigoSugeridoLoading, setCodigoSugeridoLoading] = useState(false);
 
   // Verificar disponibilidad de base
   useEffect(() => {
-    // Si hay codigo_exp usemos eso, si no, intentemos extraer del unico que estan tipeando
-    const rawBase = form.codigo_exp || String(form.codigo_unico || "").split("-")[0];
-    const base = extractSimpleBase(rawBase);
+    const tramoId = normalizePositiveId(form.id_tramo);
+    const subtramoId = normalizePositiveId(form.id_sub_tramo);
+    const base = extractSimpleBase(form.codigo_exp);
+    const codigoTentativo = String(form.codigo_unico || codigoSugerido || "").trim();
 
-    if (!base || mode === "ver") {
-      setBaseAvailability({ checked: false, available: true, existing: [] });
+    // ✅ FIX: Permitimos que la base se valide en EDICIÓN aún sin tramo (estado Legacy). 
+    // Solo bloqueamos por tramo obligatorio en modo CREAR.
+    if ((!base && !codigoTentativo) || mode === "ver") {
+      setBaseAvailability({ checked: false, available: true, existing: [], related: [] });
+      return;
+    }
+
+    if (!tramoId && mode === "crear") {
+      setBaseAvailability({ checked: false, available: true, existing: [], related: [] });
       return;
     }
 
     const timer = setTimeout(async () => {
       try {
+        const params = new URLSearchParams({
+          base,
+          codigo_unico: codigoTentativo,
+          id_proyecto: String(idProyecto),
+          id_proyecto_tramo: String(tramoId),
+          id_proyecto_subtramo: subtramoId ? String(subtramoId) : "",
+          idTramo: String(tramoId),
+          idSubtramo: subtramoId ? String(subtramoId) : "",
+        });
         const data = await apiGet(
-          `${API}/expedientes/proyecto/${idProyecto}/check-base?base=${encodeURIComponent(base)}`
+          `${API}/expedientes/proyecto/${idProyecto}/check-base?${params.toString()}`
         );
         // Filtrar coincidencias:
         // 1. No mostrar el expediente actual que estamos editando.
@@ -677,13 +765,14 @@ export default function Expedientes() {
           checked: true,
           available: realExisting.length === 0,
           existing: realExisting,
+          related: Array.isArray(data.sameBaseExisting) ? data.sameBaseExisting : [],
         });
       } catch (e) {
         console.error("Error al verificar base:", e);
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [form.codigo_exp, idProyecto, current?.id_expediente, mode]);
+  }, [form.codigo_exp, form.codigo_unico, codigoSugerido, form.id_tramo, form.id_sub_tramo, idProyecto, current?.id_expediente, mode, form.propietario_nombre]);
 
 
   const readonly =
@@ -707,37 +796,73 @@ export default function Expedientes() {
 
   // Sugerir código único automáticamente si está vacío
   useEffect(() => {
-    if (!show || mode === "ver") return;
+    if (!show || mode === "ver") {
+      setCodigoSugerido("");
+      setCodigoSugeridoLoading(false);
+      return;
+    }
     const hasManualCode = current?.codigo_unico && String(current.codigo_unico).trim();
-    if (hasManualCode) return; // No sobreescribir si ya tiene uno en DB
+    if (hasManualCode) {
+      setCodigoSugerido("");
+      setCodigoSugeridoLoading(false);
+      return;
+    }
 
-    const base = extractSimpleBase(form.codigo_exp);
-    if (!base) return;
+    // ✅ Anti-loop: En creación siempre pedimos la siguiente base libre (base=0).
+    // Solo usamos la base escrita por el usuario si estamos en EDICIÓN.
+    const base = mode === "crear" ? "0" : (extractSimpleBase(form.codigo_exp) || "0");
+    const tramoId = normalizePositiveId(form.id_tramo);
+    
+    if (!tramoId) {
+      setCodigoSugerido("");
+      return;
+    }
 
     const tipo = form.tipo_expediente || (tipoCarpeta === "terreno" ? "T" : "M");
-
-    // Verificar si el código actual ya coincide con el tipo
-    const currentCode = String(form.codigo_unico || "").trim();
-    const needsUpdate =
-      !currentCode ||
-      (tipo === "T" && currentCode.endsWith("-M")) ||
-      (tipo === "M" && currentCode.endsWith("-T"));
-
-    if (!needsUpdate) return;
-
+    const subtramoId = normalizePositiveId(form.id_sub_tramo);
+    const tramoLabel =
+      tramosCensales.find((t) => Number(t.id_proyecto_tramo) === tramoId)?.descripcion || "";
+    const subtramoLabel =
+      subtramosCensales.find((st) => Number(st.id_proyecto_subtramo) === subtramoId)?.descripcion || "";
 
     const timer = setTimeout(async () => {
+      setCodigoSugeridoLoading(true);
       try {
+        const params = new URLSearchParams({
+          base,
+          tipo,
+          id_proyecto: String(idProyecto),
+          id_proyecto_tramo: String(tramoId),
+          id_proyecto_subtramo: subtramoId ? String(subtramoId) : "",
+          idTramo: String(tramoId),
+          idSubtramo: subtramoId ? String(subtramoId) : "",
+          tramo: tramoLabel,
+          subtramo: subtramoLabel,
+        });
         const data = await apiGet(
-          `${API}/expedientes/proyecto/${idProyecto}/suggest-codigo?base=${encodeURIComponent(
-            base
-          )}&tipo=${tipo}`
+          `${API}/expedientes/proyecto/${idProyecto}/suggest-codigo?${params.toString()}`
         );
         if (data?.codigo_unico) {
-          setForm((prev) => ({ ...prev, codigo_unico: data.codigo_unico }));
+          setCodigoSugerido(data.codigo_unico);
+          setForm((prev) => {
+            // En modo creación, actualizamos SOLO codigo_unico (no codigo_exp)
+            // para evitar que el loop de dependencias vuelva a disparar el efecto.
+            if (mode === "crear") {
+               return { ...prev, codigo_unico: data.codigo_unico };
+            }
+            // En edición, solo actualizamos si estaba vacío
+            return String(prev.codigo_unico || "").trim()
+              ? prev
+              : { ...prev, codigo_unico: data.codigo_unico };
+          });
+        } else {
+          setCodigoSugerido("");
         }
       } catch (e) {
         console.error("Error sugiriendo código:", e);
+        setCodigoSugerido("");
+      } finally {
+        setCodigoSugeridoLoading(false);
       }
     }, 500);
 
@@ -745,11 +870,14 @@ export default function Expedientes() {
   }, [
     show,
     mode,
-    form.codigo_exp,
+    form.id_tramo,
+    form.id_sub_tramo,
     tipoCarpeta,
     form.tipo_expediente,
     idProyecto,
     current?.codigo_unico,
+    tramosCensales,
+    subtramosCensales,
   ]);
 
   const loadCatastroFeatures = async (force = false) => {
@@ -1439,15 +1567,16 @@ export default function Expedientes() {
     return [...triads, ...singles];
   };
 
-  const buildPolyRuleViolations = (sets) => {
+  // tipoPoligono se inyecta en tiempo de renderizado a través de polyRuleViolationsByTipo
+  const buildPolyRuleViolations = (sets, tipoPoligonoCtx) => {
     const bad = [];
     for (const s of sets) {
       if (s.kind === "triad") {
-        if (!matchesTipoRule(s.base, tipoCarpeta)) bad.push({ kind: "triad", name: s.base });
+        if (!matchesTipoRule(s.base, tipoCarpeta, tipoPoligonoCtx))
+          bad.push({ kind: "triad", name: s.base });
       } else {
-        if (!matchesTipoRule(s.file?.name, tipoCarpeta)) {
+        if (!matchesTipoRule(s.file?.name, tipoCarpeta, tipoPoligonoCtx))
           bad.push({ kind: "single", name: s.file?.name || "archivo" });
-        }
       }
     }
     return bad;
@@ -1471,8 +1600,9 @@ export default function Expedientes() {
 
   const polyRuleViolationsByTipo = useMemo(
     () => ({
-      proyecto: buildPolyRuleViolations(polySetsByTipo.proyecto),
-      afectacion: buildPolyRuleViolations(polySetsByTipo.afectacion),
+      // Pasamos el tipoPoligono como contexto para la validación de keywords de Input
+      proyecto:   buildPolyRuleViolations(polySetsByTipo.proyecto,   "proyecto"),
+      afectacion: buildPolyRuleViolations(polySetsByTipo.afectacion, "afectacion"),
     }),
     [polySetsByTipo, tipoCarpeta]
   );
@@ -1507,13 +1637,22 @@ export default function Expedientes() {
     }
 
     if (polyRuleViolations.length) {
-      const need = tipoCarpeta === "terreno" ? "TERRENO" : "MEJORA o MEJORAS";
+      // Mensaje actualizado para reflejar la nueva validación contextual flexible
+      const folderHint = tipoCarpeta === "terreno"
+        ? "TERRENO, TITULO, SUELO o PREDIO"
+        : "MEJORA, MEJORAS, EDIF, CONSTR o BLOQUE";
+      const inputHint = tipoPoligono === "afectacion"
+        ? "AFEC, AFECTACION, ZONA o LIMIT"
+        : "TITULO, PROYECTO, POL o PLANO";
       setPolyUploadNoticeByTipo((prev) => ({
         ...prev,
         [tipoPoligono]: {
           tone: "warning",
           message:
-            `Estás en "${tipoCarpeta.toUpperCase()}" y el/los archivos deben contener "${need}" en el nombre.`,
+            `El nombre del archivo no parece pertenecer a esta categoría. ` +
+            `Para carpeta "${tipoCarpeta.toUpperCase()}" se esperan términos como: ${folderHint}. ` +
+            `Para el input "${tipoPoligono.toUpperCase()}" se esperan: ${inputHint}. ` +
+            `Si el archivo es correcto, renombralo o contactá al administrador.`,
           details: polyRuleViolations.map((x) => x.name).filter(Boolean),
         },
       }));
@@ -1522,6 +1661,8 @@ export default function Expedientes() {
 
     setPolyBusy(true);
     setPolyUploadNoticeByTipo((prev) => ({ ...prev, [tipoPoligono]: null }));
+    setUploadError(null); // Reset anterior
+
     try {
       const fd = new FormData();
       polyFiles.forEach((f) => fd.append("files", f));
@@ -1529,11 +1670,14 @@ export default function Expedientes() {
       fd.append("tipo_poligono", tipoPoligono);
 
       const tablaDestino = tipoCarpeta === "mejora" ? "ema.bloque_mejoras" : "ema.bloque_terreno";
-      const singles = polySets.filter((s) => s.kind === "single");
-      for (const _s of singles) fd.append("defaultTabla", tablaDestino);
+      fd.append("defaultTabla", tablaDestino);
 
+      // ✅ Mapping enriquecido: cada entrada incluye { tabla, tipo_poligono }
+      // El backend extrae tipo_poligono del objeto en lugar de adivinarlo por nombre de archivo.
       const mapping = {};
-      for (const s of polySets) mapping[s.baseNorm] = tablaDestino;
+      for (const s of polySets) {
+        mapping[s.baseNorm] = { tabla: tablaDestino, tipo_poligono: tipoPoligono };
+      }
       fd.append("mapping", JSON.stringify(mapping));
 
       const resp = await apiForm(`${API}/mantenimiento/upload/${idProyecto}`, "POST", fd);
@@ -1599,6 +1743,15 @@ export default function Expedientes() {
             : [],
         },
       }));
+      // ✅ Extraemos solo el mensaje amigable, evitando el JSON duplicado
+      let finalMsg = "Error al procesar el archivo geográfico.";
+      try {
+        const parsed = JSON.parse(e.message);
+        finalMsg = parsed.message || parsed.error || finalMsg;
+      } catch {
+        finalMsg = e.message || finalMsg;
+      }
+      setUploadError(finalMsg);
     } finally {
       setPolyBusy(false);
     }
@@ -1848,6 +2001,8 @@ export default function Expedientes() {
   const [importErrors, setImportErrors] = useState([]);
   const [importResult, setImportResult] = useState(null);
   const [showImportDetails, setShowImportDetails] = useState(false);
+  const importInvalidRows = Array.isArray(importResult?.invalidRows) ? importResult.invalidRows : [];
+  const importInvalidRowCount = new Set(importInvalidRows.map((r) => r?.fila)).size;
 
   // =========================
   // EXPORT EXCEL
@@ -2401,6 +2556,7 @@ export default function Expedientes() {
       if (!obj.documentos_subcarpeta) {
         obj.documentos_subcarpeta = "documentacion";
       }
+      obj.nro_documento = obj.propietario_ci || null;
 
       return obj;
     });
@@ -3138,6 +3294,10 @@ export default function Expedientes() {
       alert("Fecha relevamiento es obligatoria.");
       return;
     }
+    if (!String(form.propietario_ci || "").trim()) {
+      alert("El C.I. del titular es obligatorio.");
+      return;
+    }
     const sup = Number(String(form?.superficie ?? "").trim());
     const supA = Number(String(form?.superficie_afectada ?? "").trim());
     if (Number.isFinite(sup) && Number.isFinite(supA) && supA > sup) {
@@ -3171,8 +3331,16 @@ export default function Expedientes() {
       }
     } catch (e) {
       console.error("Error saving expediente:", e);
-      // Usar alert o toast para el error
-      const msg = e?.message || String(e);
+      const rawMsg = extractApiErrorMessage(e, "No se pudo guardar el expediente.");
+      const tramoLabel =
+        tramosCensales.find((t) => Number(t.id_proyecto_tramo) === normalizePositiveId(form.id_tramo))
+          ?.descripcion || `#${form.id_tramo || ""}`;
+      const msg =
+        /ya existe|ya est[aá] registrado|ya est[aá] en uso|colisi[oó]n|duplicad|repetid|registrado/i.test(
+          rawMsg
+        ) && normalizePositiveId(form.id_tramo)
+          ? `Este número de notificación ya está registrado en el ${tramoLabel}.`
+          : rawMsg;
       if (typeof alerts?.toast?.error === "function") {
         alerts.toast.error(msg);
       } else {
@@ -3552,6 +3720,44 @@ export default function Expedientes() {
       filterTipoExp
   );
 
+  const parseCodigoUnicoSort = (raw) => {
+    const s = String(raw || "").trim();
+    if (!s) {
+      return {
+        isLegacy: true,
+        prefix: "",
+        prefixGroup: 0,
+        hierarchy: Number.NEGATIVE_INFINITY,
+        base: Number.NEGATIVE_INFINITY,
+        correlativo: Number.NEGATIVE_INFINITY,
+        raw: "",
+      };
+    }
+
+    const parts = s.split("-");
+    const hasPrefijo = /^(?:ST|TR)[A-Z0-9.]+$/i.test(parts[0] || "");
+    const prefix = hasPrefijo ? String(parts[0]).toUpperCase() : "";
+    const prefixGroup = hasPrefijo ? 1 : 0;
+    const hierarchy = hasPrefijo
+      ? Number.parseFloat(String(prefix).replace(/^[A-Z]+/i, "")) || 0
+      : 0;
+
+    const basePart = hasPrefijo ? parts[1] : parts[0];
+    const correlativoPart = hasPrefijo ? parts[2] : parts[1];
+    const baseDigits = String(basePart || "").replace(/\D+/g, "");
+    const correlativoDigits = String(correlativoPart || "").replace(/\D+/g, "");
+
+    return {
+      isLegacy: !hasPrefijo,
+      prefix,
+      prefixGroup,
+      hierarchy,
+      base: baseDigits ? Number.parseInt(baseDigits, 10) : Number.POSITIVE_INFINITY,
+      correlativo: correlativoDigits ? Number.parseInt(correlativoDigits, 10) : Number.POSITIVE_INFINITY,
+      raw: s.toLowerCase(),
+    };
+  };
+
   const sortedRows = useMemo(() => {
     if (!sortKey) return rows;
 
@@ -3561,7 +3767,7 @@ export default function Expedientes() {
         case "id_expediente":
           return Number(r.id_expediente) || 0;
         case "codigo_exp":
-          return String(r.codigo_unico || r.codigo_exp || "").toLowerCase();
+          return parseCodigoUnicoSort(r.codigo_unico || r.codigo_exp || "");
         case "propietario_nombre":
           return String(r.propietario_nombre || "").toLowerCase();
         case "propietario_ci":
@@ -3582,6 +3788,26 @@ export default function Expedientes() {
     return [...rows].sort((a, b) => {
       const va = getValue(a);
       const vb = getValue(b);
+      if (sortKey === "codigo_exp") {
+        const prefixDiff = (va.prefixGroup || 0) - (vb.prefixGroup || 0);
+        if (prefixDiff) return prefixDiff * dir;
+
+        const hierarchyDiff = (va.hierarchy || 0) - (vb.hierarchy || 0);
+        if (hierarchyDiff) return hierarchyDiff * dir;
+
+        if ((va.prefix || "") < (vb.prefix || "")) return -1 * dir;
+        if ((va.prefix || "") > (vb.prefix || "")) return 1 * dir;
+
+        const baseDiff = (va.base || 0) - (vb.base || 0);
+        if (baseDiff) return baseDiff * dir;
+
+        const corrDiff = (va.correlativo || 0) - (vb.correlativo || 0);
+        if (corrDiff) return corrDiff * dir;
+
+        if (va.raw < vb.raw) return -1 * dir;
+        if (va.raw > vb.raw) return 1 * dir;
+        return 0;
+      }
       if (va < vb) return -1 * dir;
       if (va > vb) return 1 * dir;
       return 0;
@@ -4131,11 +4357,32 @@ export default function Expedientes() {
                 <td className="small text-secondary">{r.tramo}</td>
                 <td>
                   {(() => {
-                    const hasMejora = hasActiveStages(r?.carpeta_mejora);
-                    const hasTerreno = hasActiveStages(r?.carpeta_terreno);
-                    if (hasMejora && !hasTerreno) return <Badge bg="light" text="primary" className="border fw-normal px-2 py-1">Mejora</Badge>;
-                    if (hasTerreno && !hasMejora) return <Badge bg="light" text="success" className="border fw-normal px-2 py-1">Terreno</Badge>;
-                    if (hasMejora && hasTerreno) return <Badge bg="light" text="warning" className="border fw-normal px-2 py-1">Legacy</Badge>;
+                    const tipoPersistido = r?.tipo_expediente;
+                    if (tipoPersistido === "M") {
+                      return <Badge bg="light" text="primary" className="border fw-normal px-2 py-1">Mejora</Badge>;
+                    }
+                    if (tipoPersistido === "T") {
+                      return <Badge bg="light" text="success" className="border fw-normal px-2 py-1">Terreno</Badge>;
+                    }
+                    if (tipoPersistido === "V") {
+                      return <Badge bg="light" text="info" className="border fw-normal px-2 py-1">Vivienda</Badge>;
+                    }
+
+                    if (tipoPersistido === null || tipoPersistido === undefined || String(tipoPersistido).trim() === "") {
+                      const hasMejora = hasActiveStages(r?.carpeta_mejora);
+                      const hasTerreno = hasActiveStages(r?.carpeta_terreno);
+                      if (hasMejora && !hasTerreno) {
+                        return <Badge bg="light" text="primary" className="border fw-normal px-2 py-1">Mejora</Badge>;
+                      }
+                      if (hasTerreno && !hasMejora) {
+                        return <Badge bg="light" text="success" className="border fw-normal px-2 py-1">Terreno</Badge>;
+                      }
+                      if (hasMejora && hasTerreno) {
+                        return <Badge bg="light" text="warning" className="border fw-normal px-2 py-1">Legacy</Badge>;
+                      }
+                      return <Badge bg="light" text="secondary" className="border fw-normal px-2 py-1 opacity-50">S/I</Badge>;
+                    }
+
                     return <Badge bg="light" text="secondary" className="border fw-normal px-2 py-1 opacity-50">S/I</Badge>;
                   })()}
                 </td>
@@ -4244,8 +4491,17 @@ export default function Expedientes() {
                 <div className="d-flex gap-2">
                   <Form.Control
                     value={form.codigo_unico || ""}
-                    placeholder="Se genera al guardar"
+                    placeholder={
+                      codigoSugeridoLoading
+                        ? "Calculando sugerencia..."
+                        : codigoSugerido || "Seleccione un tramo..."
+                    }
                     disabled={readonly}
+                    className={
+                      form.codigo_unico && codigoSugerido && form.codigo_unico !== codigoSugerido
+                        ? "border-warning text-warning-emphasis shadow-sm"
+                        : ""
+                    }
                     isInvalid={
                       (form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)) ||
                       (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp)) ||
@@ -4253,7 +4509,7 @@ export default function Expedientes() {
                     }
                     onChange={(e) => {
                       const val = e.target.value;
-                      const base = val.split("-")[0];
+                      const base = extractCodigoUnicoBase(val);
                       // Sincronizamos la base (aunque esté oculta) para que el estado
                       // del formulario sea consistente para el guardado.
                       setForm((prev) => ({ ...prev, codigo_unico: val, codigo_exp: base }));
@@ -4272,15 +4528,33 @@ export default function Expedientes() {
                 </div>
                 <Form.Control.Feedback type="invalid" style={{ display: (form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)) || (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp)) || (form.codigo_unico && !isCodigoUnicoTypeConsistent(form.codigo_unico, form.tipo_expediente || (tipoCarpeta === "terreno" ? "T" : "M"))) ? 'block' : 'none' }}>
                   {form.codigo_unico && !isCodigoUnicoValid(form.codigo_unico)
-                    ? "Formato inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda."
+                    ? "Formato inválido. Debe ser PREFIX-BASE-N-TIPO (ej: ST1.1-55-1-T) o el formato legado BASE-N-TIPO."
                     : (form.codigo_unico && !isCodigoUnicoConsistent(form.codigo_unico, form.codigo_exp))
                       ? "Inconsistencia: La base del código único no coincide con la notificación base."
                       : "Inconsistencia: El sufijo del código (-T/-M) no coincide con el tipo de carpeta seleccionado."}
                 </Form.Control.Feedback>
 
-                {!baseAvailability.available && (
-                  <div className="text-warning x-small mt-1" style={{ fontSize: '0.8rem', fontWeight: '500' }}>
-                    ℹ️ Existen otras carpetas con esta base: {baseAvailability.existing.map(e => `${e.propietario_nombre} (${e.codigo_unico})`).join(", ")}
+                <div className="mt-2">
+                  <Form.Label className="mb-1">Código Sugerido</Form.Label>
+                  <Form.Control
+                    value={
+                      codigoSugeridoLoading
+                        ? "Calculando sugerencia..."
+                        : codigoSugerido || "Seleccione un tramo para ver la sugerencia"
+                    }
+                    readOnly
+                    disabled
+                  />
+                </div>
+
+                {!baseAvailability.available && baseAvailability.existing.length > 0 && (
+                  <div className="text-danger x-small mt-1" style={{ fontSize: '0.8rem', fontWeight: '500' }}>
+                    ⚠️ Este código único ya existe en {tramosCensales.find((t) => Number(t.id_proyecto_tramo) === normalizePositiveId(form.id_tramo))?.descripcion || "el tramo seleccionado"}: {baseAvailability.existing.map((e) => `${e.propietario_nombre} (${e.codigo_unico})`).join(", ")}
+                  </div>
+                )}
+                {baseAvailability.available && Array.isArray(baseAvailability.related) && baseAvailability.related.length > 0 && (
+                  <div className="text-info x-small mt-1" style={{ fontSize: '0.8rem', fontWeight: '500' }}>
+                    ℹ️ Se han encontrado otros expedientes bajo esta misma notificación. Sugerimos revisar el siguiente correlativo disponible: {codigoSugerido || "—"}
                   </div>
                 )}
               </Form.Group>
@@ -4362,12 +4636,17 @@ export default function Expedientes() {
             </Col>
             <Col md={3}>
               <Form.Group>
-                <Form.Label>C.I.</Form.Label>
+                <Form.Label>C.I. *</Form.Label>
                 <Form.Control
                   value={form.propietario_ci}
                   disabled={readonly}
+                  required
+                  isInvalid={!String(form.propietario_ci || "").trim() && !readonly}
                   onChange={(e) => setForm({ ...form, propietario_ci: e.target.value })}
                 />
+                <Form.Control.Feedback type="invalid">
+                  El C.I. del titular es obligatorio.
+                </Form.Control.Feedback>
               </Form.Group>
             </Col>
             <Col md={8}>
@@ -4868,6 +5147,16 @@ export default function Expedientes() {
                 </div>
 
                 <div className="row g-3 mt-1">
+                  {uploadError && (
+                    <Col md={12}>
+                      <Alert variant="danger" className="mb-2 py-2 d-flex align-items-center gap-2" onClose={() => setUploadError(null)} dismissible>
+                        <i className="bi bi-exclamation-triangle-fill"></i>
+                        <div>
+                          <strong>Error de Carga:</strong> {uploadError}
+                        </div>
+                      </Alert>
+                    </Col>
+                  )}
                   {[
                     { key: "proyecto", label: "Polígono proyecto" },
                     { key: "afectacion", label: "Polígono afectación" },
@@ -6522,12 +6811,39 @@ export default function Expedientes() {
                   <div>Rechazados: <b>{Number(importResult.rejected || 0)}</b></div>
                 </Col>
                 <Col md={4}>
+                  <div>Rechazados por incompleto: <b>{importInvalidRowCount}</b></div>
+                </Col>
+                <Col md={4}>
                   <div>Docs insertados: <b>{Number(importResult.documentsInserted || 0)}</b></div>
                 </Col>
                 <Col md={4}>
                   <div>Docs omitidos: <b>{Number(importResult.documentsSkippedExisting || 0)}</b></div>
                 </Col>
               </Row>
+
+              {importInvalidRows.length > 0 && (
+                <div className="mt-3">
+                  <div className="fw-semibold mb-2">Tabla de errores de validación</div>
+                  <Table bordered hover size="sm" className="mb-0 align-middle">
+                    <thead>
+                      <tr>
+                        <th>Fila</th>
+                        <th>Columna faltante</th>
+                        <th>Identificador de fila</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importInvalidRows.map((row, idx) => (
+                        <tr key={`invalid-${idx}`}>
+                          <td>{row?.fila ?? "—"}</td>
+                          <td>{row?.columna_faltante || "—"}</td>
+                          <td>{row?.identificador_fila || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </div>
+              )}
 
               {((importResult.errors && importResult.errors.length) ||
                 (importResult.warnings && importResult.warnings.length)) && (
