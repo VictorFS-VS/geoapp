@@ -1,0 +1,1116 @@
+import React, { useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
+import { gvGetDashboard, gvGetTramosCensales, gvGetSubtramosCensales, gvGetAvanceTemporal, gvGetDetalleTemporal, gvGetEconomico } from "./gv_service";
+import GVCharts from "./GVCharts";
+import GVMapaCatastroGoogle from "./GVMapaCatastroGoogle";
+import GVTemporalCharts from "./GVTemporalCharts";
+import GVEconomicPanel from "./GVEconomicPanel";
+import GvExpedienteModal from "./GvExpedienteModal";
+import GvPhaseChip from "./GvPhaseChip";
+import "./gv.css";
+
+function normalizePhaseCounts(dashboard, tipo, maxFases = 7) {
+  if (!dashboard) return Array(maxFases + 1).fill(0);
+
+  const countsRaw = dashboard.phases?.[tipo]?.counts || dashboard.by_phase?.[tipo] || dashboard.counts_by_phase?.[tipo];
+
+  let result = Array(maxFases + 1).fill(0);
+
+  if (Array.isArray(countsRaw)) {
+    for (let i = 0; i < countsRaw.length && i <= maxFases; i++) {
+      result[i] = Number(countsRaw[i]) || 0;
+    }
+  } else if (countsRaw && typeof countsRaw === "object") {
+    Object.keys(countsRaw).forEach((key) => {
+      const i = Number(key);
+      if (i >= 0 && i <= maxFases) {
+        result[i] = Number(countsRaw[key]) || 0;
+      }
+    });
+  }
+
+  return result;
+}
+
+function safeNumber(x, fallback = 0) {
+  if (x === null || x === undefined) return fallback;
+  const n = Number(x);
+  return isNaN(n) ? fallback : n;
+}
+
+function safePct(numer, denom) {
+  if (!denom || denom <= 0) return 0;
+  return numer / denom;
+}
+
+function formatPct01(p01) {
+  const clamped = Math.min(1, Math.max(0, p01 || 0));
+  return (clamped * 100).toFixed(1) + "%";
+}
+
+function toYmd(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function addDays(d, days) {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function formatYmdToShort(ymd) {
+  const s = String(ymd || "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function humanizeTipo(tipo) {
+  const t = String(tipo || "").toLowerCase().trim();
+  if (t === "mejora") return "Mejora";
+  if (t === "terreno") return "Terreno";
+  if (t === "legacy") return "Legacy";
+  if (t === "sin_iniciar") return "Sin iniciar";
+  return t || "Sin iniciar";
+}
+
+export default function GVCatastroDashboard() {
+  const { id } = useParams();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const initialFilters = {
+    q: "",
+    tipo: "",
+    faseMin: "",
+    faseMax: "",
+    tramo: "",
+    subtramo: "",
+    hasPolygon: "",
+    hasDocs: "",
+    hasCI: "",
+    hasDBI: "",
+    fechaInicio: "",
+    fechaFin: ""
+  };
+
+  const [mapFilters, setMapFilters] = useState(initialFilters);
+  const [mapStats, setMapStats] = useState(null);
+  const [qInput, setQInput] = useState("");
+  const qDebounceRef = useRef(null);
+  const [tramosCensales, setTramosCensales] = useState([]);
+  const [subtramosCensales, setSubtramosCensales] = useState([]);
+  const [selectedHierarchyLevel, setSelectedHierarchyLevel] = useState("proyecto");
+  const [selectedTramo, setSelectedTramo] = useState("");
+  const [selectedSubtramo, setSelectedSubtramo] = useState("");
+
+  // States para el nuevo Modal Aislado
+  const [modalShow, setModalShow] = useState(false);
+  const [modalExpId, setModalExpId] = useState(null);
+  const [modalSeedProps, setModalSeedProps] = useState(null);
+
+  // Temporal analytics state (local)
+  const today = new Date();
+  const [fechaInicio, setFechaInicio] = useState(toYmd(addDays(today, -30)));
+  const [fechaFin, setFechaFin] = useState(toYmd(today));
+  const [tempGranularidad, setTempGranularidad] = useState("semana");
+  const [tempSelectedCategoria, setTempSelectedCategoria] = useState("");
+  const [tempModoDetalle, setTempModoDetalle] = useState("fases");
+  const [tempAvance, setTempAvance] = useState(null);
+  const [tempDetalle, setTempDetalle] = useState(null);
+  const [tempLoadingAvance, setTempLoadingAvance] = useState(false);
+  const [tempLoadingDetalle, setTempLoadingDetalle] = useState(false);
+  const [tempErrorAvance, setTempErrorAvance] = useState("");
+  const [tempErrorDetalle, setTempErrorDetalle] = useState("");
+
+  // Economic panel state
+  const [ecoData, setEcoData] = useState(null);
+  const [ecoLoading, setEcoLoading] = useState(false);
+  const [ecoError, setEcoError] = useState("");
+
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    setMapFilters(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleResetFilters = () => {
+    if (qDebounceRef.current) {
+      clearTimeout(qDebounceRef.current);
+      qDebounceRef.current = null;
+    }
+    setMapFilters(initialFilters);
+    setQInput("");
+    setSubtramosCensales([]);
+    setSelectedHierarchyLevel("proyecto");
+    setSelectedTramo("");
+    setSelectedSubtramo("");
+  };
+
+  const applyPhaseFilter = (tipo, faseIndex) => {
+    setMapFilters((prev) => ({
+      ...prev,
+      tipo,
+      faseMin: String(faseIndex),
+      faseMax: String(faseIndex),
+    }));
+  };
+
+  const applyCompositionFilter = (tipo) => {
+    setMapFilters({
+      tipo,
+      faseMin: "",
+      faseMax: "",
+      tramo: "",
+      subtramo: "",
+      hasPolygon: "",
+      hasDocs: "",
+      hasCI: "",
+      hasDBI: ""
+    });
+  };
+
+  const applyBarPhaseFilter = (tipo, faseIndex) => {
+    setMapFilters({
+      ...initialFilters,
+      tipo,
+      faseMin: String(faseIndex),
+      faseMax: String(faseIndex)
+    });
+  };
+
+  const loadSubtramosForTramoDesc = (desc) => {
+    if (!desc) {
+      setSubtramosCensales([]);
+      return;
+    }
+    const sel = tramosCensales.find((t) => String(t.descripcion) === desc);
+    const tramoId = sel?.id_proyecto_tramo;
+    if (!tramoId) {
+      setSubtramosCensales([]);
+      return;
+    }
+    gvGetSubtramosCensales(id, tramoId)
+      .then((resp) => setSubtramosCensales(Array.isArray(resp?.items) ? resp.items : []))
+      .catch(() => setSubtramosCensales([]));
+  };
+
+  const handleSelectTramoCard = (desc) => {
+    const isSame = selectedTramo === desc && selectedHierarchyLevel === "tramo";
+    const nextDesc = isSame ? "" : desc;
+    setSelectedHierarchyLevel(isSame ? "proyecto" : "tramo");
+    setSelectedTramo(nextDesc);
+    setSelectedSubtramo("");
+    setMapFilters((prev) => ({
+      ...prev,
+      tramo: nextDesc,
+      subtramo: ""
+    }));
+    setSubtramosCensales([]);
+    if (nextDesc) {
+      loadSubtramosForTramoDesc(nextDesc);
+    }
+  };
+
+  const handleSelectSubtramo = (desc) => {
+    setSelectedSubtramo(desc);
+    setSelectedHierarchyLevel(desc ? "subtramo" : "tramo");
+    setMapFilters((prev) => ({
+      ...prev,
+      subtramo: desc
+    }));
+  };
+
+  const resetHierarchyToProject = () => {
+    setSelectedHierarchyLevel("proyecto");
+    setSelectedTramo("");
+    setSelectedSubtramo("");
+    setMapFilters((prev) => ({
+      ...prev,
+      tramo: "",
+      subtramo: ""
+    }));
+    setSubtramosCensales([]);
+  };
+
+  useEffect(() => {
+    async function fetchDashboard() {
+      try {
+        setLoading(true);
+        const result = await gvGetDashboard(id, { fechaInicio, fechaFin });
+        setData(result);
+      } catch (err) {
+        setError(err.message || "Error al cargar dashboard GV");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (id) {
+      fetchDashboard();
+    }
+  }, [id, fechaInicio, fechaFin]);
+
+  useEffect(() => {
+    if (!id) return;
+    gvGetTramosCensales(id)
+      .then((resp) => setTramosCensales(Array.isArray(resp?.items) ? resp.items : []))
+      .catch(() => setTramosCensales([]));
+  }, [id]);
+
+  const selectedTramoId = (() => {
+    if (!mapFilters.tramo) return null;
+    const sel = tramosCensales.find((t) => String(t.descripcion) === mapFilters.tramo);
+    return sel?.id_proyecto_tramo || null;
+  })();
+
+  const selectedSubtramoId = (() => {
+    if (!mapFilters.subtramo) return null;
+    const sel = subtramosCensales.find((t) => String(t.descripcion) === mapFilters.subtramo);
+    return sel?.id_proyecto_subtramo || null;
+  })();
+
+  const selectedTipoFilter = mapFilters.tipo ? mapFilters.tipo : null;
+
+  const mapFilterBadges = [];
+  if (fechaInicio || fechaFin) {
+    mapFilterBadges.push(
+      `Rango: ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) mapFilterBadges.push(`Tramo: ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) mapFilterBadges.push(`Subtramo: ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) mapFilterBadges.push(`Tipo: ${humanizeTipo(mapFilters.tipo)}`);
+  if (mapFilters.q) mapFilterBadges.push(`Busqueda: ${mapFilters.q}`);
+
+  const anyMapFiltersActive = Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "");
+
+  const temporalFilterBadges = [];
+  if (fechaInicio || fechaFin) {
+    temporalFilterBadges.push(
+      `Rango ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) temporalFilterBadges.push(`Tramo ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) temporalFilterBadges.push(`Subtramo ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) temporalFilterBadges.push(`Tipo ${humanizeTipo(mapFilters.tipo)}`);
+
+  const temporalSecondaryBadges = [];
+  if (mapFilters.q) temporalSecondaryBadges.push(`Busqueda "${mapFilters.q}"`);
+
+  const economicoContext = [];
+  if (fechaInicio || fechaFin) {
+    economicoContext.push(
+      `Rango ${formatYmdToShort(fechaInicio) || "—"} - ${formatYmdToShort(fechaFin) || "—"}`
+    );
+  }
+  if (mapFilters.tramo) economicoContext.push(`Tramo ${mapFilters.tramo}`);
+  if (mapFilters.subtramo) economicoContext.push(`Subtramo ${mapFilters.subtramo}`);
+  if (mapFilters.tipo) economicoContext.push(`Tipo ${humanizeTipo(mapFilters.tipo)}`);
+
+  const economicoParamsKey = JSON.stringify({
+    proyectoId: id,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+    tipo: selectedTipoFilter,
+  });
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setEcoLoading(true);
+    setEcoError("");
+    gvGetEconomico({
+      proyectoId: id,
+      fechaInicio,
+      fechaFin,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+      tipo: selectedTipoFilter || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setEcoData(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setEcoError(String(e?.message || e));
+        setEcoData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setEcoLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [economicoParamsKey, id]);
+
+  const temporalParamsKey = JSON.stringify({
+    proyectoId: id,
+    fechaInicio: fechaInicio,
+    fechaFin: fechaFin,
+    granularidad: tempGranularidad,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+  });
+
+  useEffect(() => {
+    if (!id || !fechaInicio || !fechaFin || !tempGranularidad) return;
+    let cancelled = false;
+    setTempLoadingAvance(true);
+    setTempErrorAvance("");
+    gvGetAvanceTemporal({
+      proyectoId: id,
+      fechaInicio: fechaInicio,
+      fechaFin: fechaFin,
+      granularidad: tempGranularidad,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setTempAvance(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setTempErrorAvance(String(e?.message || e));
+        setTempAvance(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTempLoadingAvance(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, temporalParamsKey]);
+
+  useEffect(() => {
+    const buckets = Array.isArray(tempAvance?.buckets) ? tempAvance.buckets : [];
+    const totalMejora = buckets.reduce((acc, b) => acc + (Number(b.mejora) || 0), 0);
+    const totalTerreno = buckets.reduce((acc, b) => acc + (Number(b.terreno) || 0), 0);
+    if (!tempSelectedCategoria) {
+      if (totalMejora > 0) setTempSelectedCategoria("mejora");
+      else if (totalTerreno > 0) setTempSelectedCategoria("terreno");
+    }
+  }, [tempAvance, tempSelectedCategoria]);
+
+  const detalleParamsKey = JSON.stringify({
+    proyectoId: id,
+    fechaInicio: fechaInicio,
+    fechaFin: fechaFin,
+    granularidad: tempGranularidad,
+    categoria: tempSelectedCategoria,
+    modo: tempModoDetalle,
+    tramoId: selectedTramoId,
+    subtramoId: selectedSubtramoId,
+  });
+
+  useEffect(() => {
+    if (!id || !tempSelectedCategoria) {
+      setTempDetalle(null);
+      return;
+    }
+    let cancelled = false;
+    setTempLoadingDetalle(true);
+    setTempErrorDetalle("");
+    gvGetDetalleTemporal({
+      proyectoId: id,
+      fechaInicio: fechaInicio,
+      fechaFin: fechaFin,
+      granularidad: tempGranularidad,
+      categoria: tempSelectedCategoria,
+      modo: tempModoDetalle,
+      tramoId: selectedTramoId || undefined,
+      subtramoId: selectedSubtramoId || undefined,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setTempDetalle(resp || null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setTempErrorDetalle(String(e?.message || e));
+        setTempDetalle(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTempLoadingDetalle(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, detalleParamsKey]);
+
+  useEffect(() => {
+    setMapFilters((prev) => ({
+      ...prev,
+      fechaInicio,
+      fechaFin,
+    }));
+  }, [fechaInicio, fechaFin]);
+
+  useEffect(() => {
+    if (qDebounceRef.current) {
+      clearTimeout(qDebounceRef.current);
+    }
+    qDebounceRef.current = setTimeout(() => {
+      setMapFilters((prev) => ({ ...prev, q: qInput }));
+    }, 400);
+    return () => {
+      if (qDebounceRef.current) {
+        clearTimeout(qDebounceRef.current);
+        qDebounceRef.current = null;
+      }
+    };
+  }, [qInput]);
+  const handleSelectExpediente = (expId, props) => {
+    setModalExpId(expId);
+    setModalSeedProps(props);
+    setModalShow(true);
+  };
+
+  if (loading) return <div className="p-4">Cargando métricas GV...</div>;
+  if (error) return <div className="p-4 text-danger">Error: {error}</div>;
+  if (!data) return null;
+
+  const expedientes = Array.isArray(data?.expedientes) ? data.expedientes : [];
+  const expByTramo = expedientes.reduce((acc, exp) => {
+    const key = String(exp?.tramo || "").trim();
+    if (!key) return acc;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const expBySubtramo = expedientes.reduce((acc, exp) => {
+    if (selectedTramo && String(exp?.tramo || "").trim() !== selectedTramo) return acc;
+    const key = String(exp?.subtramo || "").trim();
+    if (!key) return acc;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const tramoCards = tramosCensales.map((t) => {
+    const desc = String(t.descripcion || "").trim();
+    const universo = safeNumber(t.cantidad_universo, 0);
+    const censados = safeNumber(expByTramo[desc], 0);
+    const pct = universo > 0 ? (censados / universo) * 100 : 0;
+    return {
+      id: t.id_proyecto_tramo,
+      descripcion: desc || `Tramo ${t.id_proyecto_tramo}`,
+      universo,
+      censados,
+      pct
+    };
+  });
+  const subtramoCards = subtramosCensales.map((t) => {
+    const desc = String(t.descripcion || "").trim();
+    const universo = safeNumber(t.cantidad_universo, 0);
+    const censados = safeNumber(expBySubtramo[desc], 0);
+    const pct = universo > 0 ? (censados / universo) * 100 : 0;
+    return {
+      id: t.id_proyecto_subtramo,
+      descripcion: desc || `Subtramo ${t.id_proyecto_subtramo}`,
+      universo,
+      censados,
+      pct
+    };
+  });
+  const isProjectLevel = !selectedTramo || selectedHierarchyLevel === "proyecto";
+  const hierarchyBar = (() => {
+    if (isProjectLevel) {
+      const labels = tramoCards.map((t) => t.descripcion);
+      return {
+        level: "proyecto",
+        title: "Tramos",
+        labels,
+        censados: tramoCards.map((t) => t.censados),
+        universo: tramoCards.map((t) => t.universo),
+        pct: tramoCards.map((t) => t.pct),
+        selectedIndex: selectedTramo ? labels.indexOf(selectedTramo) : null,
+        onBarClick: (idx) => {
+          const desc = labels[idx];
+          if (desc) handleSelectTramoCard(desc);
+        }
+      };
+    }
+
+    const labels = subtramoCards.map((t) => t.descripcion);
+    return {
+      level: selectedSubtramo ? "subtramo" : "tramo",
+      title: selectedTramo ? `Subtramos de ${selectedTramo}` : "Subtramos",
+      labels,
+      censados: subtramoCards.map((t) => t.censados),
+      universo: subtramoCards.map((t) => t.universo),
+      pct: subtramoCards.map((t) => t.pct),
+      selectedIndex: selectedSubtramo ? labels.indexOf(selectedSubtramo) : null,
+      onBarClick: (idx) => {
+        const desc = labels[idx];
+        if (desc) handleSelectSubtramo(desc);
+      }
+    };
+  })();
+
+  return (
+    <div className="container-fluid gv-page">
+      <h2 className="mb-4">Catastro Dashboard - Proyecto {id}</h2>
+
+      {/* Guardrails: compute once, safely */}
+      {(() => {
+        const targetTotal = safeNumber(data?.target_total, 0);
+        const censados = safeNumber(data?.censados, 0);
+        const hasDenom = targetTotal > 0;
+        const rawPct = safeNumber(data?.coverage_pct, null);
+        const coveragePct = rawPct !== null && rawPct >= 0 ? rawPct : safePct(censados, targetTotal);
+        const gap = hasDenom ? Math.max(targetTotal - censados, 0) : 0;
+
+        return (
+          <div className="row g-4 mb-4">
+            {/* Card 1: Cobertura */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#198754" }}>
+                <h5 className="text-success mb-3">Cobertura</h5>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Meta (Universo)</span>
+                  <span className="gv-kpi text-dark">{hasDenom ? targetTotal : "—"}</span>
+                </div>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Relevados</span>
+                  <span className="gv-kpi text-dark">{censados}</span>
+                </div>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="gv-muted">Pendientes</span>
+                  <span className="gv-kpi text-secondary">{hasDenom ? gap : "—"}</span>
+                </div>
+                <div className="d-flex justify-content-between mt-3 pt-3 border-top">
+                  <span className="gv-muted fw-bold text-dark">Avance</span>
+                  <span className="gv-kpi text-success">
+                    {hasDenom ? formatPct01(coveragePct) : <small className="text-muted">Sin universo definido</small>}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Temporal */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#0d6efd" }}>
+                <div className="d-flex justify-content-between align-items-center mb-2">
+                  <h5 className="text-primary mb-0">Temporal</h5>
+                  <div className="d-flex gap-2">
+                    <select
+                      className="form-select form-select-sm"
+                      value={tempGranularidad}
+                      onChange={(e) => setTempGranularidad(e.target.value)}
+                    >
+                      <option value="dia">Dia</option>
+                      <option value="semana">Semana</option>
+                      <option value="mes">Mes</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="row g-2 mb-2">
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha inicio</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaInicio}
+                      onChange={(e) => setFechaInicio(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-6">
+                    <label className="form-label small mb-1">Fecha fin</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaFin}
+                      onChange={(e) => setFechaFin(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="d-flex align-items-center gap-2 mb-2">
+                  <label className="form-label small mb-0">Modo</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={tempModoDetalle}
+                    onChange={(e) => setTempModoDetalle(e.target.value)}
+                  >
+                    <option value="fases">Fases</option>
+                    <option value="dbi">DBI</option>
+                  </select>
+                </div>
+
+                {temporalFilterBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Universo actual: {temporalFilterBadges.join(" / ")}
+                  </div>
+                )}
+                {temporalSecondaryBadges.length > 0 && (
+                  <div className="text-muted small mb-2">
+                    Filtros activos en mapa (no afectan temporal): {temporalSecondaryBadges.join(" / ")}
+                  </div>
+                )}
+
+                <GVTemporalCharts
+                  avance={tempAvance}
+                  detalle={tempDetalle}
+                  selectedCategoria={tempSelectedCategoria}
+                  modoDetalle={tempModoDetalle}
+                  onSelectCategoria={setTempSelectedCategoria}
+                  isFiltered={temporalFilterBadges.length > 0}
+                  loadingAvance={tempLoadingAvance}
+                  loadingDetalle={tempLoadingDetalle}
+                  errorAvance={tempErrorAvance}
+                  errorDetalle={tempErrorDetalle}
+                />
+              </div>
+            </div>
+
+            {/* Card 3: Tramos */}
+            <div className="col-md-4">
+              <div className="card shadow-sm h-100 p-3 gv-card" style={{ borderLeftColor: "#f59e0b" }}>
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                  <h5 className="mb-0" style={{ color: "#d97706" }}>Tramos</h5>
+                  {selectedHierarchyLevel !== "proyecto" && (
+                    <button
+                      className="btn btn-sm btn-outline-warning"
+                      onClick={() => resetHierarchyToProject()}
+                    >
+                      Ver todos
+                    </button>
+                  )}
+                </div>
+                {tramoCards.length === 0 ? (
+                  <div className="text-muted small">Sin tramos censales cargados.</div>
+                ) : (
+                  <div className="d-flex flex-column gap-2">
+                    {tramoCards.map((t) => {
+                      const isActive = selectedHierarchyLevel === "tramo" && selectedTramo === t.descripcion;
+                      return (
+                        <button
+                          key={t.id}
+                          className={`btn btn-sm text-start ${isActive ? "btn-warning" : "btn-outline-warning"}`}
+                          onClick={() => handleSelectTramoCard(t.descripcion)}
+                        >
+                          <div className="fw-semibold">{t.descripcion}</div>
+                          <div className="d-flex justify-content-between small">
+                            <span>Universo: {t.universo || "--"}</span>
+                            <span>Relevados: {t.censados}</span>
+                          </div>
+                          <div className="small text-muted">{t.pct.toFixed(1)}%</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      <GVCharts
+        dashboard={data}
+        onCompositionSelect={applyCompositionFilter}
+        onMejoraPhaseSelect={(idx) => applyBarPhaseFilter("mejora", idx)}
+        onTerrenoPhaseSelect={(idx) => applyBarPhaseFilter("terreno", idx)}
+        hierarchyBar={hierarchyBar}
+      />
+      <div className="d-flex flex-wrap align-items-center gap-2 mt-2">
+        <span className="badge bg-light text-dark border">Proyecto</span>
+        {selectedTramo && (
+          <>
+            <span className="text-muted">›</span>
+            <span className="badge bg-warning text-dark">{selectedTramo}</span>
+          </>
+        )}
+        {selectedSubtramo && (
+          <>
+            <span className="text-muted">›</span>
+            <span className="badge bg-primary">{selectedSubtramo}</span>
+          </>
+        )}
+        <div className="ms-auto d-flex gap-2">
+          {selectedHierarchyLevel === "subtramo" && (
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => handleSelectSubtramo("")}
+            >
+              Volver a Tramo
+            </button>
+          )}
+          {selectedHierarchyLevel !== "proyecto" && (
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => resetHierarchyToProject()}
+            >
+              Volver a Proyecto
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Distribución Global por fases */}
+      <div className="card shadow-sm mt-4">
+        <div className="card-body">
+          <div className="d-flex justify-content-between align-items-center mb-3">
+            <h5 className="card-title text-secondary mb-0">Distribución por fases (Global)</h5>
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => setMapFilters(prev => ({ ...prev, tipo: "", faseMin: "", faseMax: "" }))}
+            >
+              Limpiar filtro de fase
+            </button>
+          </div>
+          <p className="small text-muted mb-3">
+            F0 = Relevamiento | F1 = Documentación | Final = Carpeta finalizada
+          </p>
+          {(() => {
+            const sinIniciarCount = Number(data?.phases?.sin_iniciar?.counts?.[0]) || 0;
+            const sinIniciarPctBase = Number(data?.censados) || Number(data?.target_total) || 0;
+            const showSinIniciar = sinIniciarCount > 0;
+            const colClass = showSinIniciar ? "col-md-4" : "col-md-6";
+
+            return (
+              <div className="row g-4">
+                {/* Tabla Mejora */}
+                <div className={colClass}>
+                  <h6 className="text-primary border-bottom pb-2">Mejora</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'mejora', 5);
+                          const totalTipo = data.by_tipo?.mejora || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "mejora" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`m-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("mejora", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={5} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Tabla Terreno */}
+                <div className={colClass}>
+                  <h6 className="text-warning border-bottom pb-2">Terreno</h6>
+                  <div className="table-responsive">
+                    <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                      <thead className="table-light text-muted small">
+                        <tr>
+                          <th>Fase</th>
+                          <th>Cantidad</th>
+                          <th>%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const counts = normalizePhaseCounts(data, 'terreno', 7);
+                          const totalTipo = data.by_tipo?.terreno || 0;
+                          return counts.map((count, i) => {
+                            const isActive = mapFilters.tipo === "terreno" && mapFilters.faseMin === String(i) && mapFilters.faseMax === String(i);
+                            return (
+                              <tr
+                                key={`t-${i}`}
+                                className={`gv-phase-filter-row ${isActive ? "gv-phase-filter-row--active" : ""}`}
+                                onClick={() => applyPhaseFilter("terreno", i)}
+                              >
+                                <td>
+                                  <GvPhaseChip phaseIndex={i} phaseTotal={7} label={`F${i}`} />
+                                </td>
+                                <td className="fw-semibold">{count}</td>
+                                <td className="text-muted small">
+                                  {totalTipo > 0 ? ((count / totalTipo) * 100).toFixed(1) : 0}%
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {showSinIniciar && (
+                  <div className={colClass}>
+                    <h6 className="text-secondary border-bottom pb-2">Sin tipo definido</h6>
+                    <div className="table-responsive">
+                      <table className="table table-sm table-borderless align-middle mb-0 gv-table">
+                        <thead className="table-light text-muted small">
+                          <tr>
+                            <th>Fase</th>
+                            <th>Cantidad</th>
+                            <th>%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>
+                              <span className="badge text-bg-secondary">F0</span>
+                            </td>
+                            <td className="fw-semibold">{sinIniciarCount}</td>
+                            <td className="text-muted small">
+                              {sinIniciarPctBase > 0 ? ((sinIniciarCount / sinIniciarPctBase) * 100).toFixed(1) : "0.0"}%
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-muted small mt-2">
+                      Corresponde a expedientes relevados sin tipo definido todavia.
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
+      <GVEconomicPanel
+        data={ecoData}
+        loading={ecoLoading}
+        error={ecoError}
+        contextLabel={economicoContext.length > 0 ? `Universo actual: ${economicoContext.join(" / ")}` : "Universo actual: sin filtros"}
+      />
+
+      {/* Row map layout and Filters */}
+      <div className="card shadow-sm mt-4 mb-4">
+        <div className="card-body bg-light">
+          <h5 className="card-title text-secondary mb-3">Filtros del Mapa</h5>
+          <div className="row g-2 mb-2">
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha inicio</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaInicio}
+                onChange={(e) => setFechaInicio(e.target.value)}
+              />
+            </div>
+            <div className="col-sm-6 col-md-3">
+              <label className="form-label small mb-1">Fecha fin</label>
+              <input
+                type="date"
+                className="form-control form-control-sm"
+                value={fechaFin}
+                onChange={(e) => setFechaFin(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="mb-2">
+            {anyMapFiltersActive ? (
+              <div className="d-flex flex-wrap align-items-center gap-2">
+                <small className="text-muted">Filtros activos:</small>
+                {mapFilterBadges.length > 0 ? (
+                  mapFilterBadges.map((label) => (
+                    <span key={label} className="badge bg-light text-dark border">
+                      {label}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-muted small">Otros filtros activos</span>
+                )}
+              </div>
+            ) : (
+              <small className="text-muted">Sin filtros</small>
+            )}
+          </div>
+          <div className="row g-3 gv-filtros">
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Búsqueda</label>
+              <input
+                type="text"
+                className="form-control form-control-sm"
+                value={qInput}
+                onChange={(e) => setQInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    if (qDebounceRef.current) {
+                      clearTimeout(qDebounceRef.current);
+                      qDebounceRef.current = null;
+                    }
+                    setMapFilters((prev) => ({ ...prev, q: e.currentTarget.value }));
+                  }
+                }}
+                placeholder="Buscar por titular/co-titular, CI, expediente, DBI o código censo"
+              />
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Tipo</label>
+              <select className="form-select form-select-sm" name="tipo" value={mapFilters.tipo} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="mejora">Mejora</option>
+                <option value="terreno">Terreno</option>
+              </select>
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Fase Min</label>
+              <select className="form-select form-select-sm" name="faseMin" value={mapFilters.faseMin} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
+              </select>
+            </div>
+            <div className="col-md-2">
+              <label className="form-label mb-1 text-muted small">Fase Max</label>
+              <select className="form-select form-select-sm" name="faseMax" value={mapFilters.faseMax} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                {[...Array(8).keys()].map(i => <option key={i} value={String(i)}>F{i}</option>)}
+              </select>
+            </div>
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Tramo</label>
+              <select
+                className="form-select form-select-sm"
+                value={mapFilters.tramo}
+                onChange={(e) => {
+                  const desc = e.target.value;
+                  setMapFilters((prev) => ({ ...prev, tramo: desc, subtramo: "" }));
+                  setSelectedTramo(desc);
+                  setSelectedSubtramo("");
+                  setSelectedHierarchyLevel(desc ? "tramo" : "proyecto");
+                  setSubtramosCensales([]);
+                  if (desc) {
+                    loadSubtramosForTramoDesc(desc);
+                  }
+                }}
+              >
+                <option value="">Todos</option>
+                {tramosCensales.map((t) => (
+                  <option key={t.id_proyecto_tramo} value={t.descripcion}>
+                    {t.descripcion}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="col-md-3">
+              <label className="form-label mb-1 text-muted small">Subtramo</label>
+              <select
+                className="form-select form-select-sm"
+                value={mapFilters.subtramo}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setMapFilters((prev) => ({ ...prev, subtramo: next }));
+                  setSelectedSubtramo(next);
+                  setSelectedHierarchyLevel(next ? "subtramo" : (selectedTramo ? "tramo" : "proyecto"));
+                }}
+                disabled={!mapFilters.tramo}
+              >
+                <option value="">Todos</option>
+                {subtramosCensales.map((st) => (
+                  <option key={st.id_proyecto_subtramo} value={st.descripcion}>
+                    {st.descripcion}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Booleans Toggle Selects */}
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con Polígono</label>
+              <select className="form-select form-select-sm" name="hasPolygon" value={mapFilters.hasPolygon} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con Docs (Tumba)</label>
+              <select className="form-select form-select-sm" name="hasDocs" value={mapFilters.hasDocs} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con CI</label>
+              <select className="form-select form-select-sm" name="hasCI" value={mapFilters.hasCI} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+            <div className="col-md-3 mt-3">
+              <label className="form-label mb-1 text-muted small">Con DBI</label>
+              <select className="form-select form-select-sm" name="hasDBI" value={mapFilters.hasDBI} onChange={handleFilterChange}>
+                <option value="">Todos</option>
+                <option value="true">Sí</option>
+                <option value="false">No</option>
+              </select>
+            </div>
+
+            <div className="col-12 mt-3 text-end pt-2 border-top">
+              <button className="btn btn-outline-secondary btn-sm" onClick={handleResetFilters}>Limpiar Filtros</button>
+            </div>
+          </div>
+
+          <div className="alert alert-secondary py-2 mt-3 mb-0" role="alert">
+            <strong>Registros encontrados en el mapa:</strong>{" "}
+            {mapStats ? mapStats.totalFeatures : "..."}
+          </div>
+          {mapStats && mapStats.totalFeatures === 0 && Object.keys(initialFilters).some((k) => String(mapFilters[k] || "") !== "") && (
+            <div className="alert alert-warning py-2 mt-2 mb-0" role="alert">
+              No se encontraron expedientes con los filtros actuales.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="row mt-4">
+        {/* Mapa (7 u 8 columnas según si hay selección) */}
+        <div className="col-12">
+          {(mapFilters.tipo === "mejora" || mapFilters.tipo === "terreno") && (() => {
+            const isPhaseStrict = mapFilters.faseMin !== "" && mapFilters.faseMin === mapFilters.faseMax;
+            const labelTipo = mapFilters.tipo === "mejora" ? "Mejora" : "Terreno";
+
+            return (
+              <div className="alert alert-info py-2 d-flex justify-content-between align-items-center">
+                <span>
+                  Filtro activo: <strong>{labelTipo} {isPhaseStrict ? `/ F${mapFilters.faseMin}` : ""}</strong>
+                </span>
+                <button
+                  className="btn btn-sm btn-outline-primary"
+                  onClick={() => handleResetFilters()}
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+            );
+          })()}
+          <GVMapaCatastroGoogle
+            proyectoId={id}
+            filters={mapFilters}
+            tramoId={selectedTramoId}
+            subtramoId={selectedSubtramoId}
+            onStatsChange={setMapStats}
+            onSelectExpediente={handleSelectExpediente}
+          />
+        </div>
+
+      </div>
+
+      {/* Modal Aislado */}
+      <GvExpedienteModal
+        show={modalShow}
+        onHide={() => setModalShow(false)}
+        proyectoId={id}
+        expedienteId={modalExpId}
+        seedProps={modalSeedProps}
+      />
+    </div>
+  );
+}
+

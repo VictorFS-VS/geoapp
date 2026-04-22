@@ -105,6 +105,10 @@ backend/ema-geoapp-ec4ee88497fd.json
 *.docx
 *.pdf
 *.rtf
+*.xlsx
+*.xls
+*.ppt
+*.pptx
 
 **/*.md
 **/*.txt
@@ -112,6 +116,11 @@ backend/ema-geoapp-ec4ee88497fd.json
 **/*.docx
 **/*.pdf
 **/*.rtf
+**/*.xlsx
+**/*.xls
+**/*.ppt
+**/*.pptx
+
 
 *.gitignore
 **/*.gitignore

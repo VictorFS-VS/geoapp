@@ -1,0 +1,235 @@
+/* ---------- Paleta base ---------- */
+:root{
+  --pc-bg: #f6f7fb;
+  --pc-card: #ffffff;
+  --pc-border: #e7e9f0;
+  --pc-text: #1b1f2a;
+  --pc-muted: #8e95a5;
+
+  --pc-primary: #9EBE3E;    /* EMA oliva */
+  --pc-primary-700: #2E5E3A;
+  --pc-blue: #3b82f6;
+  --pc-green: #16a34a;
+  --pc-yellow: #f59e0b;
+  --pc-gray-100:#f3f4f6;
+
+  /* Activo (suave, slate) */
+  --pc-active-bg: #edf2f7;     /* slate-100 */
+  --pc-active-bg-hover: #e2e8f0; /* slate-200 */
+  --pc-active-border: #94a3b8; /* slate-400 */
+  --pc-active-text: #334155;   /* slate-700 */
+
+  --pc-shadow: 0 10px 30px rgba(16,24,40,.08);
+}
+
+body { background: var(--pc-bg); }
+
+/* ---------- Header ---------- */
+.pc-header {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:1rem; margin-bottom:1rem;
+}
+.pc-title { margin:0; font-size:1.6rem; color:var(--pc-text); }
+.pc-sub { margin:.25rem 0 0; color:var(--pc-muted); }
+
+/* ---------- Actions ---------- */
+.pc-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
+.pc-btn {
+  display:inline-flex; align-items:center; gap:.5rem;
+  font-weight:600; border-radius:10px; border:1px solid transparent;
+  padding:.55rem .9rem; cursor:pointer; transition:all .2s ease;
+  background:#fff; color:var(--pc-text);
+}
+.pc-btn .ico { width:18px; height:18px; }
+
+.pc-btn-green {
+  background: var(--pc-primary);
+  color:#0b291a;
+  border-color: #8fb137;
+}
+.pc-btn-green:hover { filter:brightness(0.98); transform:translateY(-1px); }
+
+.pc-btn-outline {
+  background: transparent;
+  border-color: var(--pc-border);
+  color: var(--pc-text);
+}
+.pc-btn-outline:hover { background:#fff; box-shadow: var(--pc-shadow); }
+
+/* ACTIVO (suave) */
+.pc-btn.pc-btn-outline.pc-btn-active {
+  background: var(--pc-active-bg);
+  border-color: var(--pc-active-border);
+  color: var(--pc-active-text);
+  box-shadow: none;
+}
+.pc-btn.pc-btn-outline.pc-btn-active:hover {
+  background: var(--pc-active-bg-hover);
+  border-color: var(--pc-active-border);
+  color: var(--pc-active-text);
+}
+
+.pc-btn-blue {
+  background: var(--pc-blue); color:#fff; border-color: rgba(0,0,0,.05);
+}
+.pc-btn-blue:hover { filter:brightness(0.97); transform:translateY(-1px); }
+
+.pc-btn-light {
+  background: #fff; border-color: var(--pc-border); color: var(--pc-text);
+}
+.pc-btn-light:hover { box-shadow: var(--pc-shadow); }
+
+.pc-btn-map { min-width: 140px; }
+.pc-btn-more { min-width: 110px; }
+
+/* ---------- Buscador (versión fija) ---------- */
+.pc-search {
+  position: relative;                 /* ancla para los absolutos */
+  display: flex;
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--pc-border);
+  border-radius: 12px;
+  padding: .4rem .6rem;
+  margin: .5rem 0 1rem;
+}
+
+/* Lupa a la izquierda, no clickeable */
+.pc-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--pc-muted);
+  pointer-events: none;
+}
+
+/* Input con padding para no chocar con la lupa ni con la X */
+.pc-search-input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  font-size: .95rem;
+  color: var(--pc-text);
+  background: transparent;
+  padding: .35rem 40px .35rem 38px;   /* izq 38px por la lupa, der 40px por la X */
+  min-width: 0;                       /* evita desbordes en flex */
+}
+
+/* Botón X a la derecha, cuadradito y sin ocupar ancho */
+.pc-search-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--pc-muted);
+  padding: 0;
+  line-height: 1;
+}
+.pc-search-clear:hover { color: var(--pc-text); }
+
+/* tamaños de iconos (si usas lucide-react) */
+.ico { display:inline-block; vertical-align: -2px; stroke-width:2; }
+.pc-search .ico { width: 18px; height: 18px; }
+
+/* (Opcional) si el input es type="search", oculta la X nativa del navegador */
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* ---------- Grid ---------- */
+.proj-grid{
+  display:grid; gap:14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+/* ---------- Card ---------- */
+.proj-card{
+  background: var(--pc-card);
+  border:1px solid var(--pc-border);
+  border-radius:16px;
+  padding:14px;
+  box-shadow: 0 1px 0 rgba(16,24,40,.02);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.proj-card:hover{
+  transform: translateY(-2px);
+  box-shadow: var(--pc-shadow);
+  border-color:#dfe3eb;
+}
+
+/* ---------- Card: header ---------- */
+.proj-head{
+  display:flex; align-items:start; justify-content:space-between; gap:.75rem; margin-bottom:.35rem;
+}
+.proj-title{
+  font-weight:700; color:var(--pc-text);
+  line-height:1.2; font-size:1.05rem;
+}
+.proj-code{
+  background: var(--pc-gray-100);
+  border:1px solid var(--pc-border);
+  color:#475569; font-weight:600;
+  padding:.2rem .45rem; border-radius:8px; white-space:nowrap;
+}
+
+/* ---------- Meta ---------- */
+.proj-meta{ display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin:.35rem 0 .65rem; }
+.proj-prop{ display:inline-flex; align-items:center; gap:.35rem; color:var(--pc-muted); }
+
+/* ---------- Estado Badge ---------- */
+.estado-badge{
+  display:inline-flex; align-items:center; gap:.35rem;
+  border-radius:999px; padding:.25rem .6rem; font-weight:700;
+  font-size:.85rem;
+}
+.estado-badge.ok    { background:#e9f8ee; color:#256d3f; }
+.estado-badge.warn  { background:#fff7e6; color:#7a5b00; }
+.estado-badge.muted { background:#eef1f6; color:#4b5563; }
+
+/* ---------- Actions dentro de la card ---------- */
+.proj-actions{
+  display:flex; align-items:center; gap:.5rem; margin-top:.25rem; flex-wrap:wrap;
+}
+
+/* ---------- Pager (con botones uno al lado del otro) ---------- */
+.pc-pager{
+  display:flex; align-items:center; justify-content:space-between;
+  gap:.75rem; margin: 1rem 0 .5rem;
+}
+.pc-pager > span{ color: var(--pc-muted); }
+
+.pc-pager-btns{
+  display:inline-flex;       /* evita ocupar 100% */
+  flex-wrap: nowrap;         /* no permitir salto de línea */
+  gap:.5rem;
+  white-space: nowrap;
+}
+
+.pc-pager-btns .pc-btn{
+  width:auto;
+  min-width:0;
+  flex:0 0 auto;
+  margin:0;
+}
+
+/* Compacto en móviles */
+@media (max-width: 480px){
+  .pc-pager { gap:.5rem; }
+  .pc-pager-btns { gap:.4rem; }
+  .pc-pager-btns .pc-btn { padding:.45rem .7rem; }
+}
+
+/* ---------- Footnote ---------- */
+.pc-footnote{
+  color:var(--pc-muted); font-size:.9rem; margin:.4rem 0 1.2rem;
+}

@@ -1,0 +1,118 @@
+/* ===================================================== */
+/* =============== TOOLBAR DERECHA (PILLS) ============= */
+/* ===================================================== */
+.fsv-toolbar--right{
+  position: fixed;
+  top: 180px;              /* ajustá si querés más arriba/abajo */
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 70000;          /* por encima del mapa y KPI */
+  pointer-events: auto;
+}
+
+.fsv-pill{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(0,0,0,.08);
+  background: rgba(255,255,255,.96);
+  backdrop-filter: blur(10px);
+  color: #111827;
+  padding: 10px 12px;
+  border-radius: 999px;
+  box-shadow: 0 10px 24px rgba(0,0,0,.14);
+  cursor: pointer;
+  user-select: none;
+  min-width: 148px;
+  justify-content: flex-start;
+}
+
+.fsv-pill:hover{ filter: brightness(1.02); }
+.fsv-pill:active{ transform: translateY(1px); }
+
+.fsv-pill__icon{
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(108,92,231,.10);
+  font-size: 18px;
+}
+
+.fsv-pill__text{
+  font-weight: 800;
+  font-size: .92rem;
+}
+
+/* Mobile: más compacto */
+@media (max-width: 768px){
+  .fsv-toolbar--right{
+    top: 152px;
+    right: 10px;
+    gap: 8px;
+  }
+  .fsv-pill{
+    min-width: 46px;
+    padding: 10px;
+    justify-content: center;
+  }
+  .fsv-pill__text{ display: none; }
+}
+
+/* ===================================================== */
+/* ==================== UI SWITCH ====================== */
+/* ===================================================== */
+.ui-switch{
+  position: relative;
+  width: 44px;
+  height: 24px;
+}
+
+.ui-switch input{
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.ui-switch .slider{
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: #cbd5e1;
+  transition: .18s ease;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+}
+
+.ui-switch .slider:before{
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  transition: .18s ease;
+  border-radius: 999px;
+  box-shadow: 0 4px 10px rgba(0,0,0,.15);
+}
+
+.ui-switch input:checked + .slider{
+  background: #6c5ce7;
+}
+
+.ui-switch input:checked + .slider:before{
+  transform: translateX(20px);
+}
+
+/* ===================================================== */
+/* ========= Z-INDEX SEGURO (evitar solapes) ============ */
+/* ===================================================== */
+.fsv-sidebar{ z-index: 65000; }
+.fsv-rightpanel{ z-index: 69000; }
+.fsv-kpibar{ z-index: 60000; }
+.fsv-search-panel{ z-index: 68000; }

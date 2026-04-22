@@ -1,0 +1,67 @@
+/* src/components/AlertasProyectos.css */
+
+.alertas-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.alertas-list::-webkit-scrollbar {
+  width: 6px;
+}
+.alertas-list::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,0.2);
+  border-radius: 3px;
+}
+
+.alerta-chat {
+  border-bottom: 1px solid #eee;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.alerta-chat:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.alerta-chat:last-child {
+  border-bottom: none;
+}
+
+/* Estilos para notificaciones no leídas */
+.alerta-no-leida {
+  background-color: rgba(0, 123, 255, 0.04) !important;
+  border-left: 4px solid #007bff !important;
+  padding-left: 12px !important;
+  box-shadow: 0 2px 4px rgba(0, 123, 255, 0.1);
+}
+
+.alerta-no-leida:hover {
+  background-color: rgba(0, 123, 255, 0.08) !important;
+  box-shadow: 0 4px 8px rgba(0, 123, 255, 0.15);
+}
+
+.icono {
+  font-size: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Estilos para alertas de vencimiento */
+.alerta-vencimiento {
+  background-color: rgba(255, 193, 7, 0.08);
+  border-left: 4px solid #ffc107;
+  padding-left: 12px !important;
+}
+
+.alerta-vencimiento:hover {
+  background-color: rgba(255, 193, 7, 0.12);
+}
+
+.alerta-urgente {
+  background-color: rgba(220, 53, 69, 0.08);
+  border-left: 4px solid #dc3545;
+}
+
+.alerta-urgente:hover {
+  background-color: rgba(220, 53, 69, 0.12);
+}

@@ -1,0 +1,82 @@
+.modalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 1rem;
+}
+
+.modalTitle {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #1f2937; /* gris oscuro */
+  text-align: center; /* ✅ centrado */
+}
+
+.modalDescription {
+  font-size: 0.95rem;
+  color: #6b7280; /* gris claro */
+  margin-bottom: 0.5rem;
+}
+
+.modalButton {
+  background-color: white;
+  border: 1px solid #d1d5db;
+  color: #374151;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.modalButton:hover {
+  background-color: #f3f4f6;
+}
+
+.deleteButton {
+  background-color: #dc2626;
+  color: white;
+  border: none;
+  padding: 10px;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.deleteButton:hover {
+  background-color: #b91c1c;
+}
+
+/* ProyectoModal.module.css */
+.dialogContentCustom {
+  max-width: 600px !important; /* 👈 forzado */
+  width: 90% !important;
+  left: calc(50% + 25px) !important; /* Compensar visualmente el sidebar */
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  position: relative;
+}
+
+.dialogOverlayCustom {
+  background-color: rgba(0, 0, 0, 0.5);
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+/* En tu archivo ProyectoModal.module.css */
+[data-state="open"] > button.absolute.right-4.top-4 {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .dialogContentCustom {
+    max-width: 95% !important; /* 👈 forzado */
+    width: 80% !important;
+    
+  }
+}
