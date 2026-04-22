@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstrap";
 import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
+import InformesTableOperativo from "@/components/informes/InformesTableOperativo";
 import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
 import { useAuth } from "@/auth/AuthContext";
 
@@ -15,6 +16,7 @@ function normalizeApiBase(base) {
 
 const API_URL = normalizeApiBase(import.meta.env.VITE_API_URL) || "http://localhost:4000/api";
 const PUBLIC_API_URL = normalizeApiBase(import.meta.env.VITE_PUBLIC_API_URL) || API_URL;
+const USE_OPERATIVE_TABLE = true;
 
 const authHeaders = () => {
   const token =
@@ -182,6 +184,10 @@ const InformesProyecto = () => {
   }, [plantillaParam]);
 
   const [informes, setInformes] = useState([]);
+  const [searchText, setSearchText] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [listMeta, setListMeta] = useState({ total: 0, page: 1, limit: 20, total_pages: 1 });
+  const [listSort, setListSort] = useState({ sortBy: "fecha", sortOrder: "desc" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -290,26 +296,101 @@ const InformesProyecto = () => {
     kmzPickGlobalRef.current = Number.isFinite(n) && n > 0 ? n : null;
   }, [idProyecto, idPlantillaFiltro]);
 
+  useEffect(() => {
+    setListPage(1);
+  }, [idPlantillaFiltro]);
+
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
   useMemo(() => isAdminUser(auth), [auth?.user]);
   const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
 
-  const cargarInformes = async () => {
+  const informesAdaptados = useMemo(() => {
+    return (informes || []).map((informe) => {
+      const respuestasClave =
+        informe &&
+        informe.respuestas_clave &&
+        typeof informe.respuestas_clave === "object" &&
+        !Array.isArray(informe.respuestas_clave)
+          ? informe.respuestas_clave
+          : {};
+      const fallbackTitulo = informe?.titulo || `Informe #${informe?.id_informe ?? "-"}`;
+      const respuestasNormalizadas =
+        Object.keys(respuestasClave).length > 0
+          ? respuestasClave
+          : {
+              titulo: fallbackTitulo,
+            };
+
+      return {
+        ...informe,
+        nombre_plantilla: informe?.nombre_plantilla || informe?.id_plantilla || "-",
+        fecha_creado: informe?.fecha_creado || informe?.fecha || informe?.created_at || null,
+        creado_por: informe?.creado_por || "-",
+        respuestas_clave: respuestasNormalizadas,
+      };
+    });
+  }, [informes]);
+
+  const onToggleSelection = useCallback((idInforme) => {
+    const id = Number(idInforme);
+    if (!Number.isFinite(id) || id <= 0) return;
+
+    setSelectedIds((prev) => {
+      const set = new Set(prev.map(Number));
+      if (set.has(id)) set.delete(id);
+      else set.add(id);
+      return Array.from(set);
+    });
+  }, []);
+
+  const handleSortChange = useCallback((sortBy) => {
+    if (!sortBy) return;
+    setListSort((prev) => {
+      const nextOrder = prev.sortBy === sortBy && prev.sortOrder === "asc" ? "desc" : "asc";
+      return { sortBy, sortOrder: nextOrder };
+    });
+    setListPage(1);
+  }, []);
+
+  const cargarInformes = useCallback(async () => {
+    if (!idProyecto) return;
+
     try {
       setLoading(true);
       setError(null);
 
-      const qs = idPlantillaFiltro ? `?plantilla=${idPlantillaFiltro}` : "";
-      const resp = await fetch(`${API_URL}/informes/proyecto/${idProyecto}${qs}`, {
+      const params = new URLSearchParams();
+      params.set("id_proyecto", String(idProyecto));
+      if (idPlantillaFiltro) params.set("id_plantilla", String(idPlantillaFiltro));
+
+      const search = String(searchText || "").trim();
+      if (search) params.set("search", search);
+
+      params.set("page", String(Math.max(1, Number(listPage || 1))));
+      params.set("limit", "20");
+      params.set("sort_by", String(listSort.sortBy || "fecha"));
+      params.set("sort_order", String(listSort.sortOrder || "desc"));
+
+      const resp = await fetch(`${API_URL}/informes/query?${params.toString()}`, {
         headers: authHeaders(),
       });
 
       if (!resp.ok) throw new Error(`Error ${resp.status}`);
 
       const data = await resp.json();
-      setInformes(data.informes || []);
+      setInformes(Array.isArray(data.informes) ? data.informes : Array.isArray(data.data) ? data.data : []);
+      setListMeta(
+        data?.meta && typeof data.meta === "object"
+          ? {
+              total: Number(data.meta.total) || 0,
+              page: Number(data.meta.page) || 1,
+              limit: Number(data.meta.limit) || 20,
+              total_pages: Number(data.meta.total_pages) || 1,
+            }
+          : { total: 0, page: 1, limit: 20, total_pages: 1 }
+      );
     } catch (err) {
       console.error("Error cargando informes:", err);
       setError("No se pudieron cargar los informes.");
@@ -317,12 +398,14 @@ const InformesProyecto = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [idProyecto, idPlantillaFiltro, searchText, listPage, listSort.sortBy, listSort.sortOrder]);
 
   useEffect(() => {
-    if (idProyecto) cargarInformes();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idProyecto, idPlantillaFiltro]);
+    const timeoutId = setTimeout(() => {
+      cargarInformes();
+    }, 350);
+    return () => clearTimeout(timeoutId);
+  }, [cargarInformes]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allIds = useMemo(
@@ -330,6 +413,9 @@ const InformesProyecto = () => {
     [informes]
   );
   const allSelected = allIds.length > 0 && allIds.every((id) => selectedSet.has(id));
+  const onSelectAll = useCallback(() => {
+    setSelectedIds(allSelected ? [] : allIds);
+  }, [allSelected, allIds]);
   const headerCheckboxRef = useRef(null);
 
   useEffect(() => {
@@ -352,7 +438,18 @@ const InformesProyecto = () => {
     return d.toLocaleString("es-PY");
   };
 
-  const totalRegistrosExport = useMemo(() => informes.length || 0, [informes]);
+  const totalRegistrosExport = useMemo(() => Number(listMeta.total || 0), [listMeta.total]);
+  const totalPaginasListado = useMemo(
+    () => Math.max(1, Number(listMeta.total_pages || 1)),
+    [listMeta.total_pages]
+  );
+
+  useEffect(() => {
+    setListPage((prev) => {
+      const next = Math.min(Math.max(1, Number(prev || 1)), totalPaginasListado);
+      return next === prev ? prev : next;
+    });
+  }, [totalPaginasListado]);
 
   const limitOptions = useMemo(() => {
     return wordConfig.incluirFotos ? [10, 20] : [10, 20, 50, 100];
@@ -385,7 +482,7 @@ const InformesProyecto = () => {
         newLimit = limitOptions[0];
       }
 
-      const totalPages = Math.max(1, Math.ceil((informes.length || 0) / newLimit));
+      const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / newLimit));
       let newPage = Number(prev.page || 1);
 
       if (newPage > totalPages) newPage = totalPages;
@@ -1418,6 +1515,80 @@ const InformesProyecto = () => {
         </div>
       </div>
 
+      <div className="d-flex flex-wrap gap-2 align-items-end mb-3">
+        <Form.Group className="flex-grow-1" style={{ minWidth: 280 }}>
+          <Form.Label className="small text-muted mb-1">Buscar por respuestas o por ID numérico</Form.Label>
+          <Form.Control
+            type="search"
+            value={searchText}
+            placeholder="Escribí texto de respuesta o un ID de informe..."
+            onChange={(e) => {
+              setSearchText(e.target.value);
+              setListPage(1);
+            }}
+          />
+        </Form.Group>
+
+        <div className="d-flex gap-2">
+          <Button
+            variant="outline-secondary"
+            onClick={() => {
+              setSearchText("");
+              setListPage(1);
+            }}
+            disabled={!searchText && listPage === 1}
+          >
+            Limpiar
+          </Button>
+
+          <Button variant="outline-secondary" onClick={() => cargarInformes()} disabled={loading}>
+            Recargar
+          </Button>
+        </div>
+      </div>
+
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <div className="text-muted small">
+          {loading
+            ? "Cargando listado..."
+            : `${totalRegistrosExport} informe${totalRegistrosExport === 1 ? "" : "s"} encontrados`}
+          {searchText.trim() ? ` · búsqueda: "${searchText.trim()}"` : ""}
+          {idPlantillaFiltro ? ` · plantilla #${idPlantillaFiltro}` : ""}
+        </div>
+
+        <div className="d-flex align-items-center gap-2">
+          <Badge bg="secondary">
+            Página {Math.min(listPage, totalPaginasListado)} de {totalPaginasListado}
+          </Badge>
+          <div className="btn-group btn-group-sm">
+            <Button variant="outline-secondary" onClick={() => setListPage(1)} disabled={listPage <= 1 || loading}>
+              «
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage((prev) => Math.max(1, Number(prev || 1) - 1))}
+              disabled={listPage <= 1 || loading}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage((prev) => Math.min(totalPaginasListado, Number(prev || 1) + 1))}
+              disabled={listPage >= totalPaginasListado || loading}
+            >
+              Siguiente
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage(totalPaginasListado)}
+              disabled={listPage >= totalPaginasListado || loading}
+            >
+              »
+            </Button>
+          </div>
+        </div>
+      </div>
+
       {loading && (
         <div className="text-center py-4">
           <Spinner animation="border" size="sm" /> Cargando informes...
@@ -1426,7 +1597,38 @@ const InformesProyecto = () => {
 
       {error && <div className="alert alert-danger py-2">{error}</div>}
 
-      {!loading && !error && informes.length > 0 && (
+      {!loading && !error && informes.length === 0 && (
+        <Alert variant="info" className="py-2">
+          No se encontraron informes con los criterios actuales.
+        </Alert>
+      )}
+
+      {!loading && !error && informes.length > 0 && USE_OPERATIVE_TABLE && (
+        <InformesTableOperativo
+          informes={informesAdaptados}
+          preguntasPlantilla={preguntasPlantilla}
+          abrirVer={abrirVer}
+          abrirEditar={abrirEditar}
+          eliminarInforme={eliminarInforme}
+          descargarPdfInforme={descargarPdfInforme}
+          descargarKmzInforme={descargarKmzInforme}
+          puedeEditar={puedeEditar}
+          puedeEliminarAdmin={puedeEliminarAdmin}
+          puedeDescargarKmz={puedeDescargarKmz}
+          downloadingKmzByInforme={downloadingKmzByInforme}
+          anyDownloading={anyDownloading}
+          selectedIds={selectedIds}
+          onToggleSelection={onToggleSelection}
+          onSelectAll={onSelectAll}
+          allSelected={allSelected}
+          headerCheckboxRef={headerCheckboxRef}
+          sortBy={listSort.sortBy}
+          sortOrder={listSort.sortOrder}
+          onSortChange={handleSortChange}
+        />
+      )}
+
+      {!loading && !error && informes.length > 0 && !USE_OPERATIVE_TABLE && (
         <Table striped bordered hover size="sm" responsive>
           <thead className="table-light">
             <tr>

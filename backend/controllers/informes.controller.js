@@ -7739,10 +7739,12 @@ async function duplicarPlantilla(req, res) {
         }
       }
 
-      if (search) {
-        params.push(`%${search}%`);
+      const searchValue = String(search || "").trim();
+      if (searchValue) {
+        params.push(`%${searchValue}%`);
         const searchIdx = params.length;
-        whereConditions.push(`
+
+        const searchPredicates = [`
           EXISTS (
             SELECT 1 
             FROM ema.informe_respuesta r2 
@@ -7753,7 +7755,15 @@ async function duplicarPlantilla(req, res) {
               OR r2.valor_bool::text ILIKE $${searchIdx}
             )
           )
-        `);
+        `];
+
+        if (/^\d+$/.test(searchValue)) {
+          params.push(Number(searchValue));
+          const idIdx = params.length;
+          searchPredicates.push(`i.id_informe = $${idIdx}`);
+        }
+
+        whereConditions.push(`(${searchPredicates.join(" OR ")})`);
       }
 
       const whereClause = whereConditions.map(c => `(${c})`).join(" AND ");
