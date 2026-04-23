@@ -3701,6 +3701,7 @@ function normalizeConsolidacionTextoLibre(raw) {
 function normalizeConsolidacionRespuesta(question, row) {
   const opts = normalizeConsolidacionOptions(question?.opciones_json);
   const tipo = normalizeConsolidacionTipo(question?.tipo);
+  const isChoiceType = CONSOLIDACION_CHOICES_TIPOS.has(tipo);
 
   const resolveAgainstOptions = (raw) => {
     const s = normalizeConsolidacionTextoLibre(raw);
@@ -3717,17 +3718,16 @@ function normalizeConsolidacionRespuesta(question, row) {
       }
     }
 
-    if (CONSOLIDACION_CHOICES_TIPOS.has(tipo) && /^-?\d+(\.\d+)?$/.test(s)) {
-      return "";
-    }
-
     return s;
   };
 
   const resolveRaw = (raw) => {
     if (raw === null || raw === undefined) return "";
     if (typeof raw === "boolean") return raw ? "Sí" : "No";
-    if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw)) return "";
+      return isChoiceType ? resolveAgainstOptions(String(raw)) : String(raw);
+    }
 
     if (Array.isArray(raw)) {
       return raw.map((item) => resolveRaw(item)).filter(Boolean).join(", ");
@@ -3744,7 +3744,7 @@ function normalizeConsolidacionRespuesta(question, row) {
       if (!isBlankConsolidacionText(labelLike)) {
         const resolved = resolveAgainstOptions(labelLike);
         if (resolved) return resolved;
-        if (!CONSOLIDACION_CHOICES_TIPOS.has(tipo)) {
+        if (!isChoiceType) {
           return String(labelLike).trim();
         }
       }
@@ -3759,7 +3759,7 @@ function normalizeConsolidacionRespuesta(question, row) {
       if (!isBlankConsolidacionText(valueLike)) {
         const resolved = resolveAgainstOptions(valueLike);
         if (resolved) return resolved;
-        if (!CONSOLIDACION_CHOICES_TIPOS.has(tipo)) {
+        if (!isChoiceType) {
           return String(valueLike).trim();
         }
       }
@@ -3778,15 +3778,12 @@ function normalizeConsolidacionRespuesta(question, row) {
 
     if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
     if (typeof parsed === "number") {
-      const optionMatch = resolveAgainstOptions(s);
-      if (optionMatch) return optionMatch;
-      if (CONSOLIDACION_CHOICES_TIPOS.has(tipo)) return "";
+      if (isChoiceType) return resolveAgainstOptions(s);
       return String(parsed);
     }
     if (typeof parsed === "string") {
-      const parsedTrim = parsed.trim();
-      if (CONSOLIDACION_CHOICES_TIPOS.has(tipo) && /^-?\d+(\.\d+)?$/.test(parsedTrim)) return "";
-      return parsedTrim;
+      if (isChoiceType) return resolveAgainstOptions(s);
+      return parsed.trim();
     }
 
       return resolveAgainstOptions(s);
