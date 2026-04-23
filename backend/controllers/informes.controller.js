@@ -6275,7 +6275,7 @@ async function exportProyectoInformesExcel(req, res) {
 
     // âœ… hoja info
     const wsInfo = wb.addWorksheet("info");
-    wsInfo.addRow(["Proyecto", proyectoLabelExcel]);
+    wsInfo.addRow(["Proyecto", sanitizeExcelText(proyectoLabel)]);
     wsInfo.addRow(["ID Proyecto", idProyecto]);
     wsInfo.addRow(["Filtro plantilla", idPlantilla ? String(idPlantilla) : "Todas"]);
     wsInfo.addRow(["Total informes", informes.length]);

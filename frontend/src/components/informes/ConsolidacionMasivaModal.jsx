@@ -104,6 +104,8 @@ export default function ConsolidacionMasivaModal({
   const [preview, setPreview] = useState(null);
   const [previewError, setPreviewError] = useState("");
   const [applyError, setApplyError] = useState("");
+  const [applyErrorDetail, setApplyErrorDetail] = useState("");
+  const [applyErrorMeta, setApplyErrorMeta] = useState(null);
   const [applyPhase, setApplyPhase] = useState("idle");
   const [applyStep, setApplyStep] = useState("idle");
 
@@ -118,11 +120,13 @@ export default function ConsolidacionMasivaModal({
     setPreview(null);
     setPreviewError("");
     setApplyError("");
+    setApplyErrorDetail("");
+    setApplyErrorMeta(null);
     setApplyPhase("idle");
     setApplyStep("idle");
     setPreviewLoading(false);
     setApplyLoading(false);
-  }, [show, idPlantilla]);
+  }, [show]);
 
   const preguntasValidas = useMemo(() => (Array.isArray(preguntas) ? preguntas.filter(Boolean) : []), [preguntas]);
 
@@ -181,6 +185,8 @@ export default function ConsolidacionMasivaModal({
       setPreview(null);
       setPreviewError("");
       setApplyError("");
+      setApplyErrorDetail("");
+      setApplyErrorMeta(null);
       setApplyPhase("idle");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -223,6 +229,8 @@ export default function ConsolidacionMasivaModal({
     setPreviewLoading(true);
     setPreviewError("");
     setApplyError("");
+    setApplyErrorDetail("");
+    setApplyErrorMeta(null);
     try {
       const data = await fetchJson(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantilla}/consolidacion/preview`,
@@ -254,8 +262,8 @@ export default function ConsolidacionMasivaModal({
   };
 
   const handleOpenApplyConfirm = () => {
-    console.info("[CONSOLIDACION_FRONT] click handleOpenApplyConfirm");
-    console.info("[CONSOLIDACION_FRONT] contexto", {
+    //console.info("[CONSOLIDACION_FRONT] click handleOpenApplyConfirm");
+   /* console.info("[CONSOLIDACION_FRONT] contexto", {
       idProyecto,
       idPlantilla,
       sourceIds,
@@ -264,18 +272,24 @@ export default function ConsolidacionMasivaModal({
       overwriteMode,
       previewValid: !!preview?.valid,
     });
+*/
 
     if (!preview?.valid) {
-      console.warn("[CONSOLIDACION_FRONT] abort: preview invalid");
+     // console.info("[CONSOLIDACION_FRONT] abort: preview invalid");
       setApplyPhase("bloqueado");
       setApplyStep("idle");
+      setApplyError("");
+      setApplyErrorDetail("");
+      setApplyErrorMeta(null);
       return;
     }
 
-    console.info("[CONSOLIDACION_FRONT] inline confirmacion preparada");
+    //console.info("[CONSOLIDACION_FRONT] inline confirmacion preparada");
     setApplyPhase("confirmando");
     setApplyStep("confirm");
     setApplyError("");
+    setApplyErrorDetail("");
+    setApplyErrorMeta(null);
   };
 
   const handleApply = async () => {
@@ -287,8 +301,8 @@ export default function ConsolidacionMasivaModal({
       overwrite_mode: overwriteMode,
     };
 
-    console.info("[CONSOLIDACION_FRONT] click handleApply");
-    console.info("[CONSOLIDACION_FRONT] contexto", {
+    //console.info("[CONSOLIDACION_FRONT] click handleApply");
+    /*console.info("[CONSOLIDACION_FRONT] contexto", {
       idProyecto,
       idPlantilla,
       sourceIds,
@@ -296,28 +310,36 @@ export default function ConsolidacionMasivaModal({
       strategy,
       overwriteMode,
       previewValid: !!preview?.valid,
-    });
+    });*/
 
     if (!preview?.valid) {
-      console.warn("[CONSOLIDACION_FRONT] abort: preview invalid");
+      //console.info("[CONSOLIDACION_FRONT] abort: preview invalid");
       setApplyPhase("bloqueado");
       setApplyStep("idle");
+      setApplyError("");
+      setApplyErrorDetail("");
+      setApplyErrorMeta(null);
       return;
     }
 
     if (applyStep !== "confirm") {
-      console.warn("[CONSOLIDACION_FRONT] abort: confirmacion inline no activa");
+      //console.info("[CONSOLIDACION_FRONT] abort: confirmacion inline no activa");
       setApplyPhase("confirmando");
       setApplyStep("confirm");
+      setApplyError("");
+      setApplyErrorDetail("");
+      setApplyErrorMeta(null);
       return;
     }
 
-    console.info("[CONSOLIDACION_FRONT] antes de setApplyLoading(true)");
+    //console.info("[CONSOLIDACION_FRONT] antes de setApplyLoading(true)");
     setApplyPhase("aplicando");
     setApplyLoading(true);
     setApplyError("");
+    setApplyErrorDetail("");
+    setApplyErrorMeta(null);
 
-    console.info("[CONSOLIDACION_FRONT] antes de fetchJson", {
+    /*console.info("[CONSOLIDACION_FRONT] antes de fetchJson", {
       method: "POST",
       url: applyUrl,
       idProyecto,
@@ -328,6 +350,7 @@ export default function ConsolidacionMasivaModal({
       overwriteMode,
       payload: applyPayload,
     });
+    */
 
     try {
       const data = await fetchJson(applyUrl, {
@@ -339,20 +362,42 @@ export default function ConsolidacionMasivaModal({
         body: JSON.stringify(applyPayload),
       });
 
-      console.info("[CONSOLIDACION_FRONT] success", data);
+      console.info("[CONSOLIDACION_FRONT] Proceso Terminado", data);
       setApplyPhase("exito");
       setApplyStep("idle");
       setApplyLoading(false);
       setPreview(null);
       setPreviewError("");
       setApplyError("");
+      setApplyErrorDetail("");
+      setApplyErrorMeta(null);
       await Promise.resolve(onApplied?.(data));
       await new Promise((resolve) => setTimeout(resolve, 600));
       onHide?.();
     } catch (err) {
-      console.error("[CONSOLIDACION_FRONT] error", err);
+      //console.info("[CONSOLIDACION_FRONT] error", err);
       setApplyPhase("error");
-      setApplyError(err?.message || "No se pudo aplicar la consolidacion.");
+      const status = err?.status || err?.response?.status || err?.httpStatus || "";
+      const serverMessage =
+        err?.response?.data?.error ||
+        err?.response?.data?.message ||
+        err?.response?.data?.detail ||
+        err?.data?.error ||
+        err?.message ||
+        "Error desconocido al aplicar la consolidacion";
+      const rawDetail =
+        typeof err?.response?.data === "string"
+          ? err.response.data
+          : JSON.stringify(err?.response?.data || err, null, 2);
+      setApplyError("Error al aplicar la consolidacion");
+      setApplyErrorDetail(String(rawDetail || "").trim());
+      setApplyErrorMeta({
+        status,
+        serverMessage,
+        strategy,
+        overwriteMode,
+        rowsToApply: preview?.summary?.with_changes ?? null,
+      });
     } finally {
       console.info("[CONSOLIDACION_FRONT] finally");
       setApplyLoading(false);
@@ -648,7 +693,46 @@ export default function ConsolidacionMasivaModal({
               ) : null}
 
               {previewError ? <Alert variant="danger">{previewError}</Alert> : null}
-              {applyError ? <Alert variant="danger">{applyError}</Alert> : null}
+              {applyError ? (
+                <Alert variant="danger" className="mt-3">
+                  <div className="fw-bold mb-1">{applyError}</div>
+
+                  <div className="small mb-2">
+                    No se aplicaron cambios. Revisa el detalle tecnico y vuelve a intentar.
+                  </div>
+
+                  {applyErrorMeta?.status ? (
+                    <div className="small mb-1">
+                      <strong>HTTP:</strong> {applyErrorMeta.status}
+                    </div>
+                  ) : null}
+
+                  {applyErrorMeta?.serverMessage ? (
+                    <div className="small mb-2" style={{ whiteSpace: "pre-wrap" }}>
+                      <strong>Mensaje:</strong> {applyErrorMeta.serverMessage}
+                    </div>
+                  ) : null}
+
+                  <div className="d-flex flex-wrap gap-2 small mb-2">
+                    <Badge bg="light" text="dark">
+                      Estrategia: {strategy === "first_non_empty" ? "primer valor no vacio" : "concatenar con coma"}
+                    </Badge>
+                    <Badge bg="light" text="dark">
+                      Overwrite: {overwriteMode === "empty_only" ? "solo si esta vacio" : "sobrescribir siempre"}
+                    </Badge>
+                    <Badge bg="light" text="dark">
+                      Cambios estimados: {applyErrorMeta?.rowsToApply ?? 0}
+                    </Badge>
+                  </div>
+
+                  <details>
+                    <summary>Ver detalle tecnico</summary>
+                    <pre className="mb-0 mt-2 small" style={{ whiteSpace: "pre-wrap" }}>
+                      {applyErrorDetail}
+                    </pre>
+                  </details>
+                </Alert>
+              ) : null}
 
               {showInlineConfirm ? (
                 <Alert variant="warning" className="mb-3">
@@ -666,6 +750,8 @@ export default function ConsolidacionMasivaModal({
                         setApplyStep("idle");
                         setApplyPhase("idle");
                         setApplyError("");
+                        setApplyErrorDetail("");
+                        setApplyErrorMeta(null);
                       }}
                       disabled={applyLoading}
                     >
@@ -784,3 +870,4 @@ export default function ConsolidacionMasivaModal({
     </Modal>
   );
 }
+
