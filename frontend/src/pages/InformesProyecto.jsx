@@ -6,6 +6,7 @@ import Swal from "sweetalert2";
 import InformeModal from "@/components/InformeModal";
 import InformesTableOperativo from "@/components/informes/InformesTableOperativo";
 import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
+import ImportarExcelActualizarModal from "@/components/informes/ImportarExcelActualizarModal";
 import { useAuth } from "@/auth/AuthContext";
 
 function normalizeApiBase(base) {
@@ -167,6 +168,47 @@ function isAdminUser(auth) {
   }
 }
 
+function normalizeOptionsJson(opcionesJson) {
+  try {
+    const parsed =
+      typeof opcionesJson === "string" ? JSON.parse(opcionesJson) : opcionesJson;
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((opt) => {
+        if (typeof opt === "string") {
+          return { value: opt, label: opt };
+        }
+        if (opt && typeof opt === "object") {
+          return {
+            value:
+              opt.value ??
+              opt.valor ??
+              opt.id ??
+              opt.label ??
+              opt.nombre ??
+              opt.titulo ??
+              "",
+            label:
+              opt.label ??
+              opt.nombre ??
+              opt.titulo ??
+              opt.value ??
+              opt.valor ??
+              opt.id ??
+              "",
+          };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .filter((x) => String(x.value ?? "").trim() !== "");
+  } catch {
+    return [];
+  }
+}
+
 const InformesProyecto = () => {
   const { idProyecto } = useParams();
   const navigate = useNavigate();
@@ -221,6 +263,7 @@ const InformesProyecto = () => {
   const kmzPickGlobalRef = useRef(null);
 
   const [showImportZip, setShowImportZip] = useState(false);
+  const [showImportExcel, setShowImportExcel] = useState(false);
 
   const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
   const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
@@ -303,8 +346,8 @@ const InformesProyecto = () => {
 
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
-  useMemo(() => isAdminUser(auth), [auth?.user]);
-  const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
+  const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
+  const puedeEliminarAdmin = useMemo(() => puedeEliminar || esAdmin, [puedeEliminar, esAdmin]);
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
 
   const informesAdaptados = useMemo(() => {
@@ -497,7 +540,7 @@ const InformesProyecto = () => {
         page: newPage,
       };
     });
-  }, [limitOptions, informes.length]);
+  }, [limitOptions, totalRegistrosExport]);
 
   useEffect(() => {
     setWordRange((prev) => {
@@ -1593,6 +1636,15 @@ const InformesProyecto = () => {
             📦 Importar Fotos (ZIP)
           </Button>
 
+          <Button
+            variant="outline-primary"
+            disabled={!idPlantillaFiltro || anyDownloading}
+            onClick={() => setShowImportExcel(true)}
+            title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Importación Excel inteligente"}
+          >
+            📊 Importar Excel
+          </Button>
+
           <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
             ➕ Nuevo informe
           </Button>
@@ -2333,6 +2385,20 @@ const InformesProyecto = () => {
         idProyecto={idProyecto}
         idPlantilla={idPlantillaFiltro}
         preguntas={preguntasPlantilla}
+      />
+
+      <ImportarExcelActualizarModal
+        show={showImportExcel}
+        onHide={() => {
+          setShowImportExcel(false);
+          cargarInformes();
+        }}
+        idProyecto={idProyecto}
+        idPlantilla={idPlantillaFiltro}
+        preguntas={preguntasPlantilla}
+        secciones={seccionesPlantilla}
+        API_URL={API_URL}
+        authHeaders={authHeaders}
       />
     </div>
   );
