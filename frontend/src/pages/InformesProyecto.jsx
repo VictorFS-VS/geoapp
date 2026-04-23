@@ -5,6 +5,7 @@ import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
 import InformesTableOperativo from "@/components/informes/InformesTableOperativo";
+import ConsolidacionMasivaModal from "@/components/informes/ConsolidacionMasivaModal";
 import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
 import ImportarExcelActualizarModal from "@/components/informes/ImportarExcelActualizarModal";
 import { useAuth } from "@/auth/AuthContext";
@@ -264,6 +265,7 @@ const InformesProyecto = () => {
 
   const [showImportZip, setShowImportZip] = useState(false);
   const [showImportExcel, setShowImportExcel] = useState(false);
+  const [showConsolidacion, setShowConsolidacion] = useState(false);
 
   const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
   const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
@@ -1645,6 +1647,21 @@ const InformesProyecto = () => {
             📊 Importar Excel
           </Button>
 
+          <Button
+            variant="outline-secondary"
+            disabled={!idPlantillaFiltro || anyDownloading || preguntasPlantilla.length === 0}
+            onClick={() => setShowConsolidacion(true)}
+            title={
+              !idPlantillaFiltro
+                ? "Debés filtrar por plantilla"
+                : preguntasPlantilla.length === 0
+                  ? "La plantilla no tiene preguntas cargadas"
+                  : "Consolidación masiva de campos"
+            }
+          >
+            🔁 Consolidar campos
+          </Button>
+
           <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
             ➕ Nuevo informe
           </Button>
@@ -2399,6 +2416,21 @@ const InformesProyecto = () => {
         secciones={seccionesPlantilla}
         API_URL={API_URL}
         authHeaders={authHeaders}
+      />
+
+      <ConsolidacionMasivaModal
+        show={showConsolidacion}
+        onHide={() => {
+          setShowConsolidacion(false);
+        }}
+        idProyecto={idProyecto}
+        idPlantilla={idPlantillaFiltro}
+        preguntas={preguntasPlantilla}
+        API_URL={API_URL}
+        authHeaders={authHeaders}
+        onApplied={() => {
+          cargarInformes();
+        }}
       />
     </div>
   );

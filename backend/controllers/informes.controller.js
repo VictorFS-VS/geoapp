@@ -35,6 +35,123 @@ function asPositiveInt(v, fallback = 1) {
   return Math.trunc(n);
 }
 
+function sanitizeExcelText(value) {
+  if (value === null || value === undefined) return "";
+
+  if (value instanceof Date) return value;
+
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+
+  if (typeof value === "number") return Number.isFinite(value) ? value : "";
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeExcelText(item)).filter(Boolean).join(", ");
+  }
+
+  if (typeof value === "object") {
+    const labelLike =
+      value.label ?? value.nombre ?? value.name ?? value.titulo ?? value.text ?? value.value ?? value.valor ?? null;
+    if (labelLike !== null && labelLike !== undefined && String(labelLike).trim() !== "") {
+      return sanitizeExcelText(labelLike);
+    }
+
+    const nested =
+      Array.isArray(value.items) ? value.items :
+      Array.isArray(value.values) ? value.values :
+      Array.isArray(value.options) ? value.options :
+      null;
+    if (nested) {
+      const nestedText = nested.map((item) => sanitizeExcelText(item)).filter(Boolean).join(", ");
+      if (nestedText) return nestedText;
+    }
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+
+  const text = String(value).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]/g, "");
+  return text.trim();
+}
+
+function resolveExcelResponseValue(row = {}, question = {}) {
+  const tipo = String(question?.tipo || "").trim().toLowerCase();
+
+  const resolveJsonLike = (raw) => {
+    if (raw === null || raw === undefined) return "";
+
+    if (typeof raw === "boolean") return raw ? "Sí" : "No";
+    if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+    if (Array.isArray(raw)) return raw.map((item) => resolveJsonLike(item)).filter(Boolean).join(", ");
+
+    if (typeof raw === "object") {
+      if (tipo === "semaforo") {
+        const nombre = raw.nombre ?? raw.label ?? raw.text ?? raw.name ?? raw.titulo ?? null;
+        if (nombre !== null && nombre !== undefined && String(nombre).trim() !== "") {
+          return sanitizeExcelText(nombre);
+        }
+      }
+
+      const labelLike =
+        raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.value ?? raw.valor ?? null;
+      if (labelLike !== null && labelLike !== undefined && String(labelLike).trim() !== "") {
+        return sanitizeExcelText(labelLike);
+      }
+
+      const nested =
+        Array.isArray(raw.items) ? raw.items :
+        Array.isArray(raw.values) ? raw.values :
+        Array.isArray(raw.options) ? raw.options :
+        null;
+      if (nested) {
+        const nestedText = nested.map((item) => resolveJsonLike(item)).filter(Boolean).join(", ");
+        if (nestedText) return nestedText;
+      }
+
+      try {
+        return sanitizeExcelText(JSON.stringify(raw));
+      } catch {
+        return "";
+      }
+    }
+
+    if (typeof raw === "string") {
+      const s = sanitizeExcelText(raw);
+      if (!s) return "";
+
+      const parsed = parseJsonMaybe(s);
+      if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+        return resolveJsonLike(parsed);
+      }
+      if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+      if (typeof parsed === "number") return String(parsed);
+      if (typeof parsed === "string") return sanitizeExcelText(parsed);
+
+      return s;
+    }
+
+    return sanitizeExcelText(raw);
+  };
+
+  if (row?.valor_bool !== null && row?.valor_bool !== undefined) {
+    return row.valor_bool ? "Sí" : "No";
+  }
+
+  if (row?.valor_texto !== null && row?.valor_texto !== undefined) {
+    const text = sanitizeExcelText(row.valor_texto);
+    if (text !== "") return text;
+  }
+
+  if (row?.valor_json !== null && row?.valor_json !== undefined) {
+    const resolved = resolveJsonLike(row.valor_json);
+    if (resolved !== "") return resolved;
+  }
+
+  return "";
+}
+
 /**
  * Normaliza input para columnas JSONB:
  * - undefined => "no tocar" (para UPDATE)
@@ -3431,6 +3548,588 @@ function firstNonEmpty(values = []) {
   return "";
 }
 
+const CONSOLIDACION_DESTINO_TEXTUAL_TIPOS = new Set([
+  "texto",
+  "textarea",
+  "text",
+  "string",
+  "short_text",
+  "shorttext",
+  "select",
+  "radio",
+  "select_single",
+]);
+
+const CONSOLIDACION_ORIGEN_BLOQUEADOS = new Set([
+  "imagen",
+  "image",
+  "foto",
+  "galeria",
+  "gallery",
+  "photoupload",
+  "vphoto",
+  "archivo_imagen",
+]);
+
+const CONSOLIDACION_CHOICES_TIPOS = new Set([
+  "select",
+  "radio",
+  "select_single",
+  "semaforo",
+  "multiselect",
+  "checkbox",
+  "select_multiple",
+]);
+
+function normalizeConsolidacionTipo(tipo) {
+  return String(tipo || "").trim().toLowerCase();
+}
+
+function isBlankConsolidacionText(value) {
+  return value === null || value === undefined || String(value).trim() === "";
+}
+
+function parseJsonMaybe(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+
+  const s = value.trim();
+  if (!s) return null;
+
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeConsolidacionOptions(opcionesJson) {
+  const parsed = parseJsonMaybe(opcionesJson);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((opt) => {
+      if (typeof opt === "string") {
+        const s = opt.trim();
+        return s ? { value: s, label: s } : null;
+      }
+
+      if (!opt || typeof opt !== "object") return null;
+
+      const value = String(
+        opt.value ?? opt.valor ?? opt.id ?? opt.codigo ?? opt.label ?? opt.nombre ?? opt.titulo ?? ""
+      ).trim();
+      const label = String(
+        opt.label ?? opt.nombre ?? opt.titulo ?? opt.text ?? opt.value ?? opt.valor ?? opt.id ?? ""
+      ).trim();
+
+      if (!value && !label) return null;
+
+      return {
+        value: value || label,
+        label: label || value,
+      };
+    })
+    .filter(Boolean)
+    .filter((opt) => !isBlankConsolidacionText(opt.value));
+}
+
+function normalizeConsolidacionTextoLibre(raw) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw === "boolean") return raw ? "Sí" : "No";
+  if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+
+  if (Array.isArray(raw)) {
+    return raw.map((x) => normalizeConsolidacionTextoLibre(x)).filter(Boolean).join(", ");
+  }
+
+  if (typeof raw === "object") {
+    if ("lat" in raw || "lng" in raw || "latitude" in raw || "longitude" in raw) {
+      const lat = raw.lat ?? raw.latitude ?? null;
+      const lng = raw.lng ?? raw.longitude ?? null;
+      const latTxt = normalizeConsolidacionTextoLibre(lat);
+      const lngTxt = normalizeConsolidacionTextoLibre(lng);
+      const out = [latTxt, lngTxt].filter(Boolean).join(", ");
+      return out || "";
+    }
+
+    const labelLike =
+      raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.valor ?? null;
+    if (!isBlankConsolidacionText(labelLike)) {
+      return String(labelLike).trim();
+    }
+
+    const nested =
+      Array.isArray(raw.items) ? raw.items :
+      Array.isArray(raw.values) ? raw.values :
+      Array.isArray(raw.options) ? raw.options :
+      null;
+
+    if (nested) {
+      const txt = nested.map((x) => normalizeConsolidacionTextoLibre(x)).filter(Boolean).join(", ");
+      if (txt) return txt;
+    }
+
+    try {
+      const jsonTxt = JSON.stringify(raw);
+      return jsonTxt === "{}" ? "" : jsonTxt;
+    } catch {
+      return "";
+    }
+  }
+
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s) return "";
+
+    const parsed = parseJsonMaybe(s);
+    if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+      return normalizeConsolidacionTextoLibre(parsed);
+    }
+
+    if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+    if (typeof parsed === "number") return String(parsed);
+    if (typeof parsed === "string") return parsed.trim();
+
+    return s;
+  }
+
+  return String(raw).trim();
+}
+
+function normalizeConsolidacionRespuesta(question, row) {
+  const opts = normalizeConsolidacionOptions(question?.opciones_json);
+  const tipo = normalizeConsolidacionTipo(question?.tipo);
+
+  const resolveAgainstOptions = (raw) => {
+    const s = normalizeConsolidacionTextoLibre(raw);
+    if (!s) return "";
+
+    const sLower = s.toLowerCase();
+
+    for (const opt of opts) {
+      if (String(opt.value || "").trim().toLowerCase() === sLower) {
+        return String(opt.label || opt.value || "").trim();
+      }
+      if (String(opt.label || "").trim().toLowerCase() === sLower) {
+        return String(opt.label || opt.value || "").trim();
+      }
+    }
+
+    if (CONSOLIDACION_CHOICES_TIPOS.has(tipo) && /^-?\d+(\.\d+)?$/.test(s)) {
+      return "";
+    }
+
+    return s;
+  };
+
+  const resolveRaw = (raw) => {
+    if (raw === null || raw === undefined) return "";
+    if (typeof raw === "boolean") return raw ? "Sí" : "No";
+    if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+
+    if (Array.isArray(raw)) {
+      return raw.map((item) => resolveRaw(item)).filter(Boolean).join(", ");
+    }
+
+    if (typeof raw === "object") {
+      if (tipo === "semaforo") {
+        const nombre = raw.nombre ?? raw.label ?? raw.color_name ?? raw.name ?? raw.titulo ?? null;
+        if (!isBlankConsolidacionText(nombre)) return String(nombre).trim();
+      }
+
+      const labelLike =
+        raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.value ?? raw.valor ?? null;
+      if (!isBlankConsolidacionText(labelLike)) {
+        const resolved = resolveAgainstOptions(labelLike);
+        if (resolved) return resolved;
+        if (!CONSOLIDACION_CHOICES_TIPOS.has(tipo)) {
+          return String(labelLike).trim();
+        }
+      }
+
+      if (Array.isArray(raw.items) || Array.isArray(raw.values) || Array.isArray(raw.options)) {
+        const arr = raw.items || raw.values || raw.options || [];
+        const txt = arr.map((item) => resolveRaw(item)).filter(Boolean).join(", ");
+        if (txt) return txt;
+      }
+
+      const valueLike = raw.value ?? raw.id ?? raw.codigo ?? raw.valor ?? null;
+      if (!isBlankConsolidacionText(valueLike)) {
+        const resolved = resolveAgainstOptions(valueLike);
+        if (resolved) return resolved;
+        if (!CONSOLIDACION_CHOICES_TIPOS.has(tipo)) {
+          return String(valueLike).trim();
+        }
+      }
+
+      return normalizeConsolidacionTextoLibre(raw);
+    }
+
+    if (typeof raw === "string") {
+      const s = raw.trim();
+      if (!s) return "";
+
+      const parsed = parseJsonMaybe(s);
+      if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+        return resolveRaw(parsed);
+      }
+
+    if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+    if (typeof parsed === "number") {
+      if (CONSOLIDACION_CHOICES_TIPOS.has(tipo)) return "";
+      return String(parsed);
+    }
+    if (typeof parsed === "string") {
+      const parsedTrim = parsed.trim();
+      if (CONSOLIDACION_CHOICES_TIPOS.has(tipo) && /^-?\d+(\.\d+)?$/.test(parsedTrim)) return "";
+      return parsedTrim;
+    }
+
+      return resolveAgainstOptions(s);
+    }
+
+    return normalizeConsolidacionTextoLibre(raw);
+  };
+
+  const candidates = [];
+  if (row?.valor_bool !== null && row?.valor_bool !== undefined) candidates.push(row.valor_bool);
+  if (row?.valor_json !== null && row?.valor_json !== undefined) candidates.push(row.valor_json);
+  if (row?.valor_texto !== null && row?.valor_texto !== undefined) candidates.push(row.valor_texto);
+
+  for (const candidate of candidates) {
+    const resolved = resolveRaw(candidate);
+    if (!isBlankConsolidacionText(resolved)) return String(resolved).trim();
+  }
+
+  return "";
+}
+
+function isConsolidacionDestinoTextual(question) {
+  return CONSOLIDACION_DESTINO_TEXTUAL_TIPOS.has(normalizeConsolidacionTipo(question?.tipo));
+}
+
+function isConsolidacionOrigenBloqueado(question) {
+  return CONSOLIDACION_ORIGEN_BLOQUEADOS.has(normalizeConsolidacionTipo(question?.tipo));
+}
+
+async function buildConsolidacionPlan({
+  db,
+  req,
+  idProyecto,
+  idPlantilla,
+  sourceFieldIds,
+  targetFieldId,
+  strategy,
+  overwriteMode,
+  exampleLimit = 10,
+}) {
+  const errors = [];
+
+  const projectId = Number(idProyecto);
+  const plantillaId = Number(idPlantilla);
+  const targetId = Number(targetFieldId);
+
+  let sourceInput = sourceFieldIds;
+  if (typeof sourceInput === "string") {
+    const parsed = parseJsonMaybe(sourceInput);
+    if (Array.isArray(parsed)) {
+      sourceInput = parsed;
+    } else {
+      sourceInput = sourceInput
+        .split(/[,;]+/g)
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+  }
+
+  const sourceIds = [];
+  for (const rawId of Array.isArray(sourceInput) ? sourceInput : []) {
+    const n = Number(rawId);
+    if (Number.isFinite(n) && n > 0 && !sourceIds.includes(n)) sourceIds.push(n);
+  }
+
+  const strategyNorm = String(strategy || "").trim().toLowerCase();
+  const overwriteNorm = String(overwriteMode || "").trim().toLowerCase();
+
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    errors.push({ code: "invalid_project", message: "idProyecto inválido" });
+  }
+
+  if (!Number.isFinite(plantillaId) || plantillaId <= 0) {
+    errors.push({ code: "invalid_plantilla", message: "idPlantilla inválido" });
+  }
+
+  if (!Number.isFinite(targetId) || targetId <= 0) {
+    errors.push({ code: "invalid_target", message: "target_field_id inválido" });
+  }
+
+  if (!sourceIds.length) {
+    errors.push({ code: "invalid_sources", message: "Debe indicar al menos un campo origen" });
+  }
+
+  if (!["first_non_empty", "concat_with_comma"].includes(strategyNorm)) {
+    errors.push({ code: "invalid_strategy", message: "Estrategia inválida" });
+  }
+
+  if (!["empty_only", "force"].includes(overwriteNorm)) {
+    errors.push({ code: "invalid_overwrite_mode", message: "overwrite_mode inválido" });
+  }
+
+  const allIds = Array.from(new Set([...sourceIds, targetId].filter((n) => Number.isFinite(n) && n > 0)));
+
+  const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
+  const userId = req.user?.id ?? null;
+  const isAdmin =
+    Number(req.user?.tipo_usuario) === 1 || Number(req.user?.group_id) === 1;
+  const scope = buildInformeVisibleScope({
+    userId,
+    isAdmin,
+    startIndex: 3,
+  });
+
+  const qParams = [plantillaId, allIds];
+  const { rows: questions } = await db.query(
+    `
+    SELECT
+      q.*,
+      s.id_plantilla
+    FROM ema.informe_pregunta q
+    JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+    WHERE s.id_plantilla = $1
+      AND q.id_pregunta = ANY($2::int[])
+    ORDER BY q.orden, q.id_pregunta
+    `,
+    qParams
+  );
+
+  const questionsById = new Map(questions.map((q) => [Number(q.id_pregunta), q]));
+  const targetQuestion = questionsById.get(targetId) || null;
+  const sourceQuestions = sourceIds.map((id) => questionsById.get(id)).filter(Boolean);
+
+  const missingIds = allIds.filter((id) => !questionsById.has(id));
+  if (missingIds.length) {
+    errors.push({
+      code: "fields_not_in_template",
+      message: "Algunos campos no pertenecen a la plantilla activa",
+      field_ids: missingIds,
+    });
+  }
+
+  if (!targetQuestion) {
+    errors.push({
+      code: "target_not_found",
+      message: "El campo destino no pertenece a la plantilla activa",
+      field_id: targetId,
+    });
+  } else {
+    if (!isConsolidacionDestinoTextual(targetQuestion)) {
+      errors.push({
+        code: "target_not_textual",
+        message: "El campo destino debe ser textual",
+        field_id: targetId,
+        tipo: targetQuestion.tipo,
+      });
+    }
+
+    if (!!targetQuestion.es_unico) {
+      errors.push({
+        code: "target_unique",
+        message: "El campo destino es único y no se puede usar en esta iteración",
+        field_id: targetId,
+      });
+    }
+  }
+
+  const sourceMap = new Map(sourceQuestions.map((q) => [Number(q.id_pregunta), q]));
+  const blockedSources = sourceQuestions.filter((q) => isConsolidacionOrigenBloqueado(q));
+  if (blockedSources.length) {
+    errors.push({
+      code: "source_not_resolvable",
+      message: "Uno o más campos origen no pueden resolverse a texto visible",
+      field_ids: blockedSources.map((q) => Number(q.id_pregunta)),
+    });
+  }
+
+  if (sourceMap.has(targetId)) {
+    errors.push({
+      code: "target_in_sources",
+      message: "El campo destino no puede estar incluido entre los campos origen",
+      field_id: targetId,
+    });
+  }
+
+  if (errors.length) {
+    return {
+      valid: false,
+      errors,
+      summary: {
+        total_informes: 0,
+        eligible: 0,
+        with_changes: 0,
+        skipped_no_source: 0,
+        skipped_target_has_value: 0,
+        conflicts: errors.length,
+      },
+      examples: [],
+      rowsToWrite: [],
+      targetQuestion,
+      sourceQuestions,
+    };
+  }
+
+  const visibleSql = `
+    SELECT
+      i.id_informe
+    FROM ema.informe i
+    JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+    LEFT JOIN ema.informe_plantilla_usuario pu
+      ON pu.id_plantilla = p.id_plantilla
+     AND pu.id_usuario = $${scope.userParamIndex}
+    WHERE i.id_proyecto = $1
+      AND i.id_plantilla = $2
+      ${scope.whereSql}
+    ORDER BY i.id_informe ASC
+  `;
+
+  const { rows: informeRows } = await db.query(visibleSql, [projectId, plantillaId, ...scope.params]);
+  const informeIds = informeRows.map((r) => Number(r.id_informe)).filter((n) => Number.isFinite(n) && n > 0);
+
+  if (!informeIds.length) {
+    return {
+      valid: true,
+      errors: [],
+      summary: {
+        total_informes: 0,
+        eligible: 0,
+        with_changes: 0,
+        skipped_no_source: 0,
+        skipped_target_has_value: 0,
+        conflicts: 0,
+      },
+      examples: [],
+      rowsToWrite: [],
+      targetQuestion,
+      sourceQuestions,
+    };
+  }
+
+  const responseFieldIds = Array.from(new Set([...sourceIds, targetId]));
+  const { rows: responseRows } = await db.query(
+    `
+    SELECT
+      r.id_informe,
+      r.id_pregunta,
+      r.valor_texto,
+      r.valor_bool,
+      r.valor_json
+    FROM ema.informe_respuesta r
+    WHERE r.id_informe = ANY($1::int[])
+      AND r.id_pregunta = ANY($2::int[])
+    ORDER BY r.id_informe ASC, r.id_pregunta ASC
+    `,
+    [informeIds, responseFieldIds]
+  );
+
+  const responseByInforme = new Map();
+  for (const idInf of informeIds) {
+    responseByInforme.set(idInf, new Map());
+  }
+
+  for (const row of responseRows) {
+    const idInf = Number(row.id_informe);
+    const idPreg = Number(row.id_pregunta);
+    if (!responseByInforme.has(idInf)) responseByInforme.set(idInf, new Map());
+    responseByInforme.get(idInf).set(idPreg, row);
+  }
+
+  const summary = {
+    total_informes: informeIds.length,
+    eligible: 0,
+    with_changes: 0,
+    skipped_no_source: 0,
+    skipped_target_has_value: 0,
+    conflicts: 0,
+  };
+
+  const examples = [];
+  const rowsToWrite = [];
+
+  for (const idInforme of informeIds) {
+    const rowMap = responseByInforme.get(idInforme) || new Map();
+    const targetRow = rowMap.get(targetId) || null;
+    const targetCurrentValue = normalizeConsolidacionRespuesta(targetQuestion, targetRow);
+
+    const resolvedSources = sourceIds
+      .map((idPregunta) => {
+        const question = sourceMap.get(idPregunta);
+        const row = rowMap.get(idPregunta) || null;
+        const resolved = normalizeConsolidacionRespuesta(question, row);
+        return {
+          id_pregunta: idPregunta,
+          label: question?.etiqueta || `Pregunta #${idPregunta}`,
+          resolved,
+        };
+      })
+      .filter((x) => !isBlankConsolidacionText(x.resolved));
+
+    if (!resolvedSources.length) {
+      summary.skipped_no_source += 1;
+      continue;
+    }
+
+    summary.eligible += 1;
+
+    if (overwriteNorm === "empty_only" && !isBlankConsolidacionText(targetCurrentValue)) {
+      summary.skipped_target_has_value += 1;
+      continue;
+    }
+
+    const resolvedValue =
+      strategyNorm === "concat_with_comma"
+        ? resolvedSources.map((x) => x.resolved).join(", ")
+        : resolvedSources[0].resolved;
+
+    if (isBlankConsolidacionText(resolvedValue)) {
+      summary.skipped_no_source += 1;
+      summary.eligible -= 1;
+      continue;
+    }
+
+    summary.with_changes += 1;
+
+    const item = {
+      id_informe: idInforme,
+      target_current_value: targetCurrentValue,
+      resolved_value: resolvedValue,
+      sources_used: resolvedSources.map(({ id_pregunta, label }) => ({ id_pregunta, label })),
+      target_question_id: targetId,
+    };
+
+    rowsToWrite.push(item);
+
+    if (examples.length < Number(exampleLimit || 10)) {
+      examples.push({
+        id_informe: idInforme,
+        target_current_value: targetCurrentValue,
+        resolved_value: resolvedValue,
+        sources_used: resolvedSources.map(({ id_pregunta, label }) => ({ id_pregunta, label })),
+      });
+    }
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    summary,
+    examples,
+    rowsToWrite,
+    targetQuestion,
+    sourceQuestions,
+  };
+}
+
 function normalizeExcelHeader(value) {
   return String(value || "")
     .trim()
@@ -4012,6 +4711,247 @@ async function importExcelUpdateRespuestas(req, res) {
     client.release();
   }
 }
+
+async function previewConsolidacionCampos(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+  const sourceFieldIds = Array.isArray(req.body?.source_field_ids)
+    ? req.body.source_field_ids
+    : [];
+  const targetFieldId = req.body?.target_field_id;
+  const strategy = String(req.body?.strategy || "").trim();
+  const overwriteMode = String(req.body?.overwrite_mode || "").trim();
+
+  try {
+    const plan = await buildConsolidacionPlan({
+      db: pool,
+      req,
+      idProyecto,
+      idPlantilla,
+      sourceFieldIds,
+      targetFieldId,
+      strategy,
+      overwriteMode,
+    });
+
+    if (!plan.valid) {
+      return res.status(400).json({
+        ok: false,
+        valid: false,
+        summary: plan.summary,
+        examples: [],
+        errors: plan.errors,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      valid: true,
+      summary: plan.summary,
+      examples: plan.examples,
+      errors: [],
+    });
+  } catch (err) {
+    console.error("previewConsolidacionCampos error:", err);
+    return res.status(500).json({
+      ok: false,
+      valid: false,
+      error: "Error al generar el preview de consolidación",
+      details: err.message,
+    });
+  }
+}
+
+async function applyConsolidacionCampos(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+  const sourceFieldIds = Array.isArray(req.body?.source_field_ids)
+    ? req.body.source_field_ids
+    : [];
+  const targetFieldId = req.body?.target_field_id;
+  const strategy = String(req.body?.strategy || "").trim();
+  const overwriteMode = String(req.body?.overwrite_mode || "").trim();
+  const applyStartedAtIso = new Date().toISOString();
+  const logPrefix = "[CONSOLIDACION_APPLY]";
+
+  console.log(
+    `${logPrefix} request_in ${applyStartedAtIso} params=${JSON.stringify({
+      idProyecto,
+      idPlantilla,
+    })} body=${JSON.stringify(req.body || {})}`
+  );
+  console.log(
+    `${logPrefix} payload_parseado ${JSON.stringify({
+      source_field_ids: sourceFieldIds,
+      target_field_id: targetFieldId,
+      strategy,
+      overwrite_mode: overwriteMode,
+    })}`
+  );
+
+  try {
+    console.log(`${logPrefix} planner_start`);
+    const plan = await buildConsolidacionPlan({
+      db: pool,
+      req,
+      idProyecto,
+      idPlantilla,
+      sourceFieldIds,
+      targetFieldId,
+      strategy,
+      overwriteMode,
+    });
+
+    console.log(
+      `${logPrefix} planner_result ${JSON.stringify({
+        valid: !!plan?.valid,
+        summary: plan?.summary || null,
+        rowsToWriteLength: Array.isArray(plan?.rowsToWrite) ? plan.rowsToWrite.length : 0,
+        examplesLength: Array.isArray(plan?.examples) ? plan.examples.length : 0,
+        rowsToWriteSample: Array.isArray(plan?.rowsToWrite)
+          ? plan.rowsToWrite.slice(0, 3).map((item) => ({
+              id_informe: item?.id_informe,
+              target_question_id: item?.target_question_id,
+              resolved_value: item?.resolved_value,
+            }))
+          : [],
+      })}`
+    );
+
+    if (!plan.valid) {
+      console.log(`${logPrefix} planner_invalid response=400`);
+      return res.status(400).json({
+        ok: false,
+        valid: false,
+        summary: plan.summary,
+        errors: plan.errors,
+      });
+    }
+
+    console.log(`${logPrefix} iniciando_persistencia rowsToWrite=${plan.rowsToWrite.length}`);
+
+    let updated = 0;
+    let errorsCount = 0;
+    const errorExamples = [];
+
+    // Iteramos sobre las filas a escribir de forma aislada
+    for (const item of plan.rowsToWrite || []) {
+      const itemLog = {
+        id_informe: item?.id_informe,
+        target_question_id: item?.target_question_id,
+        resolved_value: item?.resolved_value,
+      };
+      try {
+        console.log(`${logPrefix} persist_start ${JSON.stringify(itemLog)}`);
+        const idInforme = Number(item.id_informe);
+        const targetQId = Number(item.target_question_id);
+        let resolved = item.resolved_value;
+
+        // 1. Validaciones previas al guardado
+        if (!Number.isFinite(idInforme) || idInforme <= 0) {
+          throw new Error("id_informe_invalido");
+        }
+        if (!Number.isFinite(targetQId) || targetQId <= 0) {
+          throw new Error("target_field_id_invalido");
+        }
+
+        // El valor debe ser string y no ser un objeto complejo
+        if (typeof resolved !== "string" || resolved === null) {
+          throw new Error("valor_resuelto_tipo_invalido");
+        }
+
+        // 2. Saneamiento y Normalización
+        // Quitamos espacios extra y normalizamos whitespace interno
+        resolved = resolved.trim().replace(/\s+/g, " ");
+
+        // Si tras normalizar queda vacío, omitimos (buildConsolidacionPlan ya debería filtrar esto, pero aseguramos)
+        if (!resolved) {
+          continue; 
+        }
+
+        // 3. Persistencia aislada (sin transacción global)
+        // Destino textual -> solo valor_texto, limpiando bool y json
+        await pool.query(
+          `
+          INSERT INTO ema.informe_respuesta
+            (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+          VALUES ($1, $2, $3, NULL, NULL)
+          ON CONFLICT (id_informe, id_pregunta)
+          DO UPDATE SET
+            valor_texto = EXCLUDED.valor_texto,
+            valor_bool = NULL,
+            valor_json = NULL
+          `,
+          [idInforme, targetQId, resolved]
+        );
+
+        updated++;
+        console.log(
+          `${logPrefix} persist_ok ${JSON.stringify({
+            id_informe: idInforme,
+            target_question_id: targetQId,
+            resolved_value: resolved,
+          })}`
+        );
+      } catch (err) {
+        errorsCount++;
+        if (errorExamples.length < 20) {
+          errorExamples.push({
+            id_informe: item.id_informe,
+            reason: err.message || "error_escritura",
+          });
+        }
+        console.error(
+          `${logPrefix} persist_error ${JSON.stringify({
+            id_informe: item?.id_informe,
+            target_question_id: item?.target_question_id,
+            resolved_value: item?.resolved_value,
+            error: err?.message || String(err),
+          })}`
+        );
+      }
+    }
+
+    const processed = Number(plan.summary?.eligible || 0);
+    // skipped son los que eran elegibles pero no se actualizaron ni dieron error
+    const skipped = Math.max(0, processed - updated - errorsCount);
+
+    console.log(
+      `${logPrefix} success ${JSON.stringify({
+        started_at: applyStartedAtIso,
+        finished_at: new Date().toISOString(),
+        summary: {
+          processed,
+          updated,
+          skipped,
+          errors: errorsCount,
+        },
+        target7775Included: Array.isArray(plan?.rowsToWrite)
+          ? plan.rowsToWrite.some((item) => Number(item?.id_informe) === 7775)
+          : false,
+      })}`
+    );
+
+    return res.json({
+      ok: true,
+      summary: {
+        processed,
+        updated,
+        skipped,
+        errors: errorsCount,
+      },
+      error_examples: errorExamples,
+    });
+  } catch (err) {
+    console.error(`${logPrefix} fatal_error`, err);
+    return res.status(500).json({
+      ok: false,
+      error: "Error fatal al aplicar la consolidación",
+      details: err.message,
+    });
+  }
+}
+
 
   /* 5) DELETE /api/informes/:id/fotos/:idFoto */
   async function deleteInformeFoto(req, res) {
@@ -5143,26 +6083,13 @@ async function exportProyectoInformesExcel(req, res) {
       [informeIds]
     );
 
-    // respByInforme: Map(idInforme -> Map(idPregunta -> valorString))
-    const respByInforme = new Map();
+    // respByInformeRaw: Map(idInforme -> Map(idPregunta -> raw row))
+    const respByInformeRaw = new Map();
     for (const r of respAllQ.rows || []) {
       const idInf = Number(r.id_informe);
       const idPreg = Number(r.id_pregunta);
-      if (!respByInforme.has(idInf)) respByInforme.set(idInf, new Map());
-
-      let v = "";
-      if (r.valor_bool !== null && r.valor_bool !== undefined) v = r.valor_bool ? "SÃ­" : "No";
-      else if (r.valor_json !== null && r.valor_json !== undefined) {
-        try {
-          const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-          // âœ… si es objeto tipo {lat,lng} o similares -> stringify estable
-          v = Array.isArray(parsed) ? parsed.join(", ") : (typeof parsed === "object" ? JSON.stringify(parsed) : String(parsed));
-        } catch {
-          v = String(r.valor_json);
-        }
-      } else if (r.valor_texto != null) v = String(r.valor_texto);
-
-      respByInforme.get(idInf).set(idPreg, v);
+      if (!respByInformeRaw.has(idInf)) respByInformeRaw.set(idInf, new Map());
+      respByInformeRaw.get(idInf).set(idPreg, r);
     }
 
     // 3) Fotos (opcional) por informe+p pregunta
@@ -5207,6 +6134,11 @@ async function exportProyectoInformesExcel(req, res) {
         [pid]
       );
       preguntasAll.push(...(pq.rows || []));
+    }
+
+    const preguntasById = new Map();
+    for (const p of preguntasAll) {
+      preguntasById.set(Number(p.id_pregunta), p);
     }
 
     // helper: sanitizar header tipo Kobo
@@ -5294,7 +6226,7 @@ async function exportProyectoInformesExcel(req, res) {
     // 5) cargar filas (una por informe)
     for (const inf of informes) {
       const idInf = Number(inf.id_informe);
-      const respMap = respByInforme.get(idInf) || new Map();
+      const respMap = respByInformeRaw.get(idInf) || new Map();
       const fotosMap = fotosByInforme.get(idInf) || new Map();
 
       const row = {
@@ -5302,15 +6234,16 @@ async function exportProyectoInformesExcel(req, res) {
         fecha_creado: inf.fecha_creado ? new Date(inf.fecha_creado) : "",
         id_proyecto: Number(inf.id_proyecto) || idProyecto,
         id_plantilla: Number(inf.id_plantilla) || "",
-        plantilla: inf.nombre_plantilla || String(inf.id_plantilla || ""),
-        titulo: inf.titulo || "",
+        plantilla: sanitizeExcelText(inf.nombre_plantilla || String(inf.id_plantilla || "")),
+        titulo: sanitizeExcelText(inf.titulo || ""),
       };
 
       // completar respuestas por columna (solo las preguntas de esa plantilla tienen valor)
       for (const q of preguntaCols) {
-        const val = respMap.get(q.id_pregunta) || "";
-        row[q.colName] = val;
-        row[`Fotos:${q.colName}`] = fotosMap.get(q.id_pregunta) || "";
+        const rawResp = respMap.get(q.id_pregunta) || null;
+        const pregunta = preguntasById.get(q.id_pregunta) || q;
+        row[q.colName] = resolveExcelResponseValue(rawResp, pregunta);
+        row[`Fotos:${q.colName}`] = sanitizeExcelText(fotosMap.get(q.id_pregunta) || "");
       }
 
       const r = ws.addRow(row);
@@ -5334,15 +6267,15 @@ async function exportProyectoInformesExcel(req, res) {
         colName: q.colName,
         id_plantilla: q.id_plantilla,
         id_pregunta: q.id_pregunta,
-        seccion: q.seccion,
-        etiqueta: q.etiqueta,
-        tipo: q.tipo,
+        seccion: sanitizeExcelText(q.seccion),
+        etiqueta: sanitizeExcelText(q.etiqueta),
+        tipo: sanitizeExcelText(q.tipo),
       });
     }
 
     // âœ… hoja info
     const wsInfo = wb.addWorksheet("info");
-    wsInfo.addRow(["Proyecto", proyectoLabel]);
+    wsInfo.addRow(["Proyecto", proyectoLabelExcel]);
     wsInfo.addRow(["ID Proyecto", idProyecto]);
     wsInfo.addRow(["Filtro plantilla", idPlantilla ? String(idPlantilla) : "Todas"]);
     wsInfo.addRow(["Total informes", informes.length]);
@@ -8616,6 +9549,8 @@ module.exports = {
   generarPdf,
   actualizarInforme,
   importExcelUpdateRespuestas,
+  previewConsolidacionCampos,
+  applyConsolidacionCampos,
   deleteInformeFoto,
   deleteInforme,
   bulkDeleteInformesByProyectoPlantilla,

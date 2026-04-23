@@ -360,6 +360,20 @@ router.post(
   informesCtrl.importExcelUpdateRespuestas
 );
 
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/consolidacion/preview",
+  verifyToken,
+  requirePerm("informes.update"),
+  informesCtrl.previewConsolidacionCampos
+);
+
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/consolidacion/apply",
+  verifyToken,
+  requirePerm("informes.update"),
+  informesCtrl.applyConsolidacionCampos
+);
+
 router.put(
   "/:id",
   verifyToken,
