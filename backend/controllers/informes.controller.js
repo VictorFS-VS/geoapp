@@ -3778,6 +3778,8 @@ function normalizeConsolidacionRespuesta(question, row) {
 
     if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
     if (typeof parsed === "number") {
+      const optionMatch = resolveAgainstOptions(s);
+      if (optionMatch) return optionMatch;
       if (CONSOLIDACION_CHOICES_TIPOS.has(tipo)) return "";
       return String(parsed);
     }
