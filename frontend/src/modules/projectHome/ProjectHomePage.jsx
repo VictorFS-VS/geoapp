@@ -31,6 +31,35 @@ const cleanTechnicalLabel = (str) => {
   return clean.trim();
 };
 
+const sumKpiItems = (items) =>
+  (Array.isArray(items) ? items : []).reduce(
+    (acc, item) => acc + (Number(item?.count) || 0),
+    0
+  );
+
+const withUniverseItem = (summary) => {
+  if (!summary || !Array.isArray(summary.items)) return summary;
+  const totalUniverse = Number(summary.total_universe);
+  if (!Number.isFinite(totalUniverse) || totalUniverse <= 0) return summary;
+
+  const currentTotal = sumKpiItems(summary.items);
+  const missing = Math.max(0, totalUniverse - currentTotal);
+  if (missing <= 0) return summary;
+
+  return {
+    ...summary,
+    items: [
+      ...summary.items,
+      {
+        label: "Sin responder",
+        count: missing,
+        color_hex: "#94a3b8",
+        isSynthetic: true,
+      },
+    ],
+  };
+};
+
 const timeAgo = (date) => {
   if (!date) return "Sin actividad registrada";
   const now = new Date();
@@ -97,7 +126,7 @@ const ProjectHomeFeaturedReportCard = ({ report, onClick, compact = false }) => 
       <div className="ph-card-compact-header">
         <span className="ph-card-compact-title">{title}</span>
         {report?.base_total !== undefined && report?.base_total !== null && (
-          <div className="ph-card-subheader">Base: {report.base_total.toLocaleString()}</div>
+          <div className="ph-card-subheader">Total registros: {report.base_total.toLocaleString()}</div>
         )}
       </div>
       <div className="ph-card-compact-value ph-featured-primary-value">
@@ -130,12 +159,12 @@ const ProjectHomeInformesResumen = ({ payload }) => {
   const plantillas = Array.isArray(payload?.plantillas) ? payload.plantillas : [];
 
   const primaryKpi = payload?.kpis?.primary
-    ? { ...payload.kpis.primary, etiqueta: cleanTechnicalLabel(payload.kpis.primary.etiqueta) }
+    ? withUniverseItem({ ...payload.kpis.primary, etiqueta: cleanTechnicalLabel(payload.kpis.primary.etiqueta) })
     : null;
   const secondaryKpis = (Array.isArray(payload?.kpis?.secondary) ? payload.kpis.secondary : []).map(k => ({
     ...k,
     etiqueta: cleanTechnicalLabel(k.etiqueta)
-  }));
+  })).map(withUniverseItem);
 
   const primaryDefaultChartType = Array.isArray(primaryKpi?.items) && primaryKpi.items.length > 6 ? "bar" : "donut";
   const getSecondaryDefaultChartType = (summary) => Array.isArray(summary?.items) && summary.items.length > 10 ? "list" : "bar";
@@ -231,7 +260,7 @@ const ExecutiveHealthCard = ({ title, data, icon, unitLabel, onClick, color, cta
       <div className="ph-health-body">
         <div className="ph-health-hero">
           <span className="ph-health-value">{renderNumeric(data.totalGlobal)}</span>
-          <span className="ph-health-label">Total Global</span>
+          <span className="ph-health-label">Total registros</span>
         </div>
 
         {data.focoLabel && (
@@ -615,6 +644,19 @@ const ProjectHomePage = () => {
     [homeItems, selectedHomeItemId]
   );
 
+  const reportTitle =
+    selectedHomeItem?.label ||
+    selectedHomeItem?.plantilla_nombre ||
+    resolvePlantillaName(selectedHomeItem?.id_plantilla) ||
+    "Informe";
+  const plantillaLabel =
+    selectedHomeItem?.plantilla_nombre || resolvePlantillaName(selectedHomeItem?.id_plantilla);
+  const totalRegistros =
+    childData?.general?.selected_plantilla_total_records ??
+    childData?.general?.total_informes;
+  const rangeFrom = childData?.activity?.range_from || "?";
+  const rangeTo = childData?.activity?.range_to || "?";
+
   useEffect(() => {
     loadHomeItems();
   }, [loadHomeItems, refreshKey]);
@@ -648,7 +690,10 @@ const ProjectHomePage = () => {
     const isLegacyVirtual =
       selectedHomeItem?.is_virtual === true || String(selectedHomeItem?.source_kind) === "legacy";
     const resumenParams = isLegacyVirtual
-      ? { id_proyecto: effectiveProjectId }
+      ? {
+          id_proyecto: effectiveProjectId,
+          id_plantilla: selectedHomeItem?.id_plantilla,
+        }
       : {
           id_proyecto: effectiveProjectId,
           id_home_item: selectedHomeItemId,
@@ -960,27 +1005,34 @@ const ProjectHomePage = () => {
                     <div className="ph-informes-header-top">
                       <div>
                         <div className="ph-card-title">Informes del proyecto</div>
-                        <div className="ph-informes-public-list-subtitle">
-                          {selectedHomeItemId 
-                            ? `Viendo: ${selectedHomeItem?.label || resolvePlantillaName(selectedHomeItem?.id_plantilla)}`
-                            : "Selecciona un informe para ver su análisis detallado."
-                          }
-                        </div>
+                        {selectedHomeItemId ? (
+                          <h3 className="ph-report-title">{reportTitle}</h3>
+                        ) : (
+                          <div className="ph-informes-public-list-subtitle">
+                            Selecciona un informe para ver su análisis detallado.
+                          </div>
+                        )}
                       </div>
                       <div className="ph-informes-header-actions">
                         {selectedHomeItemId && childStatus === "success" && childData && (
                           <div className="ph-informes-compact-meta">
+                            {plantillaLabel && plantillaLabel !== reportTitle && (
+                              <div className="ph-meta-item">
+                                <span className="ph-meta-label">Plantilla:</span>
+                                <strong className="ph-meta-val">{plantillaLabel}</strong>
+                              </div>
+                            )}
                             <div className="ph-meta-item">
-                              <span className="ph-meta-label">Base:</span>
+                              <span className="ph-meta-label">Total registros:</span>
                               <strong className="ph-meta-val">
-                                {Number(childData?.general?.total_informes || 0).toLocaleString()}
+                                {Number(totalRegistros || 0).toLocaleString()}
                               </strong>
                             </div>
                             {(childData?.activity?.range_from || childData?.activity?.range_to) && (
                               <div className="ph-meta-item">
                                 <span className="ph-meta-label">Periodo:</span>
                                 <strong className="ph-meta-val">
-                                  {`${childData?.activity?.range_from || '?'} - ${childData?.activity?.range_to || '?'}`}
+                                  {`${rangeFrom} - ${rangeTo}`}
                                 </strong>
                               </div>
                             )}

@@ -45,6 +45,53 @@ async function callController(controllerFn, req) {
   });
 }
 
+async function getProjectGlobalTotal(id_proyecto) {
+  const r = await pool.query(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM ema.informe
+    WHERE id_proyecto = $1
+  `,
+    [id_proyecto]
+  );
+  return Number(r.rows?.[0]?.total) || 0;
+}
+
+function sumSummaryItems(items) {
+  return (Array.isArray(items) ? items : []).reduce(
+    (acc, item) => acc + (Number(item?.count) || 0),
+    0
+  );
+}
+
+function withPlantillaUniverse(summary, selectedPlantillaTotal) {
+  if (!summary || typeof summary !== "object") return summary;
+  const total_universe = Math.max(0, Number(selectedPlantillaTotal) || 0);
+  const existingResponded = Number(summary.responded_count);
+  const existingNonEmpty = Number(summary.non_empty_count);
+  const responded_count = Number.isFinite(existingResponded)
+    ? Math.max(0, existingResponded)
+    : Number.isFinite(existingNonEmpty)
+      ? Math.max(0, existingNonEmpty)
+      : sumSummaryItems(summary.items);
+  const not_responded_count = Math.max(0, total_universe - responded_count);
+  const response_rate = total_universe > 0 ? responded_count / total_universe : 0;
+
+  return {
+    ...summary,
+    total_universe,
+    responded_count,
+    not_responded_count,
+    response_rate,
+  };
+}
+
+function withPlantillaUniverseList(summaries, selectedPlantillaTotal) {
+  return (Array.isArray(summaries) ? summaries : []).map((summary) =>
+    withPlantillaUniverse(summary, selectedPlantillaTotal)
+  );
+}
+
 async function getPlantillaTemporalSources({ req, id_proyecto, id_plantilla }) {
   if (!id_plantilla) return null;
   const metaReq = {
@@ -328,17 +375,17 @@ async function getProjectHomeResumen({
   const configuredPlantillaId = configRow?.id_plantilla || null;
 
   // 2) Global summary is computed over the whole project universe (Informes).
-  // If we have a configured plantilla focus, we use it even for the "Global" base
-  // to ensure consistency (eliminate records from other templates or orphans).
-  const rawGlobalBase = hasInformes 
+  // Config can inform focus/KPIs, but not the canonical universe total.
+  const rawGlobalBase = hasInformes
     ? await getInformesResumenRaw({
         req,
         id_proyecto,
-        id_plantilla: configuredPlantillaId || null, 
+        id_plantilla: null,
         skip_temporal,
-        config: configRow,
+        config: null,
       })
     : { ok: true, general: {}, kpis: {}, geo: {}, temporal: {}, plantillas: [], field_summaries: [] };
+  const total_global = hasInformes ? await getProjectGlobalTotal(id_proyecto) : 0;
 
   // 3) Determine plantilla focus (manual config > explicit param > auto focus)
   const autopPlantilla = getProjectHomeFocusPlantilla(rawGlobalBase);
@@ -357,6 +404,16 @@ async function getProjectHomeResumen({
       config: configRow,
     });
   }
+  const selected_plantilla_total_records = hasInformes
+    ? (Number(rawForKpisBase?.kpis?.total_informes) || 0)
+    : 0;
+  rawForKpisBase = {
+    ...rawForKpisBase,
+    field_summaries: withPlantillaUniverseList(
+      rawForKpisBase.field_summaries,
+      selected_plantilla_total_records
+    ),
+  };
 
   const focusSource = configuredPlantillaId ? "configured" : (requestedPlantillaId ? "requested" : "auto");
   const plantillaFocus = !configuredPlantillaId && !requestedPlantillaId ? autopPlantilla : null;
@@ -404,6 +461,10 @@ async function getProjectHomeResumen({
   });
 
   const rawForKpis = rawForKpisBase;
+  const isPlantillaScopedResponse = Boolean(homeItem || requestedPlantillaId);
+  const responseTotalRecords = isPlantillaScopedResponse
+    ? selected_plantilla_total_records
+    : total_global;
   const focusPlantillaInfo =
     Array.isArray(rawForKpis?.plantillas) && focusPlantillaId
       ? rawForKpis.plantillas.find((p) => Number(p.id_plantilla) === Number(focusPlantillaId))
@@ -463,7 +524,7 @@ async function getProjectHomeResumen({
 
   const trace = buildProjectHomeConfigResolutionTrace(configRow, overrides, resolvedKpis);
   const fallbackPeriodTotal = Number(temporal.range_total) || 0;
-  const lightweightPeriodTotal = Number(kpis.total_informes) || 0;
+  const lightweightPeriodTotal = total_global;
 
   const featuredRaw = hasInformes ? await getItemsByProject({ req, id_proyecto, include_legacy: true }) : [];
   const featured = featuredRaw.slice(0, 4);
@@ -477,6 +538,11 @@ async function getProjectHomeResumen({
         skip_temporal: true,
       });
     }
+    const baseTotal = Number(focusRaw?.kpis?.total_informes) || 0;
+    focusRaw = {
+      ...focusRaw,
+      field_summaries: withPlantillaUniverseList(focusRaw.field_summaries, baseTotal),
+    };
 
     const autoSelected = selectProjectHomeKpis(focusRaw.field_summaries || []);
     const resolvedKpisItem = resolveProjectHomeKpiOverridesFromSummaries(
@@ -484,8 +550,6 @@ async function getProjectHomeResumen({
       focusRaw.field_summaries || [], 
       autoSelected
     );
-
-    const baseTotal = Number(focusRaw?.kpis?.total_informes) || 0;
     
     // Process Primary
     let primary_val = baseTotal;
@@ -544,7 +608,7 @@ async function getProjectHomeResumen({
       primary_label,
       primary_context,
       secondary_lines,
-      base_total: Number(focusRaw?.kpis?.total_informes) || 0
+      base_total: baseTotal
     };
   }));
 
@@ -554,7 +618,9 @@ async function getProjectHomeResumen({
     scope: { id_proyecto, id_plantilla },
     project,
     general: hasInformes ? {
-      total_informes: Number(kpis.total_informes) || 0,
+      total_informes: responseTotalRecords,
+      project_total_records: total_global,
+      selected_plantilla_total_records,
       informes_con_geo: Number(geo.total_geo ?? kpis.informes_con_geo) || 0,
       informes_sin_geo: Number(geo.total_sin_geo ?? kpis.informes_sin_geo) || 0,
     } : null,
@@ -569,7 +635,7 @@ async function getProjectHomeResumen({
       range_from: skip_temporal ? null : (temporal.absolute_min || null),
       range_to: skip_temporal ? null : (temporal.absolute_max || null),
       period_total: skip_temporal
-        ? (Number(kpis.total_informes) || 0)
+        ? responseTotalRecords
         : (temporal.range_total || 0),
       mode: skip_temporal ? "lightweight" : "full",
     } : null,

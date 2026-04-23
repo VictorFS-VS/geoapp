@@ -968,14 +968,15 @@ export default function GVADashboardInformes() {
     fs,
     items,
     kpis,
+    totalUniverse,
     addInteractiveFilter,
     isInteractiveValueActive,
     hasActiveInteractiveSelection,
     getBarItemColor,
     getActiveTone,
   }) => {
-    const totalUniverse = Number(kpis?.total_informes || 0);
-    const renderItems = buildSummaryRenderItems(items, totalUniverse);
+    const effectiveUniverse = Number(totalUniverse ?? (kpis?.total_informes || 0));
+    const renderItems = buildSummaryRenderItems(items, effectiveUniverse);
     const itemCount = Math.max(renderItems.length, 1);
     const columnGap = itemCount > 8 ? 6 : 10;
     const maxCount = renderItems.reduce(
@@ -1190,7 +1191,7 @@ export default function GVADashboardInformes() {
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-          <span style={statChip}>Total informes: {kpis.total_informes ?? 0}</span>
+          <span style={statChip}>Total registros: {kpis.total_informes ?? 0}</span>
           <span style={statChip}>Total plantillas: {kpis.total_plantillas ?? 0}</span>
           <span style={statChip}>Con geo: {geo.total_geo ?? 0}</span>
           <span style={statChip}>Sin geo: {geo.total_sin_geo ?? 0}</span>
@@ -2097,6 +2098,17 @@ export default function GVADashboardInformes() {
               const isEligible = !!fs.kpi_eligible && allowed.length > 0;
               const chartType = fieldChartTypes[String(fs.id_pregunta)] || "list";
               const items = Array.isArray(fs.items) ? fs.items : [];
+              const questionUniverse = Number(fs.total_universe ?? kpis.total_informes ?? 0);
+              const respondedCount = Number(fs.responded_count ?? fs.non_empty_count ?? 0);
+              const notRespondedCount = Number(
+                fs.not_responded_count ?? Math.max(0, questionUniverse - respondedCount)
+              );
+              const responseRateRaw = Number(fs.response_rate);
+              const responseRateLabel = Number.isFinite(responseRateRaw)
+                ? `${(responseRateRaw * 100).toFixed(1)}%`
+                : questionUniverse > 0
+                  ? `${((respondedCount / questionUniverse) * 100).toFixed(1)}%`
+                  : "0.0%";
               const totalItems = items.reduce((acc, it) => acc + (Number(it.count) || 0), 0);
               const hasActiveInteractiveSelection = items.some((it) =>
                 isInteractiveValueActive(fs.id_pregunta, it.label || "(sin valor)")
@@ -2128,6 +2140,21 @@ export default function GVADashboardInformes() {
                     }}
                   >
                     <div style={{ fontWeight: 800, fontSize: 14 }}>{fs.etiqueta}</div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        marginTop: 6,
+                        fontSize: 12,
+                        color: "#6b7280",
+                      }}
+                    >
+                      <span>Total registros: {questionUniverse.toLocaleString()}</span>
+                      <span>Con respuesta: {respondedCount.toLocaleString()}</span>
+                      <span>Sin responder: {notRespondedCount.toLocaleString()}</span>
+                      <span>Tasa de respuesta: {responseRateLabel}</span>
+                    </div>
                     {isEligible ? (
                       <button
                         type="button"
@@ -2222,7 +2249,7 @@ export default function GVADashboardInformes() {
 
                   {isCounts && !isEligible ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {buildSummaryRenderItems(items, kpis.total_informes)
+                      {buildSummaryRenderItems(items, questionUniverse)
                         .slice()
                         .sort((a, b) => (b.count || 0) - (a.count || 0))
                         .map((it, idx) => {
@@ -2233,8 +2260,8 @@ export default function GVADashboardInformes() {
                             fs.id_pregunta,
                             value
                           );
-                          const pctValue = kpis.total_informes > 0 
-                            ? ((count / kpis.total_informes) * 100).toFixed(1) 
+                          const pctValue = questionUniverse > 0 
+                            ? ((count / questionUniverse) * 100).toFixed(1) 
                             : "0.0";
                           return (
                             <div
@@ -2281,6 +2308,7 @@ export default function GVADashboardInformes() {
                       fs={fs}
                       items={items}
                       kpis={kpis}
+                      totalUniverse={questionUniverse}
                       addInteractiveFilter={addInteractiveFilter}
                       isInteractiveValueActive={isInteractiveValueActive}
                       hasActiveInteractiveSelection={hasActiveInteractiveSelection}
@@ -2291,7 +2319,7 @@ export default function GVADashboardInformes() {
 
                   {isCounts && isEligible && chartType === "bar" ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {buildSummaryRenderItems(items, kpis.total_informes).map((it, idx) => {
+                      {buildSummaryRenderItems(items, questionUniverse).map((it, idx) => {
                         const value = it.label || "(sin valor)";
                         const count = Number(it.count || 0);
                         const isSynthetic = it.isSynthetic === true;
@@ -2334,7 +2362,7 @@ export default function GVADashboardInformes() {
                             {renderIndicatorMeta({
                               label: value,
                               count,
-                              total: kpis.total_informes,
+                                total: questionUniverse,
                               showPercentages,
                             })}
                           </div>
@@ -2364,10 +2392,10 @@ export default function GVADashboardInformes() {
                               style={{
                                 height: "100%",
                                 width:
-                                  kpis.total_informes
+                                    questionUniverse
                                     ? `${Math.min(
                                         100,
-                                        (it.count / (kpis.total_informes || 1)) * 100
+                                        (it.count / (questionUniverse || 1)) * 100
                                       )}%`
                                     : "0%",
                                 background: getActiveTone(
@@ -2499,7 +2527,7 @@ export default function GVADashboardInformes() {
                                   {renderIndicatorMeta({
                                     label: it.label || "(sin valor)",
                                     count: it.count,
-                                    total: kpis.total_informes,
+                                    total: questionUniverse,
                                     showPercentages,
                                   })}
                                 </div>
@@ -2524,7 +2552,7 @@ export default function GVADashboardInformes() {
                       {(() => {
                         const donutItems = buildSummaryRenderItems(
                           items,
-                          kpis.total_informes
+                          questionUniverse
                         ).slice(0, 6);
                         const total = donutItems.reduce((acc, it) => acc + (it.count || 0), 0) || 1;
                         const colors = ["#111827", "#2563eb", "#16a34a", "#f97316", "#a855f7"];
@@ -2620,7 +2648,7 @@ export default function GVADashboardInformes() {
                         );
                       })()}
                       <div style={{ fontSize: 11, color: "#6b7280" }}>
-                        {buildSummaryRenderItems(items, kpis.total_informes)
+                        {buildSummaryRenderItems(items, questionUniverse)
                           .slice(0, 6)
                           .map((it, idx) => (
                           <div
@@ -2668,7 +2696,7 @@ export default function GVADashboardInformes() {
                             {renderIndicatorMeta({
                               label: it.label || "(sin valor)",
                               count: it.count,
-                              total: kpis.total_informes,
+                               total: questionUniverse,
                               showPercentages,
                             })}
                           </div>
@@ -2679,7 +2707,9 @@ export default function GVADashboardInformes() {
 
                   {isText ? (
                     <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      <div>Con respuesta: {fs.non_empty_count ?? 0}</div>
+                      <div>Con respuesta: {respondedCount}</div>
+                      <div>Sin responder: {notRespondedCount}</div>
+                      <div>Tasa de respuesta: {responseRateLabel}</div>
                       <div style={{ marginTop: 6 }}>
                         {(fs.sample_values || []).map((v, idx) => (
                           <div key={`${fs.id_pregunta}-s-${idx}`}>{v}</div>

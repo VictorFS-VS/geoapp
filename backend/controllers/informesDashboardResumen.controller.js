@@ -16,6 +16,36 @@ function toInt(v, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function buildResponseValueExpr(alias) {
+  return `LOWER(TRIM(COALESCE(
+    CASE
+      WHEN ${alias}.valor_bool IS NOT NULL THEN CASE WHEN ${alias}.valor_bool THEN 'Si' ELSE 'No' END
+      ELSE NULL
+    END,
+    ${alias}.valor_texto,
+    ${alias}.valor_json::text,
+    ''
+  )))`;
+}
+
+function buildValidResponsePredicate(alias) {
+  const valueExpr = buildResponseValueExpr(alias);
+  return `${valueExpr} <> '' AND ${valueExpr} NOT IN ('-', 'null', 'undefined')`;
+}
+
+function buildQuestionSummaryMetrics(totalUniverse, respondedCount) {
+  const universe = Math.max(0, Number(totalUniverse || 0));
+  const responded = Math.max(0, Number(respondedCount || 0));
+  const notResponded = Math.max(0, universe - responded);
+  const responseRate = universe > 0 ? Number((responded / universe).toFixed(4)) : 0;
+  return {
+    total_universe: universe,
+    responded_count: responded,
+    not_responded_count: notResponded,
+    response_rate: responseRate,
+  };
+}
+
 /**
  * Crea la expresión SQL unificada para resolver la fecha efectiva de una respuesta.
  * Soporta ISO (texto/json), Excel Serial (texto/json) y formatos manuales DD/MM/YYYY.
@@ -829,29 +859,13 @@ async function getInformesResumenBase(req, res) {
         ${filteredCte}
         SELECT
           r.id_pregunta,
-          COUNT(DISTINCT LOWER(TRIM(COALESCE(
-            CASE
-              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
-              ELSE NULL
-            END,
-            r.valor_texto,
-            r.valor_json::text,
-            ''
-          ))))::int AS distinct_count
+          COUNT(DISTINCT ${buildResponseValueExpr("r")})::int AS distinct_count
         FROM ema.informe_respuesta r
         JOIN filtered f ON f.id_informe = r.id_informe
         JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
         WHERE r.id_pregunta = ANY($${selectedFieldsParamIndex}::int[])
           AND LOWER(TRIM(q.tipo)) IN ('select','radio','combo','boolean','si_no','sino','bool','semaforo')
-          AND TRIM(COALESCE(
-            CASE
-              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
-              ELSE NULL
-            END,
-            r.valor_texto,
-            r.valor_json::text,
-            ''
-          )) <> ''
+          AND ${buildValidResponsePredicate("r")}
         GROUP BY r.id_pregunta
       `;
       const rDistinct = await pool.query(qDistinct, summaryParams);
@@ -864,15 +878,7 @@ async function getInformesResumenBase(req, res) {
         ${filteredCte}
         SELECT
           r.id_pregunta,
-          LOWER(TRIM(COALESCE(
-            CASE
-              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
-              ELSE NULL
-            END,
-            r.valor_texto,
-            r.valor_json::text,
-            ''
-          ))) AS norm_val,
+          ${buildResponseValueExpr("r")} AS norm_val,
           MIN(TRIM(COALESCE(
             CASE
               WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
@@ -888,15 +894,7 @@ async function getInformesResumenBase(req, res) {
         JOIN ema.informe_pregunta q ON q.id_pregunta = r.id_pregunta
         WHERE r.id_pregunta = ANY($${selectedFieldsParamIndex}::int[])
           AND LOWER(TRIM(q.tipo)) IN ('select','radio','combo','boolean','si_no','sino','bool','semaforo')
-          AND TRIM(COALESCE(
-            CASE
-              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
-              ELSE NULL
-            END,
-            r.valor_texto,
-            r.valor_json::text,
-            ''
-          )) <> ''
+          AND ${buildValidResponsePredicate("r")}
         GROUP BY r.id_pregunta, norm_val
       `;
       const rCounts = await pool.query(qCounts, summaryParams);
@@ -915,10 +913,18 @@ async function getInformesResumenBase(req, res) {
         SELECT
           r.id_pregunta,
           COUNT(*) FILTER (
-            WHERE TRIM(COALESCE(r.valor_texto, '')) <> ''
+            WHERE ${buildValidResponsePredicate("r")}
           )::int AS non_empty_count,
-          ARRAY_AGG(DISTINCT LEFT(TRIM(r.valor_texto), 140)) FILTER (
-            WHERE TRIM(COALESCE(r.valor_texto, '')) <> ''
+          ARRAY_AGG(DISTINCT LEFT(TRIM(COALESCE(
+            CASE
+              WHEN r.valor_bool IS NOT NULL THEN CASE WHEN r.valor_bool THEN 'Si' ELSE 'No' END
+              ELSE NULL
+            END,
+            r.valor_texto,
+            r.valor_json::text,
+            ''
+          )), 140)) FILTER (
+            WHERE ${buildValidResponsePredicate("r")}
           ) AS sample_values
         FROM ema.informe_respuesta r
         JOIN filtered f ON f.id_informe = r.id_informe
@@ -959,6 +965,8 @@ async function getInformesResumenBase(req, res) {
 
         if (isText) {
           const t = textMap.get(id) || { non_empty_count: 0, sample_values: [] };
+          const respondedCount = Number(t.non_empty_count) || 0;
+          const questionMetrics = buildQuestionSummaryMetrics(n_informes, respondedCount);
           return {
             id_pregunta: id,
             etiqueta: meta.etiqueta,
@@ -968,6 +976,10 @@ async function getInformesResumenBase(req, res) {
             allowed_chart_types: [],
             summary_type: "text_basic",
             non_empty_count: t.non_empty_count,
+            responded_count: questionMetrics.responded_count,
+            not_responded_count: questionMetrics.not_responded_count,
+            response_rate: questionMetrics.response_rate,
+            total_universe: questionMetrics.total_universe,
             sample_values: t.sample_values,
           };
         }
@@ -983,6 +995,8 @@ async function getInformesResumenBase(req, res) {
               }));
           const distinct = isSemaforo ? items.length : distinctMap.get(id) || 0;
           const kpiEligible = distinct > 0 && distinct <= 10;
+          const respondedCount = rawItems.reduce((acc, it) => acc + Math.max(0, Number(it?.count || 0)), 0);
+          const questionMetrics = buildQuestionSummaryMetrics(n_informes, respondedCount);
           return {
             id_pregunta: id,
             etiqueta: meta.etiqueta,
@@ -996,9 +1010,14 @@ async function getInformesResumenBase(req, res) {
               : [],
             summary_type: "counts",
             items,
+            responded_count: questionMetrics.responded_count,
+            not_responded_count: questionMetrics.not_responded_count,
+            response_rate: questionMetrics.response_rate,
+            total_universe: questionMetrics.total_universe,
           };
         }
 
+        const questionMetrics = buildQuestionSummaryMetrics(n_informes, 0);
         return {
           id_pregunta: id,
           etiqueta: meta.etiqueta,
@@ -1008,6 +1027,10 @@ async function getInformesResumenBase(req, res) {
           allowed_chart_types: [],
           summary_type: "unsupported",
           items: [],
+          responded_count: questionMetrics.responded_count,
+          not_responded_count: questionMetrics.not_responded_count,
+          response_rate: questionMetrics.response_rate,
+          total_universe: questionMetrics.total_universe,
         };
       });
     }
