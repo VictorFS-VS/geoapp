@@ -3422,6 +3422,597 @@ async function deletePregunta(req, res) {
     }
   }
 
+function firstNonEmpty(values = []) {
+  for (const v of values) {
+    if (v !== null && v !== undefined && String(v).trim() !== "") {
+      return v;
+    }
+  }
+  return "";
+}
+
+function normalizeExcelHeader(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+}
+
+function valueFromCell(cell) {
+  if (!cell) return null;
+
+  const v = cell.value;
+
+  if (v === null || v === undefined) return null;
+
+  if (typeof v === "object") {
+    if (v.text != null) return v.text;
+    if (v.result != null) return v.result;
+    if (v.richText && Array.isArray(v.richText)) {
+      return v.richText.map((x) => x.text || "").join("");
+    }
+    if (v.hyperlink != null) return v.text || v.hyperlink;
+  }
+
+  return v;
+}
+
+// POST /api/informes/proyecto/:idProyecto/plantilla/:idPlantilla/import-excel-update
+async function importExcelUpdateRespuestas(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+
+  if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+    return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+  }
+
+  if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+    return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
+  }
+
+  // Se espera multipart/form-data
+  // archivo Excel: req.file
+  // campos:
+  // match_mode: "id_informe" | "pregunta_referencia"
+  // excel_match_column: nombre columna excel que contiene el identificador
+  // id_pregunta_referencia: requerido si match_mode = "pregunta_referencia"
+  // destination_mode: "pregunta_existente" | "nueva_pregunta"
+  // id_pregunta_destino: requerido si destination_mode = "pregunta_existente"
+  // id_seccion_destino, etiqueta_nueva_pregunta, tipo_nueva_pregunta: requeridos si destination_mode = "nueva_pregunta"
+  // excel_columns_source: JSON array o string separado por coma con columnas a combinar
+  // overwrite_empty_only: "1" | "0" opcional
+  // order_nueva_pregunta: opcional
+
+  if (!req.file || !req.file.buffer) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe adjuntar un archivo Excel",
+    });
+  }
+
+  const matchMode = String(req.body?.match_mode || "id_informe").trim().toLowerCase();
+  const excelMatchColumn = String(req.body?.excel_match_column || "").trim();
+  const destinationMode = String(req.body?.destination_mode || "pregunta_existente")
+    .trim()
+    .toLowerCase();
+
+  const idPreguntaReferencia = Number(req.body?.id_pregunta_referencia || 0);
+  const idPreguntaDestinoBody = Number(req.body?.id_pregunta_destino || 0);
+
+  const idSeccionDestino = Number(req.body?.id_seccion_destino || 0);
+  const etiquetaNuevaPregunta = String(req.body?.etiqueta_nueva_pregunta || "").trim();
+  const tipoNuevaPregunta = String(req.body?.tipo_nueva_pregunta || "texto").trim();
+
+  const overwriteEmptyOnly =
+    String(req.body?.overwrite_empty_only || "0").trim() === "1";
+
+  let orderNuevaPregunta = Number(req.body?.order_nueva_pregunta || 0);
+
+  let excelColumnsSource = req.body?.excel_columns_source;
+
+  if (typeof excelColumnsSource === "string") {
+    try {
+      const parsed = JSON.parse(excelColumnsSource);
+      if (Array.isArray(parsed)) {
+        excelColumnsSource = parsed;
+      } else {
+        excelColumnsSource = excelColumnsSource
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+    } catch {
+      excelColumnsSource = excelColumnsSource
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+  }
+
+  if (!Array.isArray(excelColumnsSource) || excelColumnsSource.length === 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar al menos una columna origen del Excel",
+    });
+  }
+
+  if (!excelMatchColumn) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar la columna del Excel para el cruce",
+    });
+  }
+
+  if (!["id_informe", "pregunta_referencia"].includes(matchMode)) {
+    return res.status(400).json({
+      ok: false,
+      error: "match_mode inválido. Use 'id_informe' o 'pregunta_referencia'",
+    });
+  }
+
+  if (!["pregunta_existente", "nueva_pregunta"].includes(destinationMode)) {
+    return res.status(400).json({
+      ok: false,
+      error: "destination_mode inválido. Use 'pregunta_existente' o 'nueva_pregunta'",
+    });
+  }
+
+  if (matchMode === "pregunta_referencia" && (!Number.isFinite(idPreguntaReferencia) || idPreguntaReferencia <= 0)) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar id_pregunta_referencia",
+    });
+  }
+
+  if (destinationMode === "pregunta_existente" && (!Number.isFinite(idPreguntaDestinoBody) || idPreguntaDestinoBody <= 0)) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar id_pregunta_destino",
+    });
+  }
+
+  if (destinationMode === "nueva_pregunta") {
+    if (!Number.isFinite(idSeccionDestino) || idSeccionDestino <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debe indicar id_seccion_destino",
+      });
+    }
+
+    if (!etiquetaNuevaPregunta) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debe indicar etiqueta_nueva_pregunta",
+      });
+    }
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // 1) cargar secciones y preguntas de la plantilla
+    const { rows: secciones } = await client.query(
+      `
+      SELECT id_seccion, titulo, orden
+      FROM ema.informe_seccion
+      WHERE id_plantilla = $1
+      ORDER BY orden
+      `,
+      [idPlantilla]
+    );
+
+    const idSecciones = secciones.map((s) => Number(s.id_seccion)).filter(Boolean);
+    const seccionesSet = new Set(idSecciones);
+
+    const { rows: preguntas } = await client.query(
+      `
+      SELECT *
+      FROM ema.informe_pregunta
+      WHERE id_seccion = ANY($1::int[])
+      ORDER BY id_seccion, orden, id_pregunta
+      `,
+      [idSecciones.length ? idSecciones : [0]]
+    );
+
+    const preguntasById = new Map(
+      (preguntas || []).map((p) => [Number(p.id_pregunta), p])
+    );
+
+    const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas || []);
+
+    if (matchMode === "pregunta_referencia" && !preguntasById.has(idPreguntaReferencia)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `La pregunta referencia ${idPreguntaReferencia} no pertenece a la plantilla`,
+      });
+    }
+
+    let idPreguntaDestino = idPreguntaDestinoBody;
+
+    if (destinationMode === "pregunta_existente") {
+      const qDestino = preguntasById.get(idPreguntaDestino);
+      if (!qDestino) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: `La pregunta destino ${idPreguntaDestino} no pertenece a la plantilla`,
+        });
+      }
+
+      const tipoDestino = String(qDestino.tipo || "").trim().toLowerCase();
+      if (["imagen", "foto", "galeria"].includes(tipoDestino)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "La pregunta destino no puede ser de tipo imagen/foto/galería",
+        });
+      }
+    } else {
+      if (!seccionesSet.has(idSeccionDestino)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: `La sección ${idSeccionDestino} no pertenece a la plantilla`,
+        });
+      }
+
+      if (!Number.isFinite(orderNuevaPregunta) || orderNuevaPregunta <= 0) {
+        const { rows: maxOrdRows } = await client.query(
+          `
+          SELECT COALESCE(MAX(orden), 0) AS max_orden
+          FROM ema.informe_pregunta
+          WHERE id_seccion = $1
+          `,
+          [idSeccionDestino]
+        );
+        orderNuevaPregunta = Number(maxOrdRows?.[0]?.max_orden || 0) + 1;
+      }
+
+      const insertPregunta = await client.query(
+        `
+        INSERT INTO ema.informe_pregunta
+          (id_seccion, etiqueta, tipo, obligatorio, orden, permite_foto, activo)
+        VALUES
+          ($1, $2, $3, false, $4, false, true)
+        RETURNING id_pregunta
+        `,
+        [idSeccionDestino, etiquetaNuevaPregunta, tipoNuevaPregunta, orderNuevaPregunta]
+      );
+
+      idPreguntaDestino = Number(insertPregunta.rows?.[0]?.id_pregunta || 0);
+
+      if (!idPreguntaDestino) {
+        await client.query("ROLLBACK");
+        return res.status(500).json({
+          ok: false,
+          error: "No se pudo crear la nueva pregunta destino",
+        });
+      }
+
+      preguntasById.set(idPreguntaDestino, {
+        id_pregunta: idPreguntaDestino,
+        id_seccion: idSeccionDestino,
+        etiqueta: etiquetaNuevaPregunta,
+        tipo: tipoNuevaPregunta,
+      });
+    }
+
+    const preguntaDestino = preguntasById.get(idPreguntaDestino);
+
+    // 2) cargar todos los informes de la plantilla
+    const { rows: informesRows } = await client.query(
+      `
+      SELECT i.id_informe
+      FROM ema.informe i
+      WHERE i.id_proyecto = $1
+        AND i.id_plantilla = $2
+      ORDER BY i.id_informe
+      `,
+      [idProyecto, idPlantilla]
+    );
+
+    const idsInformesPlantilla = informesRows.map((r) => Number(r.id_informe)).filter(Boolean);
+
+    if (!idsInformesPlantilla.length) {
+      await client.query("COMMIT");
+      return res.json({
+        ok: true,
+        error: null,
+        message: "No hay informes para la plantilla",
+        total_informes_plantilla: 0,
+        total_filas_excel: 0,
+        total_match: 0,
+        total_actualizados: 0,
+        id_pregunta_destino: idPreguntaDestino,
+      });
+    }
+
+    // 3) si el match es por pregunta referencia, construir mapa valor -> id_informe
+    const referenciaMap = new Map();
+
+    if (matchMode === "pregunta_referencia") {
+      const { rows: respRefRows } = await client.query(
+        `
+        SELECT
+          r.id_informe,
+          r.valor_texto,
+          r.valor_bool,
+          r.valor_json
+        FROM ema.informe_respuesta r
+        WHERE r.id_informe = ANY($1::int[])
+          AND r.id_pregunta = $2
+        `,
+        [idsInformesPlantilla, idPreguntaReferencia]
+      );
+
+      for (const row of respRefRows) {
+        let raw = null;
+
+        if (row.valor_bool !== null && row.valor_bool !== undefined) {
+          raw = row.valor_bool;
+        } else if (row.valor_json !== null && row.valor_json !== undefined) {
+          raw = row.valor_json;
+        } else {
+          raw = row.valor_texto;
+        }
+
+        const key = String(raw ?? "").trim().toLowerCase();
+        if (!key) continue;
+
+        if (!referenciaMap.has(key)) {
+          referenciaMap.set(key, Number(row.id_informe));
+        }
+      }
+    }
+
+    // 4) leer Excel
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: "El archivo Excel no contiene hojas",
+      });
+    }
+
+    const headerRow = worksheet.getRow(1);
+    const headerMap = new Map();
+
+    headerRow.eachCell((cell, colNumber) => {
+      const raw = valueFromCell(cell);
+      const norm = normalizeExcelHeader(raw);
+      if (norm) {
+        headerMap.set(norm, colNumber);
+      }
+    });
+
+    const matchColumnKey = normalizeExcelHeader(excelMatchColumn);
+    const matchColIndex = headerMap.get(matchColumnKey);
+
+    if (!matchColIndex) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `No se encontró la columna de cruce '${excelMatchColumn}' en el Excel`,
+      });
+    }
+
+    const sourceColumnsNorm = excelColumnsSource.map((c) => normalizeExcelHeader(c));
+    const sourceColumnsResolved = sourceColumnsNorm.map((norm, idx) => ({
+      original: excelColumnsSource[idx],
+      normalized: norm,
+      colIndex: headerMap.get(norm) || null,
+    }));
+
+    const missingSources = sourceColumnsResolved.filter((x) => !x.colIndex);
+    if (missingSources.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `No se encontraron columnas origen en Excel: ${missingSources.map((x) => x.original).join(", ")}`,
+      });
+    }
+
+    // 5) si overwriteEmptyOnly, traer respuestas actuales destino
+    const respuestasDestinoActuales = new Map();
+
+    if (overwriteEmptyOnly) {
+      const { rows: existingRows } = await client.query(
+        `
+        SELECT
+          r.id_informe,
+          r.valor_texto,
+          r.valor_bool,
+          r.valor_json
+        FROM ema.informe_respuesta r
+        WHERE r.id_informe = ANY($1::int[])
+          AND r.id_pregunta = $2
+        `,
+        [idsInformesPlantilla, idPreguntaDestino]
+      );
+
+      for (const row of existingRows) {
+        let currentValue = null;
+
+        if (row.valor_bool !== null && row.valor_bool !== undefined) {
+          currentValue = row.valor_bool;
+        } else if (row.valor_json !== null && row.valor_json !== undefined) {
+          currentValue = row.valor_json;
+        } else {
+          currentValue = row.valor_texto;
+        }
+
+        respuestasDestinoActuales.set(Number(row.id_informe), currentValue);
+      }
+    }
+
+    // 6) recorrer filas y actualizar
+    let totalFilasExcel = 0;
+    let totalMatch = 0;
+    let totalActualizados = 0;
+    const noEncontrados = [];
+    const omitidosPorDestinoNoVacio = [];
+
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      const row = worksheet.getRow(rowNumber);
+
+      // saltar filas totalmente vacías
+      const rowHasValues = Array.isArray(row.values)
+        ? row.values.some((v, idx) => idx > 0 && v !== null && v !== undefined && String(valueFromCell({ value: v }) ?? "").trim() !== "")
+        : false;
+
+      if (!rowHasValues) continue;
+
+      totalFilasExcel++;
+
+      const matchRaw = valueFromCell(row.getCell(matchColIndex));
+      const matchValue = String(matchRaw ?? "").trim();
+
+      if (!matchValue) {
+        noEncontrados.push({
+          row: rowNumber,
+          reason: "match vacío",
+        });
+        continue;
+      }
+
+      let idInformeMatch = null;
+
+      if (matchMode === "id_informe") {
+        const n = Number(matchValue);
+        if (Number.isFinite(n) && idsInformesPlantilla.includes(n)) {
+          idInformeMatch = n;
+        }
+      } else {
+        const refKey = matchValue.toLowerCase();
+        idInformeMatch = referenciaMap.get(refKey) || null;
+      }
+
+      if (!idInformeMatch) {
+        noEncontrados.push({
+          row: rowNumber,
+          match: matchValue,
+          reason: "sin informe asociado",
+        });
+        continue;
+      }
+
+      totalMatch++;
+
+      if (overwriteEmptyOnly) {
+        const current = respuestasDestinoActuales.get(Number(idInformeMatch));
+        const currentIsEmpty =
+          current === null ||
+          current === undefined ||
+          String(
+            typeof current === "object" ? JSON.stringify(current) : current
+          ).trim() === "";
+
+        if (!currentIsEmpty) {
+          omitidosPorDestinoNoVacio.push({
+            row: rowNumber,
+            id_informe: idInformeMatch,
+          });
+          continue;
+        }
+      }
+
+      const sourceValues = sourceColumnsResolved.map((src) =>
+        valueFromCell(row.getCell(src.colIndex))
+      );
+
+      const valorCombinado = firstNonEmpty(sourceValues);
+
+      const tipoDestino = String(preguntaDestino?.tipo || "").trim().toLowerCase();
+      const valorNormalizado = normalizeAnswerForSaveByTipo(preguntaDestino?.tipo, valorCombinado);
+
+      let valorTexto = null;
+      let valorBool = null;
+      let valorJson = null;
+
+      if (tipoDestino === "semaforo") {
+        const obj = semaforoToObj(valorNormalizado, semaforoPaletteMap);
+        if (obj && obj.hex) {
+          valorTexto = obj.nombre || null;
+          valorJson = obj;
+        } else {
+          const t = toJsonbOrText(valorNormalizado);
+          valorTexto = t.valor_texto;
+          valorBool = t.valor_bool;
+          valorJson = t.valor_json;
+        }
+      } else {
+        const t = toJsonbOrText(valorNormalizado);
+        valorTexto = t.valor_texto;
+        valorBool = t.valor_bool;
+        valorJson = t.valor_json;
+      }
+
+      await client.query(
+        `
+        INSERT INTO ema.informe_respuesta
+          (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (id_informe, id_pregunta)
+        DO UPDATE SET
+          valor_texto = EXCLUDED.valor_texto,
+          valor_bool  = EXCLUDED.valor_bool,
+          valor_json  = EXCLUDED.valor_json
+        `,
+        [
+          idInformeMatch,
+          idPreguntaDestino,
+          valorTexto,
+          valorBool,
+          valorJson ? JSON.stringify(valorJson) : null,
+        ]
+      );
+
+      totalActualizados++;
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      match_mode: matchMode,
+      destination_mode: destinationMode,
+      total_informes_plantilla: idsInformesPlantilla.length,
+      total_filas_excel: totalFilasExcel,
+      total_match: totalMatch,
+      total_actualizados: totalActualizados,
+      total_no_encontrados: noEncontrados.length,
+      total_omitidos_destino_no_vacio: omitidosPorDestinoNoVacio.length,
+      id_pregunta_destino: idPreguntaDestino,
+      pregunta_destino: {
+        id_pregunta: idPreguntaDestino,
+        etiqueta: preguntaDestino?.etiqueta || etiquetaNuevaPregunta || null,
+        tipo: preguntaDestino?.tipo || tipoNuevaPregunta || null,
+      },
+      sample_no_encontrados: noEncontrados.slice(0, 20),
+      sample_omitidos_destino_no_vacio: omitidosPorDestinoNoVacio.slice(0, 20),
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("❌ importExcelUpdateRespuestas error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Error al importar Excel y actualizar respuestas",
+      details: err.message,
+    });
+  } finally {
+    client.release();
+  }
+}
+
   /* 5) DELETE /api/informes/:id/fotos/:idFoto */
   async function deleteInformeFoto(req, res) {
     const idInforme = Number(req.params.id);
@@ -8024,6 +8615,7 @@ module.exports = {
   getInforme,
   generarPdf,
   actualizarInforme,
+  importExcelUpdateRespuestas,
   deleteInformeFoto,
   deleteInforme,
   bulkDeleteInformesByProyectoPlantilla,

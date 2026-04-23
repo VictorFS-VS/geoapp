@@ -3,12 +3,20 @@
 
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
 
 const informesCtrl = require("../controllers/informes.controller");
 const informesImportCtrl = require("../controllers/informes.import.controller");
 const massiveImportCtrl = require("../controllers/informes.massiveImport.controller");
 const { verifyToken } = require("../middlewares/auth.middleware");
 const { requirePerm } = require("../middlewares/requirePerm");
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 20 * 1024 * 1024,
+  },
+});
 
 /* =========================================================
    ✅ IMPORTANTE
@@ -342,6 +350,14 @@ router.post(
   verifyToken,
   requirePerm("informes.create"),
   informesCtrl.crearInforme
+);
+
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/import-excel-update",
+  verifyToken,
+  requirePerm("informes.update"),
+  upload.single("excel"),
+  informesCtrl.importExcelUpdateRespuestas
 );
 
 router.put(
