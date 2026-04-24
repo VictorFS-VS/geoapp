@@ -6,63 +6,75 @@ const router = express.Router();
 const diagnosticoCtrl = require("../controllers/diagnostico.controller");
 const diagnosticoExportCtrl = require("../controllers/diagnostico.export.controller");
 const { verifyToken } = require("../middlewares/auth.middleware");
-const { requirePerm } = require("../middlewares/requirePerm");
+const { requirePerm, requireAny } = require("../middlewares/requirePerm");
 
 router.get(
   "/proyecto/:idProyecto/export/excel",
   verifyToken,
-  requirePerm("informes.read"),
+  requirePerm("informes.diagnostico.read"),
+  diagnosticoExportCtrl.exportDiagnosticoProyectoExcel
+);
+
+router.post(
+  "/proyecto/:idProyecto/export/excel",
+  verifyToken,
+  requirePerm("informes.diagnostico.read"),
   diagnosticoExportCtrl.exportDiagnosticoProyectoExcel
 );
 
 router.get(
   "/plantilla/:idPlantilla",
   verifyToken,
-  requirePerm("informes.plantillas.read"),
+  requireAny(["informes.diagnostico.read", "informes.plantillas.read"]),
   diagnosticoCtrl.getFormulaByPlantilla
 );
 
 router.post(
   "/",
   verifyToken,
-  requirePerm("informes.plantillas.update"),
+  requirePerm("informes.diagnostico.update"),
   diagnosticoCtrl.saveFormula
 );
 
-router.get("/resultado/:idRegistro", diagnosticoCtrl.getDetalleScoring);
+router.get(
+  "/resultado/:idRegistro",
+  verifyToken,
+  requirePerm("informes.diagnostico.read"),
+  diagnosticoCtrl.getDetalleScoring
+);
 
 router.patch(
   "/override/:idRegistro",
   verifyToken,
-  requirePerm("informes.update"), // Permiso para editar informes
+  requirePerm("informes.diagnostico.update"),
   diagnosticoCtrl.saveScoringOverride
 );
 
 router.post(
   "/evaluar-plantilla",
   verifyToken,
-  requirePerm("informes.update"),
+  requirePerm("informes.diagnostico.create"),
   diagnosticoCtrl.evaluarPlantilla
 );
 
 router.post(
   "/evaluar-individual/:idInforme",
   verifyToken,
-  requirePerm("informes.update"),
+  requirePerm("informes.diagnostico.create"),
   diagnosticoCtrl.evaluarIndividual
 );
 
 router.patch(
   "/revisado/:idRegistro",
   verifyToken,
-  requirePerm("informes.update"),
+  requirePerm("informes.diagnostico.update"),
   diagnosticoCtrl.marcarRevisado
 );
 
 router.post(
   "/reset-cambios",
   verifyToken,
-  requirePerm("informes.update"),
+  requirePerm("informes.diagnostico.update"),
   diagnosticoCtrl.resetCambios
 );
 

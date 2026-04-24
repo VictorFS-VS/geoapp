@@ -204,6 +204,13 @@ const PERMS = {
     "informes.dashboard.charts.read",
   ],
 
+  DIAGNOSTICO: [
+    "informes.diagnostico.read",
+    "informes.diagnostico.create",
+    "informes.diagnostico.update",
+    "informes.diagnostico.delete",
+  ],
+
   REPORTES: ["reportes.read", "reportes.create", "reportes.update", "reportes.delete"],
 
   NDVI: ["use_change.read", "use_change.create", "use_change.delete"],
@@ -959,7 +966,7 @@ function App() {
             path="proyectos/:idProyecto/diagnostico"
             element={
               <ProtectedRoute>
-                <RequirePerm anyOf={PERMS.INFORMES} redirectTo="/proyectos">
+                <RequirePerm anyOf={PERMS.DIAGNOSTICO} redirectTo="/proyectos">
                   <DiagnosticoProyecto />
                 </RequirePerm>
               </ProtectedRoute>

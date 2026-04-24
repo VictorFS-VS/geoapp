@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstrap";
+import { Table, Button, Badge, Spinner, Modal, Alert, Form, Dropdown, ButtonGroup, Collapse } from "react-bootstrap";
 import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
@@ -236,6 +236,7 @@ const InformesProyecto = () => {
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [bulkDeletingFotos, setBulkDeletingFotos] = useState(false);
+  const totalRegistrosExport = Number(listMeta.total || 0);
 
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -266,9 +267,12 @@ const InformesProyecto = () => {
   const [showImportZip, setShowImportZip] = useState(false);
   const [showImportExcel, setShowImportExcel] = useState(false);
   const [showConsolidacion, setShowConsolidacion] = useState(false);
+  const [showHeaderTools, setShowHeaderTools] = useState(false);
 
   const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
   const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
+  const [formulaActiva, setFormulaActiva] = useState(null);
+  const [plantillaNombre, setPlantillaNombre] = useState("");
 
   const [showWordConfig, setShowWordConfig] = useState(false);
   const [reopenWordConfigAfterSwalCancel, setReopenWordConfigAfterSwalCancel] = useState(false);
@@ -297,6 +301,7 @@ const InformesProyecto = () => {
       fetch(`${API_URL}/informes/plantillas/${idPlantillaFiltro}`, { headers: authHeaders() })
         .then((r) => r.json())
         .then((d) => {
+          setPlantillaNombre(String(d?.nombre || d?.titulo || d?.nombre_plantilla || "").trim());
           const secciones = Array.isArray(d.secciones) ? d.secciones : [];
           const seccionesConPreguntas = secciones.filter(
             (s) => Array.isArray(s.preguntas) && s.preguntas.length > 0
@@ -319,10 +324,23 @@ const InformesProyecto = () => {
           console.error("Error cargando preguntas de plantilla:", err);
           setSeccionesPlantilla([]);
           setPreguntasPlantilla([]);
+          setPlantillaNombre("");
+        });
+
+      fetch(`${API_URL}/diagnostico/plantilla/${idPlantillaFiltro}`, { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((res) => {
+          setFormulaActiva(res?.ok && res?.formula ? res.formula : null);
+        })
+        .catch((err) => {
+          console.error("Error cargando fórmula activa:", err);
+          setFormulaActiva(null);
         });
     } else {
       setPreguntasPlantilla([]);
       setSeccionesPlantilla([]);
+      setFormulaActiva(null);
+      setPlantillaNombre("");
       setWordConfig((prev) => ({
         ...prev,
         preguntas: [],
@@ -346,11 +364,71 @@ const InformesProyecto = () => {
     setListPage(1);
   }, [idPlantillaFiltro]);
 
+  const abrirDiagnostico = useCallback(
+    (informe) => {
+      if (!idProyecto) return;
+
+      const baseUrl = `/proyectos/${idProyecto}/diagnostico`;
+      const plantillaDesdeFila = Number(informe?.id_plantilla);
+      const plantillaValida =
+        Number.isFinite(idPlantillaFiltro) && idPlantillaFiltro > 0
+          ? idPlantillaFiltro
+          : Number.isFinite(plantillaDesdeFila) && plantillaDesdeFila > 0
+            ? plantillaDesdeFila
+            : null;
+
+      if (plantillaValida) {
+        navigate(`${baseUrl}?plantilla=${plantillaValida}`);
+        return;
+      }
+
+      navigate(baseUrl);
+    },
+    [idProyecto, idPlantillaFiltro, navigate]
+  );
+
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
   const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
   const puedeEliminarAdmin = useMemo(() => puedeEliminar || esAdmin, [puedeEliminar, esAdmin]);
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
+  const tieneFormulaDiagnostico = useMemo(
+    () =>
+      formulaActiva &&
+      Number.isFinite(Number(formulaActiva.id_formula)) &&
+      Number(formulaActiva.id_formula) > 0,
+    [formulaActiva]
+  );
+
+  const puedeAbrirDiagnostico = useMemo(
+    () =>
+      hasPerm(auth, "informes.diagnostico.read") &&
+      Number.isFinite(Number(idPlantillaFiltro)) &&
+      Number(idPlantillaFiltro) > 0 &&
+      tieneFormulaDiagnostico,
+    [auth?.user, idPlantillaFiltro, tieneFormulaDiagnostico]
+  );
+
+  const tituloPlantillaActiva = useMemo(() => {
+    const nombre = String(plantillaNombre || "").trim();
+    if (nombre) return nombre;
+    if (Number.isFinite(Number(idPlantillaFiltro)) && Number(idPlantillaFiltro) > 0) {
+      return `Plantilla #${idPlantillaFiltro}`;
+    }
+    return "Plantilla";
+  }, [plantillaNombre, idPlantillaFiltro]);
+
+  const contextoHeader = useMemo(() => {
+    const totalSeleccionados = Number(selectedIds.length || 0);
+    const partes = [
+      `Proyecto #${idProyecto}`,
+      idPlantillaFiltro ? `Plantilla #${idPlantillaFiltro}` : "Sin plantilla",
+      `${totalRegistrosExport} informe${totalRegistrosExport === 1 ? "" : "s"}`,
+      `${totalSeleccionados} seleccionado${totalSeleccionados === 1 ? "" : "s"}`,
+    ];
+
+    return partes.join(" · ");
+  }, [idProyecto, idPlantillaFiltro, totalRegistrosExport, selectedIds.length]);
 
   const informesAdaptados = useMemo(() => {
     return (informes || []).map((informe) => {
@@ -484,7 +562,6 @@ const InformesProyecto = () => {
     return d.toLocaleString("es-PY");
   };
 
-  const totalRegistrosExport = useMemo(() => Number(listMeta.total || 0), [listMeta.total]);
   const totalPaginasListado = useMemo(
     () => Math.max(1, Number(listMeta.total_pages || 1)),
     [listMeta.total_pages]
@@ -1485,221 +1562,245 @@ const InformesProyecto = () => {
 
   return (
     <div className="container mt-3">
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <div>
-          <h4 className="mb-0">Informes dinámicos del proyecto #{idProyecto}</h4>
-          <small className="text-muted">Listado de informes generados a partir de plantillas.</small>
-
-          {authLoading && (
-            <div className="mt-2">
-              <Badge bg="secondary">Cargando permisos…</Badge>
+      <div className="border rounded-3 bg-white shadow-sm p-3 p-lg-4 mb-3">
+        <div className="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3">
+          <div className="flex-grow-1">
+            <div className="d-flex flex-wrap align-items-center gap-2 mb-2">
+              <h4 className="mb-0">{tituloPlantillaActiva}</h4>
+              {authLoading && <Badge bg="secondary">Cargando permisos…</Badge>}
             </div>
-          )}
-
-          {idPlantillaFiltro ? (
-            <div className="mt-2">
-              <Badge bg="info">Filtro: Plantilla #{idPlantillaFiltro}</Badge>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="d-flex gap-2 flex-wrap justify-content-end">
-          {puedeEliminarAdmin ? (
-            <div className="d-flex align-items-center gap-2 flex-wrap">
-              <Badge bg={selectedIds.length ? "danger" : "secondary"}>
-                Seleccionados: {selectedIds.length}
-              </Badge>
-
-              <Button
-                variant="danger"
-                disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting || bulkDeletingFotos}
-                onClick={eliminarSeleccionados}
-                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar seleccionados"}
-              >
-                {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
-              </Button>
-
-              <Button
-                variant="outline-danger"
-                disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
-                onClick={eliminarTodosPlantilla}
-                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
-              >
-                {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
-              </Button>
-
-              <Button
-                variant="outline-warning"
-                disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
-                onClick={eliminarTodasLasFotosPlantilla}
-                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todas las imágenes de la plantilla"}
-              >
-                {bulkDeletingFotos ? "Eliminando fotos..." : "Eliminar fotos (plantilla)"}
-              </Button>
-            </div>
-          ) : null}
-
-          <Button variant="secondary" onClick={() => navigate(-1)}>
-            Volver
-          </Button>
-
-          <Button
-            variant="outline-primary"
-            onClick={() => {
-              const qp = new URLSearchParams();
-              if (idProyecto) qp.set("id_proyecto", String(idProyecto));
-              if (idPlantillaFiltro) qp.set("id_plantilla", String(idPlantillaFiltro));
-              navigate(`/dashboardinformes?${qp.toString()}`);
-            }}
-          >
-            Dashboard V2
-          </Button>
-
-          <div className="btn-group">
-            <Button variant="outline-danger" onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>
-              {downloading.pdf ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📄 PDF</>
-              )}
-            </Button>
-
-            <Button
-              variant="outline-primary"
-              onClick={() => {
-                setWordConfig((prev) => ({ ...prev, modo: "normal" }));
-                setShowWordConfig(true);
-              }}
-              disabled={anyDownloading}
-            >
-              {downloading.docx ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📝 Word</>
-              )}
-            </Button>
-
-            <Button
-              variant="outline-primary"
-              onClick={() => {
-                setWordConfig((prev) => ({ ...prev, modo: "tabla" }));
-                setShowWordConfig(true);
-              }}
-              disabled={anyDownloading}
-            >
-              {downloading.docxTabla ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>🧾 Word Tabla</>
-              )}
-            </Button>
-
-            <Button variant="outline-success" onClick={() => descargarProyecto("xlsx")} disabled={anyDownloading}>
-              {downloading.xlsx ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📊 Excel</>
-              )}
-            </Button>
-
-            {puedeDescargarKmz && (
-              <Button variant="outline-dark" onClick={descargarProyectoKmz} disabled={anyDownloading}>
-                {downloading.kmz ? (
-                  <>
-                    <Spinner animation="border" size="sm" className="me-2" />...
-                  </>
-                ) : (
-                  <>🗺️ KMZ</>
-                )}
-              </Button>
-            )}
+            <small className="text-muted d-block">{contextoHeader}</small>
           </div>
 
-          {puedeDescargarKmz && (
-            <Button variant="outline-secondary" onClick={copiarLinkKmzProyecto} disabled={anyDownloading}>
-              🔗 Link KMZ
-            </Button>
-          )}
-
-          <Button
-            variant="outline-success"
-            disabled={!idPlantillaFiltro || anyDownloading}
-            onClick={() => setShowImportZip(true)}
-            title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Importación masiva de fotos via ZIP"}
-          >
-            📦 Importar Fotos (ZIP)
-          </Button>
-
-          <Button
-            variant="outline-primary"
-            disabled={!idPlantillaFiltro || anyDownloading}
-            onClick={() => setShowImportExcel(true)}
-            title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Importación Excel inteligente"}
-          >
-            📊 Importar Excel
-          </Button>
-
           <Button
             variant="outline-secondary"
-            disabled={!idPlantillaFiltro || anyDownloading || preguntasPlantilla.length === 0}
-            onClick={() => setShowConsolidacion(true)}
-            title={
-              !idPlantillaFiltro
-                ? "Debés filtrar por plantilla"
-                : preguntasPlantilla.length === 0
-                  ? "La plantilla no tiene preguntas cargadas"
-                  : "Consolidación masiva de campos"
-            }
+            onClick={() => setShowHeaderTools((prev) => !prev)}
+            aria-expanded={showHeaderTools}
+            aria-controls="informes-header-tools"
           >
-            🔁 Consolidar campos
-          </Button>
-
-          <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
-            ➕ Nuevo informe
+            {showHeaderTools ? "Cerrar opciones" : "Más opciones / Buscar"}
           </Button>
         </div>
+
+        <Collapse in={showHeaderTools}>
+          <div id="informes-header-tools" className="pt-3 mt-3 border-top">
+            <div className="mb-3 d-flex flex-wrap gap-3 align-items-end">
+              <Form.Group className="flex-grow-1" style={{ minWidth: 280 }}>
+                <Form.Label className="small text-muted mb-1">Buscar por respuestas o por ID numérico</Form.Label>
+                <Form.Control
+                  type="search"
+                  value={searchText}
+                  placeholder="Escribí texto de respuesta o un ID de informe..."
+                  onChange={(e) => {
+                    setSearchText(e.target.value);
+                    setListPage(1);
+                  }}
+                />
+              </Form.Group>
+
+              <div className="d-flex gap-2 flex-wrap">
+                <Button
+                  variant="outline-secondary"
+                  onClick={() => {
+                    setSearchText("");
+                    setListPage(1);
+                  }}
+                  disabled={!searchText && listPage === 1}
+                >
+                  Limpiar
+                </Button>
+
+                <Button variant="outline-secondary" onClick={() => cargarInformes()} disabled={loading}>
+                  Recargar
+                </Button>
+              </div>
+            </div>
+
+            <div className="d-flex flex-wrap gap-2">
+              <Button
+                variant="outline-success"
+                disabled={!idPlantillaFiltro || anyDownloading}
+                onClick={() => setShowImportZip(true)}
+                title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Importación masiva de fotos via ZIP"}
+              >
+                📦 Importar Fotos (ZIP)
+              </Button>
+
+              <Button
+                variant="outline-primary"
+                disabled={!idPlantillaFiltro || anyDownloading}
+                onClick={() => setShowImportExcel(true)}
+                title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Importación Excel inteligente"}
+              >
+                📊 Importar Excel
+              </Button>
+
+              <Button
+                variant="outline-secondary"
+                disabled={!idPlantillaFiltro || anyDownloading || preguntasPlantilla.length === 0}
+                onClick={() => setShowConsolidacion(true)}
+                title={
+                  !idPlantillaFiltro
+                    ? "Debes filtrar por plantilla"
+                    : preguntasPlantilla.length === 0
+                      ? "La plantilla no tiene preguntas cargadas"
+                      : "Consolidación masiva de campos"
+                }
+              >
+                🔁 Consolidar campos
+              </Button>
+            </div>
+
+            <div className="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
+              <Button variant="secondary" onClick={() => navigate(-1)}>
+                Volver
+              </Button>
+
+              <Button
+                variant="outline-primary"
+                onClick={() => {
+                  const qp = new URLSearchParams();
+                  if (idProyecto) qp.set("id_proyecto", String(idProyecto));
+                  if (idPlantillaFiltro) qp.set("id_plantilla", String(idPlantillaFiltro));
+                  navigate(`/dashboardinformes?${qp.toString()}`);
+                }}
+              >
+                Dashboard V2
+              </Button>
+
+              {puedeAbrirDiagnostico && (
+                <Button variant="outline-info" onClick={abrirDiagnostico}>
+                  <i className="bi bi-clipboard2-data me-1"></i>
+                  Diagnóstico
+                </Button>
+              )}
+
+              <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
+                ➕ Nuevo informe
+              </Button>
+            </div>
+
+            <div className="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3 mt-3 pt-3 border-top">
+              <div className="d-flex align-items-center gap-2 flex-wrap">
+                <Badge bg={selectedIds.length ? "danger" : "secondary"}>{selectedIds.length} seleccionados</Badge>
+                <span className="text-muted small">Acciones masivas</span>
+              </div>
+
+              {puedeEliminarAdmin ? (
+                <div className="d-flex align-items-center gap-2 flex-wrap">
+                  <Button
+                    variant="danger"
+                    disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarSeleccionados}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar seleccionados"}
+                  >
+                    {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
+                  </Button>
+
+                  <Button
+                    variant="outline-danger"
+                    disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarTodosPlantilla}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
+                  >
+                    {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
+                  </Button>
+
+                  <Button
+                    variant="outline-warning"
+                    disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarTodasLasFotosPlantilla}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar todas las imágenes de la plantilla"}
+                  >
+                    {bulkDeletingFotos ? "Eliminando fotos..." : "Eliminar fotos (plantilla)"}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
+              <Dropdown as={ButtonGroup}>
+                <Button variant="outline-success" disabled={anyDownloading}>
+                  Exportar
+                </Button>
+                <Dropdown.Toggle split variant="outline-success" disabled={anyDownloading} id="dropdown-exportar-informes" />
+                <Dropdown.Menu align="end">
+                  <Dropdown.Item onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>
+                    {downloading.pdf ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>PDF</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item
+                    onClick={() => {
+                      setWordConfig((prev) => ({ ...prev, modo: "normal" }));
+                      setShowWordConfig(true);
+                    }}
+                    disabled={anyDownloading}
+                  >
+                    {downloading.docx ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Word</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item
+                    onClick={() => {
+                      setWordConfig((prev) => ({ ...prev, modo: "tabla" }));
+                      setShowWordConfig(true);
+                    }}
+                    disabled={anyDownloading}
+                  >
+                    {downloading.docxTabla ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Word Tabla</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item onClick={() => descargarProyecto("xlsx")} disabled={anyDownloading}>
+                    {downloading.xlsx ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Excel</>
+                    )}
+                  </Dropdown.Item>
+
+                  {puedeDescargarKmz && (
+                    <>
+                      <Dropdown.Divider />
+                      <Dropdown.Item onClick={descargarProyectoKmz} disabled={anyDownloading}>
+                        {downloading.kmz ? (
+                          <>
+                            <Spinner animation="border" size="sm" className="me-2" />...
+                          </>
+                        ) : (
+                          <>KMZ</>
+                        )}
+                      </Dropdown.Item>
+
+                      <Dropdown.Item onClick={copiarLinkKmzProyecto} disabled={anyDownloading}>
+                        Link KMZ
+                      </Dropdown.Item>
+                    </>
+                  )}
+                </Dropdown.Menu>
+              </Dropdown>
+            </div>
+          </div>
+        </Collapse>
       </div>
-
-      <div className="d-flex flex-wrap gap-2 align-items-end mb-3">
-        <Form.Group className="flex-grow-1" style={{ minWidth: 280 }}>
-          <Form.Label className="small text-muted mb-1">Buscar por respuestas o por ID numérico</Form.Label>
-          <Form.Control
-            type="search"
-            value={searchText}
-            placeholder="Escribí texto de respuesta o un ID de informe..."
-            onChange={(e) => {
-              setSearchText(e.target.value);
-              setListPage(1);
-            }}
-          />
-        </Form.Group>
-
-        <div className="d-flex gap-2">
-          <Button
-            variant="outline-secondary"
-            onClick={() => {
-              setSearchText("");
-              setListPage(1);
-            }}
-            disabled={!searchText && listPage === 1}
-          >
-            Limpiar
-          </Button>
-
-          <Button variant="outline-secondary" onClick={() => cargarInformes()} disabled={loading}>
-            Recargar
-          </Button>
-        </div>
-      </div>
-
       <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
         <div className="text-muted small">
           {loading
