@@ -423,6 +423,7 @@ export default function ModuloPoligonos({
     comunidad: null,
     usoAct: null,
     usoAlt: null,
+    plano: null,
     areaInfluencia: null,
   });
 
@@ -742,17 +743,23 @@ export default function ModuloPoligonos({
     }
 
     if (planoLayerRef.current) {
-      const isVisible = !!toggles.plano;
-      planoLayerRef.current.setStyle(() => ({
-        strokeColor: "#7c3aed",
-        strokeOpacity: 1,
-        strokeWeight: 2,
-        fillColor: "#7c3aed",
-        fillOpacity: isVisible ? op.plano : 0,
-        clickable: true,
-        visible: isVisible,
-        zIndex: 25,
-      }));
+      planoLayerRef.current.setStyle((feature) => {
+        const { canon } = getUsoCanonAndPretty(feature);
+        const { rgb } = getColorForUso(canon);
+
+        const isVisible = !!toggles.plano;
+
+        return {
+          strokeColor: rgbCss(rgb, 1),
+          strokeOpacity: 0.9,
+          strokeWeight: 1,
+          fillColor: rgbCss(rgb, 1),
+          fillOpacity: isVisible ? op.plano : 0,
+          clickable: true,
+          visible: isVisible,
+          zIndex: 25,
+        };
+      });
     }
 
     if (usoActLayerRef.current) {
@@ -970,6 +977,7 @@ export default function ModuloPoligonos({
     attachClickPopupComunidad();
     attachClickPopupUso(usoActLayerRef.current, "Uso Actual", "usoAct");
     attachClickPopupUso(usoAltLayerRef.current, "Uso Alternativo", "usoAlt");
+    attachClickPopupUso(planoLayerRef.current, "Plano del Proyecto", "plano");
     attachClickPopupAreaInfluencia();
 
     applyStyles();
@@ -1982,8 +1990,9 @@ export default function ModuloPoligonos({
                     }}
                   />
                   <div className="vf-legend-row">
-                    <span className="vf-chip" style={{ background: "#7c3aed" }} />
-                    <span className="vf-legend-txt">Proyecto</span>
+                    <span className="vf-legend-txt">
+                      Plano del Proyecto coloreado por uso
+                    </span>
                   </div>
                 </>
               )}
