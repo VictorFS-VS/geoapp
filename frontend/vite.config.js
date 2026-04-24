@@ -16,9 +16,6 @@ const ALLOWED = [
   '127.0.0.1',
 ]
 
-const isApiExportDownload = (pathname) =>
-  /^\/api\/.+\/(docx|docx-rango-unico|pdf|excel|kmz)$/i.test(pathname)
-
 export default defineConfig({
   plugins: [
     react(),
@@ -64,8 +61,12 @@ export default defineConfig({
 
           // API (ajustá si tu API no cuelga del mismo host)
           {
-            urlPattern: ({ url }) =>
-              url.pathname.startsWith('/api/') && !isApiExportDownload(url.pathname),
+            urlPattern: /\/api\/.+\/(?:docx|docx-rango-unico|pdf|excel|kmz)(?:\?.*)?$/i,
+            handler: 'NetworkOnly',
+          },
+          {
+            urlPattern:
+              /\/api\/(?!.*\/(?:docx|docx-rango-unico|pdf|excel|kmz)(?:\?.*)?$).+/i,
             handler: 'NetworkFirst',
             options: { cacheName: 'api', networkTimeoutSeconds: 5 },
           },
