@@ -36,9 +36,20 @@ function sanitizeName(name) {
 }
 
 function makeBatchDir(inboxBase) {
-  const ts = Date.now();
+  const now = new Date();
+
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+
   const rnd = Math.random().toString(16).slice(2, 8);
-  const dir = path.join(inboxBase, `lote_${ts}_${rnd}`);
+
+  const nombreLote = `lote_${yyyy}-${mm}-${dd}_${hh}-${mi}-${ss}_${rnd}`;
+  const dir = path.join(inboxBase, nombreLote);
+
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

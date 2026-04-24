@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const puppeteer = require("puppeteer");
 const ExcelJS = require("exceljs");
+const XLSX = require("xlsx");
 const pool = require("../db");
 const scoringEngine = require("../src/modules/scoring/scoring.engine");
 
@@ -196,6 +197,17 @@ function resolveAbsolutePath(raw) {
   }
 
   return path.resolve(path.join(BASE_UPLOAD_PATH, rel.replace(/\//g, path.sep)));
+}
+
+function cleanDocxText(text) {
+  if (text === null || text === undefined) return "";
+
+  return String(text)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ") // 🔥 clave
+    .replace(/\u0000/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .slice(0, 5000); // evita textos gigantes
 }
 
 async function cleanupInformeFiles(fileRows = []) {
@@ -4170,23 +4182,42 @@ async function importExcelUpdateRespuestas(req, res) {
     return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
   }
 
-  // Se espera multipart/form-data
-  // archivo Excel: req.file
-  // campos:
-  // match_mode: "id_informe" | "pregunta_referencia"
-  // excel_match_column: nombre columna excel que contiene el identificador
-  // id_pregunta_referencia: requerido si match_mode = "pregunta_referencia"
-  // destination_mode: "pregunta_existente" | "nueva_pregunta"
-  // id_pregunta_destino: requerido si destination_mode = "pregunta_existente"
-  // id_seccion_destino, etiqueta_nueva_pregunta, tipo_nueva_pregunta: requeridos si destination_mode = "nueva_pregunta"
-  // excel_columns_source: JSON array o string separado por coma con columnas a combinar
-  // overwrite_empty_only: "1" | "0" opcional
-  // order_nueva_pregunta: opcional
+  // ✅ express-fileupload
+  const excelFile = req.files?.file;
 
-  if (!req.file || !req.file.buffer) {
+  if (!excelFile) {
     return res.status(400).json({
       ok: false,
       error: "Debe adjuntar un archivo Excel",
+    });
+  }
+
+  // ✅ soporta useTempFiles: true y false
+  let fileBuffer = null;
+
+  try {
+    if (excelFile.data && excelFile.data.length) {
+      fileBuffer = excelFile.data;
+    } else if (excelFile.tempFilePath) {
+      fileBuffer = fs.readFileSync(excelFile.tempFilePath);
+    }
+  } catch (e) {
+    console.error("❌ No se pudo leer archivo temporal:", e);
+  }
+
+  if (!fileBuffer || !fileBuffer.length) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe adjuntar un archivo Excel válido",
+    });
+  }
+
+  const nombreArchivo = String(excelFile.name || "").toLowerCase().trim();
+
+  if (!nombreArchivo.endsWith(".xlsx") && !nombreArchivo.endsWith(".xls")) {
+    return res.status(400).json({
+      ok: false,
+      error: "Solo se permiten archivos .xlsx o .xls",
     });
   }
 
@@ -4257,14 +4288,20 @@ async function importExcelUpdateRespuestas(req, res) {
     });
   }
 
-  if (matchMode === "pregunta_referencia" && (!Number.isFinite(idPreguntaReferencia) || idPreguntaReferencia <= 0)) {
+  if (
+    matchMode === "pregunta_referencia" &&
+    (!Number.isFinite(idPreguntaReferencia) || idPreguntaReferencia <= 0)
+  ) {
     return res.status(400).json({
       ok: false,
       error: "Debe indicar id_pregunta_referencia",
     });
   }
 
-  if (destinationMode === "pregunta_existente" && (!Number.isFinite(idPreguntaDestinoBody) || idPreguntaDestinoBody <= 0)) {
+  if (
+    destinationMode === "pregunta_existente" &&
+    (!Number.isFinite(idPreguntaDestinoBody) || idPreguntaDestinoBody <= 0)
+  ) {
     return res.status(400).json({
       ok: false,
       error: "Debe indicar id_pregunta_destino",
@@ -4468,29 +4505,84 @@ async function importExcelUpdateRespuestas(req, res) {
       }
     }
 
-    // 4) leer Excel
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(req.file.buffer);
+    // 4) leer Excel universal (.xlsx / .xls)
+    let headerMap = new Map();
+    let filasExcel = [];
 
-    const worksheet = workbook.worksheets[0];
-    if (!worksheet) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        ok: false,
-        error: "El archivo Excel no contiene hojas",
-      });
-    }
+    if (nombreArchivo.endsWith(".xlsx")) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(fileBuffer);
 
-    const headerRow = worksheet.getRow(1);
-    const headerMap = new Map();
-
-    headerRow.eachCell((cell, colNumber) => {
-      const raw = valueFromCell(cell);
-      const norm = normalizeExcelHeader(raw);
-      if (norm) {
-        headerMap.set(norm, colNumber);
+      const worksheet = workbook.worksheets[0];
+      if (!worksheet) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel no contiene hojas",
+        });
       }
-    });
+
+      const headerRow = worksheet.getRow(1);
+      headerRow.eachCell((cell, colNumber) => {
+        const raw = valueFromCell(cell);
+        const norm = normalizeExcelHeader(raw);
+        if (norm) {
+          headerMap.set(norm, colNumber);
+        }
+      });
+
+      for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+        const row = worksheet.getRow(rowNumber);
+        filasExcel.push({
+          rowNumber,
+          rawValues: Array.isArray(row.values) ? row.values.slice(1) : [],
+          getCellValue: (colIndex) => valueFromCell(row.getCell(colIndex)),
+        });
+      }
+    } else {
+      const workbook = XLSX.read(fileBuffer, { type: "buffer" });
+      const sheetName = workbook.SheetNames?.[0];
+
+      if (!sheetName) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel no contiene hojas",
+        });
+      }
+
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+      });
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel está vacío",
+        });
+      }
+
+      const headerRow = rows[0] || [];
+      headerRow.forEach((value, idx) => {
+        const norm = normalizeExcelHeader(value);
+        if (norm) {
+          headerMap.set(norm, idx + 1);
+        }
+      });
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i] || [];
+        filasExcel.push({
+          rowNumber: i + 1,
+          rawValues: row,
+          getCellValue: (colIndex) => row[colIndex - 1] ?? "",
+        });
+      }
+    }
 
     const matchColumnKey = normalizeExcelHeader(excelMatchColumn);
     const matchColIndex = headerMap.get(matchColumnKey);
@@ -4515,7 +4607,9 @@ async function importExcelUpdateRespuestas(req, res) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         ok: false,
-        error: `No se encontraron columnas origen en Excel: ${missingSources.map((x) => x.original).join(", ")}`,
+        error: `No se encontraron columnas origen en Excel: ${missingSources
+          .map((x) => x.original)
+          .join(", ")}`,
       });
     }
 
@@ -4559,19 +4653,20 @@ async function importExcelUpdateRespuestas(req, res) {
     const noEncontrados = [];
     const omitidosPorDestinoNoVacio = [];
 
-    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-      const row = worksheet.getRow(rowNumber);
+    for (const fila of filasExcel) {
+      const { rowNumber, rawValues, getCellValue } = fila;
 
-      // saltar filas totalmente vacías
-      const rowHasValues = Array.isArray(row.values)
-        ? row.values.some((v, idx) => idx > 0 && v !== null && v !== undefined && String(valueFromCell({ value: v }) ?? "").trim() !== "")
+      const rowHasValues = Array.isArray(rawValues)
+        ? rawValues.some(
+            (v) => v !== null && v !== undefined && String(v).trim() !== ""
+          )
         : false;
 
       if (!rowHasValues) continue;
 
       totalFilasExcel++;
 
-      const matchRaw = valueFromCell(row.getCell(matchColIndex));
+      const matchRaw = getCellValue(matchColIndex);
       const matchValue = String(matchRaw ?? "").trim();
 
       if (!matchValue) {
@@ -4624,13 +4719,16 @@ async function importExcelUpdateRespuestas(req, res) {
       }
 
       const sourceValues = sourceColumnsResolved.map((src) =>
-        valueFromCell(row.getCell(src.colIndex))
+        getCellValue(src.colIndex)
       );
 
       const valorCombinado = firstNonEmpty(sourceValues);
 
       const tipoDestino = String(preguntaDestino?.tipo || "").trim().toLowerCase();
-      const valorNormalizado = normalizeAnswerForSaveByTipo(preguntaDestino?.tipo, valorCombinado);
+      const valorNormalizado = normalizeAnswerForSaveByTipo(
+        preguntaDestino?.tipo,
+        valorCombinado
+      );
 
       let valorTexto = null;
       let valorBool = null;
@@ -7677,17 +7775,19 @@ async function generarWordProyecto(req, res) {
       const headerCells = [
         new TableCell({
           width: { size: 7, type: WidthType.PERCENTAGE },
+          shading: { fill: "CCCCCC" },
           children: [
             new Paragraph({
-              children: [new TextRun({ text: "ID", bold: true })],
+              children: [new TextRun({ text: "ID", bold: true, color: "000000" })],
             }),
           ],
         }),
         new TableCell({
           width: { size: 13, type: WidthType.PERCENTAGE },
+          shading: { fill: "CCCCCC" },
           children: [
             new Paragraph({
-              children: [new TextRun({ text: "Fecha", bold: true })],
+              children: [new TextRun({ text: "Fecha", bold: true, color: "000000" })],
             }),
           ],
         }),
@@ -7699,12 +7799,14 @@ async function generarWordProyecto(req, res) {
         headerCells.push(
           new TableCell({
             width: { size: perQ, type: WidthType.PERCENTAGE },
+            shading: { fill: "CCCCCC" },
             children: [
               new Paragraph({
                 children: [
                   new TextRun({
-                    text: safeStr(p.etiqueta || ""),
+                    text: cleanDocxText(p.etiqueta || ""),
                     bold: true,
+                    color: "000000",
                   }),
                 ],
               }),
@@ -7719,11 +7821,11 @@ async function generarWordProyecto(req, res) {
         const rowCells = [
           new TableCell({
             width: { size: 7, type: WidthType.PERCENTAGE },
-            children: [new Paragraph(String(inf.id_informe))],
+            children: [new Paragraph(new TextRun({ text: String(inf.id_informe), color: "000000" }))],
           }),
           new TableCell({
             width: { size: 13, type: WidthType.PERCENTAGE },
-            children: [new Paragraph(_formatFechaPY(inf.fecha_creado))],
+            children: [new Paragraph(new TextRun({ text: _formatFechaPY(inf.fecha_creado), color: "000000" }))],
           }),
         ];
 
@@ -7732,7 +7834,7 @@ async function generarWordProyecto(req, res) {
 
           const cellChildren = [
             new Paragraph({
-              children: [new TextRun({ text: safeStr(val) })],
+              children: [new TextRun({ text: cleanDocxText(val), color: "000000" })],
             }),
           ];
 
@@ -7761,7 +7863,7 @@ async function generarWordProyecto(req, res) {
                   new Paragraph({
                     children: [
                       new TextRun({
-                        text: safeStr(f.descripcion),
+                        text: cleanDocxText(f.descripcion),
                         size: 18,
                         color: "666666",
                       }),
@@ -7794,7 +7896,7 @@ async function generarWordProyecto(req, res) {
 
       children.push(
         new Paragraph({
-          text: `Plantilla: ${safeStr(nombrePlantilla)}`,
+          text: `Plantilla: ${cleanDocxText(nombrePlantilla)}`,
           heading: HeadingLevel.HEADING_1,
         }),
         new Paragraph({ text: " " })
@@ -7948,7 +8050,7 @@ async function generarWordProyecto(req, res) {
 
           children.push(
             new Paragraph({
-              text: safeStr(informe.titulo || nombrePlantilla || "INFORME"),
+              text: cleanDocxText(informe.titulo || nombrePlantilla || "INFORME"),
               heading: HeadingLevel.HEADING_2,
             }),
             new Paragraph({
@@ -7971,7 +8073,7 @@ async function generarWordProyecto(req, res) {
 
             children.push(
               new Paragraph({
-                text: safeStr(sec.titulo || "Sección"),
+                text: cleanDocxText(sec.titulo || "Sección"),
                 heading: HeadingLevel.HEADING_3,
               })
             );
@@ -7987,7 +8089,7 @@ async function generarWordProyecto(req, res) {
                       new Paragraph({
                         children: [
                           new TextRun({
-                            text: safeStr(p.etiqueta),
+                            text: cleanDocxText(p.etiqueta),
                             bold: true,
                           }),
                         ],
@@ -7996,7 +8098,7 @@ async function generarWordProyecto(req, res) {
                   }),
                   new TableCell({
                     width: { size: 55, type: WidthType.PERCENTAGE },
-                    children: [new Paragraph(safeStr(valor))],
+                    children: [new Paragraph(cleanDocxText(valor))],
                   }),
                 ],
               });
@@ -8022,7 +8124,7 @@ async function generarWordProyecto(req, res) {
                   new Paragraph({
                     children: [
                       new TextRun({
-                        text: `Fotos - ${safeStr(p.etiqueta)}`,
+                        text: `Fotos - ${cleanDocxText(p.etiqueta)}`,
                         italics: true,
                       }),
                     ],
@@ -8046,7 +8148,7 @@ async function generarWordProyecto(req, res) {
                       new Paragraph({
                         children: [
                           new TextRun({
-                            text: safeStr(fx.descripcion),
+                            text: cleanDocxText(fx.descripcion),
                             size: 18,
                             color: "666666",
                           }),
@@ -8127,7 +8229,8 @@ async function generarWordProyectoRangoUnico(req, res) {
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
   const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
-  const orderDir = String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderDir =
+    String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
   const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
 
   const modo = String(req.query.modo || "normal").toLowerCase();
@@ -8200,6 +8303,14 @@ async function generarWordProyectoRangoUnico(req, res) {
     const uploadsRoot = path.join(__dirname, "..", "uploads");
     const children = [];
 
+    const addSpacer = () => {
+      children.push(new Paragraph({ text: "" }));
+    };
+
+    const addPageBreak = () => {
+      children.push(new Paragraph({ text: "", pageBreakBefore: true }));
+    };
+
     children.push(
       new Paragraph({
         text: "INFORMES DEL PROYECTO",
@@ -8225,8 +8336,8 @@ async function generarWordProyectoRangoUnico(req, res) {
       }),
       new Paragraph({
         children: [
-          new TextRun({ text: "Rango de lotes: ", bold: true }),
-          new TextRun({ text: `${fromPage} a ${toPage}` }),
+          new TextRun({ text: "Lotes: ", bold: true }),
+          new TextRun({ text: `${fromPage} al ${toPage}` }),
           new TextRun({ text: "   Registros por lote: ", bold: true }),
           new TextRun({ text: `${limit}` }),
           new TextRun({ text: "   Total informes: ", bold: true }),
@@ -8251,9 +8362,10 @@ async function generarWordProyectoRangoUnico(req, res) {
                 : `${orderBy} (${orderDir})`,
           }),
         ],
-      }),
-      new Paragraph({ text: " " })
+      })
     );
+
+    addSpacer();
 
     async function readImageForDocx(absPath, maxWidth = 1400) {
       if (!absPath || !fs.existsSync(absPath)) return null;
@@ -8280,7 +8392,8 @@ async function generarWordProyectoRangoUnico(req, res) {
 
         const out = await pipeline.jpeg({ quality: 75 }).toBuffer();
         return { buffer: out, ext: "jpg" };
-      } catch {
+      } catch (e) {
+        console.warn("No se pudo optimizar imagen:", absPath, e?.message || e);
         return null;
       }
     }
@@ -8303,14 +8416,24 @@ async function generarWordProyectoRangoUnico(req, res) {
         return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
       });
 
+      if (!preguntasOrdenadas.length) return null;
+
       const headerCells = [
         new TableCell({
           width: { size: 7, type: WidthType.PERCENTAGE },
-          children: [new Paragraph({ children: [new TextRun({ text: "ID", bold: true })] })],
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "ID", bold: true })],
+            }),
+          ],
         }),
         new TableCell({
           width: { size: 13, type: WidthType.PERCENTAGE },
-          children: [new Paragraph({ children: [new TextRun({ text: "Fecha", bold: true })] })],
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "Fecha", bold: true })],
+            }),
+          ],
         }),
       ];
 
@@ -8322,7 +8445,12 @@ async function generarWordProyectoRangoUnico(req, res) {
             width: { size: perQ, type: WidthType.PERCENTAGE },
             children: [
               new Paragraph({
-                children: [new TextRun({ text: safeStr(p.etiqueta || ""), bold: true })],
+                children: [
+                  new TextRun({
+                    text: cleanDocxText(p.etiqueta || ""),
+                    bold: true,
+                  }),
+                ],
               }),
             ],
           })
@@ -8332,25 +8460,23 @@ async function generarWordProyectoRangoUnico(req, res) {
       const rows = [new TableRow({ children: headerCells })];
 
       for (const inf of informesPlantilla) {
-        const rowCells = [];
-
-        rowCells.push(
+        const rowCells = [
           new TableCell({
             width: { size: 7, type: WidthType.PERCENTAGE },
-            children: [new Paragraph(String(inf.id_informe))],
+            children: [new Paragraph(String(inf.id_informe || ""))],
           }),
           new TableCell({
             width: { size: 13, type: WidthType.PERCENTAGE },
             children: [new Paragraph(_formatFechaPY(inf.fecha_creado))],
-          })
-        );
+          }),
+        ];
 
         for (const p of preguntasOrdenadas) {
           const val = respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
 
           const cellChildren = [
             new Paragraph({
-              children: [new TextRun({ text: safeStr(val) })],
+              children: [new TextRun({ text: cleanDocxText(val) })],
             }),
           ];
 
@@ -8379,7 +8505,7 @@ async function generarWordProyectoRangoUnico(req, res) {
                   new Paragraph({
                     children: [
                       new TextRun({
-                        text: safeStr(f.descripcion),
+                        text: cleanDocxText(f.descripcion),
                         size: 18,
                         color: "666666",
                       }),
@@ -8406,6 +8532,11 @@ async function generarWordProyectoRangoUnico(req, res) {
         rows,
       });
     }
+
+    // =========================================================
+    // 1) JUNTAR TODOS LOS INFORMES DEL RANGO COMPLETO
+    // =========================================================
+    const infosRango = [];
 
     for (let currentPage = fromPage; currentPage <= toPage; currentPage++) {
       const offset = (currentPage - 1) * limit;
@@ -8482,10 +8613,7 @@ async function generarWordProyectoRangoUnico(req, res) {
               ? "i.fecha_creado DESC, i.id_informe DESC"
               : "i.fecha_creado ASC, i.id_informe ASC";
         } else if (orderBy === "id") {
-          orderClause =
-            orderDir === "desc"
-              ? "i.id_informe DESC"
-              : "i.id_informe ASC";
+          orderClause = orderDir === "desc" ? "i.id_informe DESC" : "i.id_informe ASC";
         }
 
         params.push(limit);
@@ -8510,304 +8638,352 @@ async function generarWordProyectoRangoUnico(req, res) {
         infosPagina = q.rows || [];
       }
 
-      if (!infosPagina.length) continue;
-
-      const informesPorPlantilla = new Map();
-      for (const inf of infosPagina) {
-        const k = Number(inf.id_plantilla);
-        if (!informesPorPlantilla.has(k)) informesPorPlantilla.set(k, []);
-        informesPorPlantilla.get(k).push(inf);
+      if (infosPagina.length) {
+        infosRango.push(...infosPagina);
       }
+    }
+
+    if (!infosRango.length) {
+      return res.status(404).send("No hay informes para exportar en ese rango.");
+    }
+
+    // =========================================================
+    // 2) AGRUPAR UNA SOLA VEZ POR PLANTILLA
+    // =========================================================
+    const informesPorPlantilla = new Map();
+    for (const inf of infosRango) {
+      const k = Number(inf.id_plantilla);
+      if (!informesPorPlantilla.has(k)) informesPorPlantilla.set(k, []);
+      informesPorPlantilla.get(k).push(inf);
+    }
+
+    // =========================================================
+    // 3) ARMAR CONTENIDO UNA SOLA VEZ (SIN TITULO POR LOTE)
+    // =========================================================
+    let bloquesAgregados = 0;
+
+    for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
+      if (!Array.isArray(infosPlantilla) || !infosPlantilla.length) continue;
+
+      const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
 
       children.push(
         new Paragraph({
-          text: `LOTE ${currentPage} (${offset + 1} - ${offset + infosPagina.length})`,
+          text: `Plantilla: ${cleanDocxText(nombrePlantilla)}`,
           heading: HeadingLevel.HEADING_1,
-        }),
-        new Paragraph({ text: " " })
+        })
+      );
+      addSpacer();
+
+      const seccParams = [idPlant];
+      let seccWhereExtra = "";
+
+      if (seccionesIds.length) {
+        seccParams.push(seccionesIds);
+        seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+      }
+
+      const { rows: secciones } = await pool.query(
+        `
+        SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ${seccWhereExtra}
+        ORDER BY orden
+        `,
+        seccParams
       );
 
-      for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
-        const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
+      if (!secciones.length) continue;
 
-        children.push(
-          new Paragraph({
-            text: `Plantilla: ${safeStr(nombrePlantilla)}`,
-            heading: HeadingLevel.HEADING_2,
-          }),
-          new Paragraph({ text: " " })
-        );
+      const seccionesFiltradasIds = secciones
+        .map((s) => Number(s.id_seccion))
+        .filter(Boolean);
 
-        const seccParams = [idPlant];
-        let seccWhereExtra = "";
+      const pregParams = [idPlant];
+      let pregWhereExtra = "";
 
-        if (seccionesIds.length) {
-          seccParams.push(seccionesIds);
-          seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
-        }
+      if (seccionesFiltradasIds.length) {
+        pregParams.push(seccionesFiltradasIds);
+        pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
+      }
 
-        const { rows: secciones } = await pool.query(
+      if (preguntasIds.length) {
+        pregParams.push(preguntasIds);
+        pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+      }
+
+      const { rows: preguntas } = await pool.query(
+        `
+        SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ${pregWhereExtra}
+        ORDER BY s.orden, q.orden
+        `,
+        pregParams
+      );
+
+      const preguntasIdsFiltradas = preguntas
+        .map((x) => Number(x.id_pregunta))
+        .filter(Boolean);
+
+      const seccionesConPreguntas = secciones.filter((sec) =>
+        preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
+      );
+
+      if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
+        continue;
+      }
+
+      const idsInformes = infosPlantilla
+        .map((x) => Number(x.id_informe))
+        .filter(Boolean);
+
+      let respuestasAll = [];
+      if (idsInformes.length && preguntasIdsFiltradas.length) {
+        const respQ = await pool.query(
           `
           SELECT *
-          FROM ema.informe_seccion
-          WHERE id_plantilla = $1
-          ${seccWhereExtra}
-          ORDER BY orden
+          FROM ema.informe_respuesta
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
           `,
-          seccParams
+          [idsInformes, preguntasIdsFiltradas]
         );
+        respuestasAll = respQ.rows || [];
+      }
 
-        if (!secciones.length) continue;
-
-        const seccionesFiltradasIds = secciones
-          .map((s) => Number(s.id_seccion))
-          .filter(Boolean);
-
-        const pregParams = [idPlant];
-        let pregWhereExtra = "";
-
-        if (seccionesFiltradasIds.length) {
-          pregParams.push(seccionesFiltradasIds);
-          pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
-        }
-
-        if (preguntasIds.length) {
-          pregParams.push(preguntasIds);
-          pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
-        }
-
-        const { rows: preguntas } = await pool.query(
+      let fotosAll = [];
+      if (incluirFotos && idsInformes.length && preguntasIdsFiltradas.length && maxFotos > 0) {
+        const fotosQ = await pool.query(
           `
-          SELECT q.*
-          FROM ema.informe_pregunta q
-          JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-          WHERE s.id_plantilla = $1
-          ${pregWhereExtra}
-          ORDER BY s.orden, q.orden
+          SELECT *
+          FROM ema.informe_foto
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_informe, id_pregunta, orden
           `,
-          pregParams
+          [idsInformes, preguntasIdsFiltradas]
         );
+        fotosAll = fotosQ.rows || [];
+      }
 
-        const preguntasIdsFiltradas = preguntas
-          .map((x) => Number(x.id_pregunta))
-          .filter(Boolean);
+      const respuestasMapPorInforme = {};
+      for (const inf of idsInformes) respuestasMapPorInforme[inf] = {};
 
-        const seccionesConPreguntas = secciones.filter((sec) =>
-          preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
-        );
+      for (const r of respuestasAll) {
+        const infId = Number(r.id_informe);
+        const pId = Number(r.id_pregunta);
+        const val = buildRespuestasMap([r])[pId];
+        if (!respuestasMapPorInforme[infId]) respuestasMapPorInforme[infId] = {};
+        respuestasMapPorInforme[infId][pId] = val || "-";
+      }
 
-        if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
-          continue;
-        }
+      const fotosPorInformePorPregunta = {};
+      for (const infId of idsInformes) fotosPorInformePorPregunta[infId] = {};
 
-        const idsInformes = infosPlantilla
-          .map((x) => Number(x.id_informe))
-          .filter(Boolean);
+      if (incluirFotos && fotosAll.length && maxFotos > 0) {
+        const contadorFotos = {};
 
-        let respuestasAll = [];
-        if (idsInformes.length && preguntasIdsFiltradas.length) {
-          const respQ = await pool.query(
-            `
-            SELECT *
-            FROM ema.informe_respuesta
-            WHERE id_informe = ANY($1::int[])
-              AND id_pregunta = ANY($2::int[])
-            `,
-            [idsInformes, preguntasIdsFiltradas]
+        for (const f of fotosAll) {
+          const infId = Number(f.id_informe);
+          const pId = Number(f.id_pregunta);
+          if (!infId || !pId) continue;
+
+          const key = `${infId}_${pId}`;
+          contadorFotos[key] = contadorFotos[key] || 0;
+          if (contadorFotos[key] >= maxFotos) continue;
+
+          const abs = path.join(
+            uploadsRoot,
+            String(f.ruta_archivo || "").replace(/\//g, path.sep)
           );
-          respuestasAll = respQ.rows || [];
-        }
 
-        let fotosAll = [];
-        if (incluirFotos && idsInformes.length && preguntasIdsFiltradas.length && maxFotos > 0) {
-          const fotosQ = await pool.query(
-            `
-            SELECT *
-            FROM ema.informe_foto
-            WHERE id_informe = ANY($1::int[])
-              AND id_pregunta = ANY($2::int[])
-            ORDER BY id_informe, id_pregunta, orden
-            `,
-            [idsInformes, preguntasIdsFiltradas]
+          const img = await readImageForDocx(abs, isTabla ? 900 : 1400);
+          if (!img?.buffer) continue;
+
+          if (!fotosPorInformePorPregunta[infId][pId]) {
+            fotosPorInformePorPregunta[infId][pId] = [];
+          }
+
+          fotosPorInformePorPregunta[infId][pId].push({
+            descripcion: f.descripcion || "",
+            buffer: img.buffer,
+          });
+
+          contadorFotos[key]++;
+        }
+      }
+
+      if (!isTabla) {
+        let informesAgregadosPlantilla = 0;
+
+        for (const informe of infosPlantilla) {
+          const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
+
+          children.push(
+            new Paragraph({
+              text: cleanDocxText(informe.titulo || nombrePlantilla || "INFORME"),
+              heading: HeadingLevel.HEADING_2,
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "ID Informe: ", bold: true }),
+                new TextRun(String(informe.id_informe)),
+                new TextRun({ text: "   Fecha: ", bold: true }),
+                new TextRun(_formatFechaPY(informe.fecha_creado)),
+              ],
+            })
           );
-          fotosAll = fotosQ.rows || [];
-        }
 
-        const respuestasMapPorInforme = {};
-        for (const inf of idsInformes) respuestasMapPorInforme[inf] = {};
+          addSpacer();
 
-        for (const r of respuestasAll) {
-          const infId = Number(r.id_informe);
-          const pId = Number(r.id_pregunta);
-          const val = buildRespuestasMap([r])[pId];
-          if (!respuestasMapPorInforme[infId]) respuestasMapPorInforme[infId] = {};
-          respuestasMapPorInforme[infId][pId] = val || "-";
-        }
-
-        const fotosPorInformePorPregunta = {};
-        for (const infId of idsInformes) fotosPorInformePorPregunta[infId] = {};
-
-        if (incluirFotos && fotosAll.length && maxFotos > 0) {
-          const contadorFotos = {};
-
-          for (const f of fotosAll) {
-            const infId = Number(f.id_informe);
-            const pId = Number(f.id_pregunta);
-            if (!infId || !pId) continue;
-
-            const key = `${infId}_${pId}`;
-            contadorFotos[key] = contadorFotos[key] || 0;
-            if (contadorFotos[key] >= maxFotos) continue;
-
-            const abs = path.join(
-              uploadsRoot,
-              String(f.ruta_archivo || "").replace(/\//g, path.sep)
+          for (const sec of seccionesConPreguntas) {
+            const preguntasSec = preguntas.filter(
+              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
             );
 
-            const img = await readImageForDocx(abs, isTabla ? 900 : 1400);
-            if (!img?.buffer) continue;
-
-            if (!fotosPorInformePorPregunta[infId][pId]) {
-              fotosPorInformePorPregunta[infId][pId] = [];
-            }
-
-            fotosPorInformePorPregunta[infId][pId].push({
-              descripcion: f.descripcion || "",
-              buffer: img.buffer,
-            });
-
-            contadorFotos[key]++;
-          }
-        }
-
-        if (!isTabla) {
-          for (const informe of infosPlantilla) {
-            const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
+            if (!preguntasSec.length) continue;
 
             children.push(
               new Paragraph({
-                text: safeStr(informe.titulo || nombrePlantilla || "INFORME"),
+                text: cleanDocxText(sec.titulo || "Sección"),
                 heading: HeadingLevel.HEADING_3,
-              }),
-              new Paragraph({
-                children: [
-                  new TextRun({ text: "ID Informe: ", bold: true }),
-                  new TextRun(String(informe.id_informe)),
-                  new TextRun({ text: "   Fecha: ", bold: true }),
-                  new TextRun(_formatFechaPY(informe.fecha_creado)),
-                ],
-              }),
-              new Paragraph({ text: " " })
+              })
             );
 
-            for (const sec of seccionesConPreguntas) {
-              const preguntasSec = preguntas.filter(
-                (p) => Number(p.id_seccion) === Number(sec.id_seccion)
-              );
-              if (!preguntasSec.length) continue;
+            const rows = preguntasSec.map((p) => {
+              const valor = respuestasMap[p.id_pregunta] ?? "-";
 
-              children.push(
-                new Paragraph({
-                  text: safeStr(sec.titulo || "Sección"),
-                  heading: HeadingLevel.HEADING_4,
-                })
-              );
-
-              const rows = preguntasSec.map((p) => {
-                const valor = respuestasMap[p.id_pregunta] ?? "-";
-
-                return new TableRow({
-                  children: [
-                    new TableCell({
-                      width: { size: 45, type: WidthType.PERCENTAGE },
-                      children: [
-                        new Paragraph({
-                          children: [new TextRun({ text: safeStr(p.etiqueta), bold: true })],
-                        }),
-                      ],
-                    }),
-                    new TableCell({
-                      width: { size: 55, type: WidthType.PERCENTAGE },
-                      children: [new Paragraph(safeStr(valor))],
-                    }),
-                  ],
-                });
+              return new TableRow({
+                children: [
+                  new TableCell({
+                    width: { size: 45, type: WidthType.PERCENTAGE },
+                    children: [
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cleanDocxText(p.etiqueta),
+                            bold: true,
+                          }),
+                        ],
+                      }),
+                    ],
+                  }),
+                  new TableCell({
+                    width: { size: 55, type: WidthType.PERCENTAGE },
+                    children: [new Paragraph(cleanDocxText(valor))],
+                  }),
+                ],
               });
+            });
 
+            if (rows.length) {
               children.push(
                 new Table({
                   width: { size: 100, type: WidthType.PERCENTAGE },
                   rows,
-                }),
-                new Paragraph({ text: " " })
+                })
               );
+              addSpacer();
+            }
 
-              if (incluirFotos && maxFotos > 0) {
-                for (const p of preguntasSec) {
-                  const fotosListOriginal =
-                    fotosPorInformePorPregunta?.[informe.id_informe]?.[p.id_pregunta] || [];
-                  const fotosList = fotosListOriginal.slice(0, maxFotos);
-                  if (!fotosList.length) continue;
+            if (incluirFotos && maxFotos > 0) {
+              for (const p of preguntasSec) {
+                const fotosListOriginal =
+                  fotosPorInformePorPregunta?.[informe.id_informe]?.[p.id_pregunta] || [];
+
+                const fotosList = fotosListOriginal.slice(0, maxFotos);
+                if (!fotosList.length) continue;
+
+                children.push(
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: `Fotos - ${cleanDocxText(p.etiqueta)}`,
+                        italics: true,
+                      }),
+                    ],
+                  })
+                );
+
+                for (const fx of fotosList) {
+                  if (!fx?.buffer) continue;
 
                   children.push(
                     new Paragraph({
-                      children: [new TextRun({ text: `Fotos - ${safeStr(p.etiqueta)}`, italics: true })],
+                      children: [
+                        new ImageRun({
+                          data: fx.buffer,
+                          transformation: { width: 460, height: 260 },
+                        }),
+                      ],
                     })
                   );
 
-                  for (const fx of fotosList) {
+                  if (fx.descripcion) {
                     children.push(
                       new Paragraph({
                         children: [
-                          new ImageRun({
-                            data: fx.buffer,
-                            transformation: { width: 460, height: 260 },
+                          new TextRun({
+                            text: cleanDocxText(fx.descripcion),
+                            size: 18,
+                            color: "666666",
                           }),
                         ],
                       })
                     );
-
-                    if (fx.descripcion) {
-                      children.push(
-                        new Paragraph({
-                          children: [
-                            new TextRun({
-                              text: safeStr(fx.descripcion),
-                              size: 18,
-                              color: "666666",
-                            }),
-                          ],
-                        })
-                      );
-                    }
                   }
-
-                  children.push(new Paragraph({ text: " " }));
                 }
+
+                addSpacer();
               }
             }
-
-            children.push(new Paragraph({ text: " " }));
           }
-        } else {
-          const preguntasTodas = [...preguntas];
 
-          if (preguntasTodas.length) {
-            const tabla = await buildTablaUnica({
-              preguntasTodas,
-              informesPlantilla: infosPlantilla,
-              respuestasMapPorInforme,
-              fotosPorInformePorPregunta,
-            });
+          informesAgregadosPlantilla++;
+          bloquesAgregados++;
 
-            children.push(tabla);
-            children.push(new Paragraph({ text: " " }));
+          if (informesAgregadosPlantilla < infosPlantilla.length) {
+            addPageBreak();
           }
         }
-      }
+      } else {
+        const preguntasTodas = [...preguntas];
 
-      children.push(new Paragraph({ children: [], pageBreakBefore: true }));
+        const tabla = await buildTablaUnica({
+          preguntasTodas,
+          informesPlantilla: infosPlantilla,
+          respuestasMapPorInforme,
+          fotosPorInformePorPregunta,
+        });
+
+        if (tabla) {
+          children.push(tabla);
+          addSpacer();
+          bloquesAgregados++;
+        }
+      }
     }
+
+    if (!bloquesAgregados) {
+      return res.status(500).send("No se pudo generar contenido válido para el Word.");
+    }
+
+    if (!children.length) {
+      return res.status(500).send("Documento vacío (no se generó contenido).");
+    }
+
+    console.log("[WORD-RANGO-UNICO]");
+    console.log("Proyecto:", idProyecto);
+    console.log("Plantilla:", idPlantilla);
+    console.log("fromPage:", fromPage, "toPage:", toPage);
+    console.log("Total informes:", totalInformes);
+    console.log("Infos rango:", infosRango.length);
+    console.log("Bloques agregados:", bloquesAgregados);
+    console.log("Children:", children.length);
 
     const doc = new Document({
       sections: [
@@ -8821,6 +8997,10 @@ async function generarWordProyectoRangoUnico(req, res) {
     });
 
     const buffer = await Packer.toBuffer(doc);
+
+    if (!buffer || !buffer.length) {
+      return res.status(500).send("No se pudo generar el archivo Word.");
+    }
 
     const fileName =
       `Proyecto_${idProyecto}` +

@@ -18,6 +18,7 @@ export default function ImportarExcelActualizarModal({
   secciones = [],
   API_URL,
   authHeaders,
+  onImported,
 }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -69,6 +70,15 @@ export default function ImportarExcelActualizarModal({
       return;
     }
 
+    const fileName = String(file?.name || "").toLowerCase().trim();
+    if (!fileName.endsWith(".xlsx") && !fileName.endsWith(".xls")) {
+      Toast.fire({
+        icon: "error",
+        title: "Solo se permiten archivos .xlsx o .xls",
+      });
+      return;
+    }
+
     if (!idProyecto || !idPlantilla) {
       Toast.fire({ icon: "error", title: "Falta proyecto o plantilla" });
       return;
@@ -114,7 +124,7 @@ export default function ImportarExcelActualizarModal({
       setLoading(true);
 
       const formData = new FormData();
-      formData.append("excel", file);
+      formData.append("file", file);
       formData.append("match_mode", matchMode);
       formData.append("excel_match_column", excelMatchColumn.trim());
 
@@ -135,13 +145,15 @@ export default function ImportarExcelActualizarModal({
       formData.append("excel_columns_source", JSON.stringify(columnasList));
       formData.append("overwrite_empty_only", overwriteEmpty ? "1" : "0");
 
+      const headers = { ...(authHeaders?.() || {}) };
+      delete headers["Content-Type"];
+      delete headers["content-type"];
+
       const resp = await fetch(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantilla}/import-excel-update`,
         {
           method: "POST",
-          headers: {
-            ...authHeaders(),
-          },
+          headers,
           body: formData,
         }
       );
@@ -149,7 +161,7 @@ export default function ImportarExcelActualizarModal({
       const data = await resp.json().catch(() => ({}));
 
       if (!resp.ok) {
-        throw new Error(data.error || `Error ${resp.status}`);
+        throw new Error(data.error || data.details || `Error ${resp.status}`);
       }
 
       await Swal.fire({
@@ -169,10 +181,14 @@ export default function ImportarExcelActualizarModal({
         `,
       });
 
+      onImported?.(data);
       closeModal();
     } catch (err) {
       console.error("Error importando Excel:", err);
-      Toast.fire({ icon: "error", title: err?.message || "No se pudo importar el Excel" });
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo importar el Excel",
+      });
     } finally {
       setLoading(false);
     }
@@ -186,24 +202,30 @@ export default function ImportarExcelActualizarModal({
 
       <Modal.Body>
         <Alert variant="info" className="mb-3">
-          Este proceso actualiza <b>todos los informes de la plantilla</b> usando una columna del Excel
-          como referencia para encontrar el informe correcto.
+          Este proceso actualiza <b>todos los informes de la plantilla</b> usando una
+          columna del Excel como referencia para encontrar el informe correcto.
         </Alert>
 
         <Form.Group className="mb-3">
           <Form.Label>Archivo Excel</Form.Label>
           <Form.Control
             type="file"
-            accept=".xlsx,.xls"
+            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
+          <div className="form-text">
+            Se permiten archivos <b>.xlsx</b> y <b>.xls</b>.
+          </div>
         </Form.Group>
 
         <div className="row g-3">
           <div className="col-md-6">
             <Form.Group>
               <Form.Label>Modo de cruce</Form.Label>
-              <Form.Select value={matchMode} onChange={(e) => setMatchMode(e.target.value)}>
+              <Form.Select
+                value={matchMode}
+                onChange={(e) => setMatchMode(e.target.value)}
+              >
                 <option value="id_informe">Por ID informe</option>
                 <option value="pregunta_referencia">Por pregunta referencia</option>
               </Form.Select>
@@ -226,7 +248,10 @@ export default function ImportarExcelActualizarModal({
             <div className="col-12">
               <Form.Group>
                 <Form.Label>Pregunta referencia</Form.Label>
-                <Form.Select value={preguntaRef} onChange={(e) => setPreguntaRef(e.target.value)}>
+                <Form.Select
+                  value={preguntaRef}
+                  onChange={(e) => setPreguntaRef(e.target.value)}
+                >
                   <option value="">Seleccione una pregunta</option>
                   {preguntasNoImagen.map((p) => (
                     <option key={p.id_pregunta} value={p.id_pregunta}>
