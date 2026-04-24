@@ -94,6 +94,9 @@ async function downloadWithAuth(url, fallbackFilename) {
     const err = new Error(`HTTP ${resp.status} ${msg}`.trim());
     err.status = resp.status;
     err.data = data;
+    err.code = data?.code || "";
+    err.details = data?.details || null;
+    err.suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
     throw err;
   }
 
@@ -1103,6 +1106,27 @@ const InformesProyecto = () => {
       });
     } catch (err) {
       console.error("Error descargando un solo Word:", err);
+
+      if (err?.status === 413 && err?.code === "DOCX_EXPORT_TOO_LARGE") {
+        const details = err.details || {};
+        const fotos = Number(details.fotos || 0);
+        const estimatedMb = Number(details.estimatedMb || 0);
+        const limitMb = Number(details.limitMb || 0);
+
+        await fireSwalTop({
+          icon: "warning",
+          title: "No se puede generar un unico Word con fotos.",
+          html: `
+            <div style="text-align:left">
+              <p>El rango seleccionado tiene <b>${fotos}</b> fotos y un peso estimado de <b>${estimatedMb} MB</b>.</p>
+              <p>Limite permitido: <b>${limitMb} MB</b>.</p>
+              <p>Usa exportacion por lotes, exporta sin fotos o reduci el rango seleccionado.</p>
+            </div>
+          `,
+        });
+        return;
+      }
+
       Toast.fire({
         icon: "error",
         title: err?.message || "No se pudo descargar el Word único del rango.",

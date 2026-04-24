@@ -7271,6 +7271,9 @@ try { sharp = require("sharp"); } catch { /* si no estÃ¡, se omite */ }
 //    - muestra rango real del lote
 // =========================
 
+const DOCX_UNICO_FOTOS_MAX_MB = 120;
+const DOCX_UNICO_FOTO_FALLBACK_BYTES = 1024 * 1024;
+
 function normalizeTextForSort(v) {
   return String(v || "")
     .normalize("NFD")
@@ -8655,6 +8658,128 @@ async function generarWordProyectoRangoUnico(req, res) {
       const k = Number(inf.id_plantilla);
       if (!informesPorPlantilla.has(k)) informesPorPlantilla.set(k, []);
       informesPorPlantilla.get(k).push(inf);
+    }
+
+    if (incluirFotos && maxFotos > 0) {
+      let fotosEstimadas = 0;
+      let bytesEstimados = 0;
+
+      for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
+        const idsInformes = (infosPlantilla || [])
+          .map((x) => Number(x.id_informe))
+          .filter(Boolean);
+
+        if (!idsInformes.length) continue;
+
+        const seccParams = [idPlant];
+        let seccWhereExtra = "";
+
+        if (seccionesIds.length) {
+          seccParams.push(seccionesIds);
+          seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+        }
+
+        const { rows: seccionesPreflight } = await pool.query(
+          `
+          SELECT id_seccion
+          FROM ema.informe_seccion
+          WHERE id_plantilla = $1
+          ${seccWhereExtra}
+          ORDER BY orden
+          `,
+          seccParams
+        );
+
+        const seccionesFiltradasIds = (seccionesPreflight || [])
+          .map((s) => Number(s.id_seccion))
+          .filter(Boolean);
+
+        if (!seccionesFiltradasIds.length) continue;
+
+        const pregParams = [idPlant, seccionesFiltradasIds];
+        let pregWhereExtra = ` AND s.id_seccion = ANY($2::int[]) `;
+
+        if (preguntasIds.length) {
+          pregParams.push(preguntasIds);
+          pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+        }
+
+        const { rows: preguntasPreflight } = await pool.query(
+          `
+          SELECT q.id_pregunta
+          FROM ema.informe_pregunta q
+          JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+          WHERE s.id_plantilla = $1
+          ${pregWhereExtra}
+          ORDER BY s.orden, q.orden
+          `,
+          pregParams
+        );
+
+        const preguntasIdsFiltradas = (preguntasPreflight || [])
+          .map((x) => Number(x.id_pregunta))
+          .filter(Boolean);
+
+        if (!preguntasIdsFiltradas.length) continue;
+
+        const { rows: fotosPreflight } = await pool.query(
+          `
+          SELECT id_informe, id_pregunta, ruta_archivo
+          FROM ema.informe_foto
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_informe, id_pregunta, orden
+          `,
+          [idsInformes, preguntasIdsFiltradas]
+        );
+
+        const contadorFotos = {};
+
+        for (const f of fotosPreflight || []) {
+          const infId = Number(f.id_informe);
+          const pId = Number(f.id_pregunta);
+          if (!infId || !pId) continue;
+
+          const key = `${infId}_${pId}`;
+          contadorFotos[key] = contadorFotos[key] || 0;
+          if (contadorFotos[key] >= maxFotos) continue;
+
+          contadorFotos[key]++;
+          fotosEstimadas++;
+
+          try {
+            const abs = path.join(
+              uploadsRoot,
+              String(f.ruta_archivo || "").replace(/\//g, path.sep)
+            );
+            const stat = fs.statSync(abs);
+            bytesEstimados += stat?.isFile() ? stat.size : DOCX_UNICO_FOTO_FALLBACK_BYTES;
+          } catch {
+            bytesEstimados += DOCX_UNICO_FOTO_FALLBACK_BYTES;
+          }
+        }
+      }
+
+      const estimatedMb = Math.ceil(bytesEstimados / (1024 * 1024));
+
+      if (estimatedMb > DOCX_UNICO_FOTOS_MAX_MB) {
+        return res.status(413).json({
+          ok: false,
+          code: "DOCX_EXPORT_TOO_LARGE",
+          message: "El Word único supera el límite permitido para exportación con fotos.",
+          details: {
+            informes: infosRango.length,
+            fotos: fotosEstimadas,
+            estimatedMb,
+            limitMb: DOCX_UNICO_FOTOS_MAX_MB,
+          },
+          suggestions: [
+            "Exportar sin fotos",
+            "Exportar por lotes",
+            "Reducir el rango seleccionado",
+          ],
+        });
+      }
     }
 
     // =========================================================
