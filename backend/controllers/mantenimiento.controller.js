@@ -1142,14 +1142,23 @@ async function procesarArchivosMantenimiento(req, res) {
         partes: { shp: !!g[".shp"], dbf: !!g[".dbf"], shx: !!g[".shx"] },
       });
 
-      const forced =
-        mapping?.[logicalNorm] ||
-        mapping?.[logicalBase] ||
-        mapping?.[String(logicalBase).toUpperCase()] ||
-        mapping?.[uniqueNorm] ||
-        mapping?.[baseUnique] ||
-        mapping?.[String(baseUnique).toUpperCase()] ||
+      // ✅ Soporte de mapping enriquecido: { tabla, tipo_poligono } o string plano (compatibilidad)
+      const rawForced =
+        mapping?.[logicalNorm] ??
+        mapping?.[logicalBase] ??
+        mapping?.[String(logicalBase).toUpperCase()] ??
+        mapping?.[uniqueNorm] ??
+        mapping?.[baseUnique] ??
+        mapping?.[String(baseUnique).toUpperCase()] ??
         null;
+
+      // Si el valor es un objeto enriquecido, extraemos tabla y tipo_poligono por archivo;
+      // si es string plano (legado), lo usamos tal cual sin modificar el tipo global.
+      const isMappingObj = rawForced && typeof rawForced === "object" && !Array.isArray(rawForced);
+      const forced              = isMappingObj ? (rawForced.tabla || null) : rawForced;
+      const tipoPoligonoForSHP  = isMappingObj
+        ? (rawForced.tipo_poligono || tipoPoligono)
+        : tipoPoligono;
 
       const isDoc = logicalNorm === "DOC" || logicalNorm === "DOCUMENT" || logicalNorm === "DOC_KML";
 
@@ -1200,7 +1209,7 @@ async function procesarArchivosMantenimiento(req, res) {
               feat,
               tipoExtra,
               username: req.user?.username || "Sistema",
-              tipoPoligono,
+              tipoPoligono: tipoPoligonoForSHP,  // ✅ usa el tipo_poligono por archivo
             });
             if (ok) localCount++;
           }
@@ -1306,10 +1315,17 @@ async function procesarArchivosMantenimiento(req, res) {
       const effectiveBase = baseFile === "DOC" ? parentFolder : baseFile;
       const baseNorm = normalizeBaseForMatch(effectiveBase);
 
-      const forced = mapping?.[baseNorm] || mapping?.[effectiveBase] || mapping?.[String(effectiveBase).toUpperCase()] || null;
+      // ✅ Soporte de mapping enriquecido: { tabla, tipo_poligono } o string plano (compatibilidad)
+      const rawForced = mapping?.[baseNorm] ?? mapping?.[effectiveBase] ?? mapping?.[String(effectiveBase).toUpperCase()] ?? null;
+
+      const isMappingObjKml = rawForced && typeof rawForced === "object" && !Array.isArray(rawForced);
+      const forcedKml             = isMappingObjKml ? (rawForced.tabla || null) : rawForced;
+      const tipoPoligonoForKml    = isMappingObjKml
+        ? (rawForced.tipo_poligono || tipoPoligono)
+        : tipoPoligono;
 
       const tabla =
-        forced ||
+        forcedKml ||
         (baseNorm === "DOC" ? defaultTabla : null) ||
         tablaPorBaseNorm(baseNorm) ||
         defaultTabla ||
@@ -1353,7 +1369,7 @@ async function procesarArchivosMantenimiento(req, res) {
           feat,
           tipoExtra,
           username: req.user?.username || "Sistema",
-          tipoPoligono,
+          tipoPoligono: tipoPoligonoForKml,  // ✅ usa el tipo_poligono por archivo
         });
 
         if (ok) {
@@ -1410,15 +1426,25 @@ async function procesarArchivosMantenimiento(req, res) {
   } catch (err) {
     console.error("❌ Error en mantenimiento:", err);
     const status = Number(err?.statusCode) || 500;
-    return res.status(status).json({
+    let message = "Error al ejecutar mantenimiento.";
+    
+    // ✅ Captura específica de errores de tipo de geometría (PostGIS)
+    const errStr = String(err?.message || "");
+    if (errStr.includes("Geometry type (LineString) does not match column type (MultiPolygon)")) {
+      message = "El archivo contiene líneas (rutas) en lugar de polígonos cerrados. Por favor, verificá el archivo KMZ/SHP.";
+    } else if (errStr.includes("ST_Transform") || errStr.includes("SRID")) {
+      message = "Error en la transformación de coordenadas. Verificá el sistema de referencia del archivo.";
+    } else if (status === 500 && isGdalSpawnError(err)) {
+      message = "GDAL/OGR no está instalado o no es accesible en el servidor.";
+    }
+
+    return res.status(status === 500 ? 400 : status).json({
       success: false,
       ok: false,
       inserted: 0,
-      message:
-        status === 500 && isGdalSpawnError(err)
-          ? "GDAL/OGR no está instalado o no es accesible en el servidor."
-          : "Error al ejecutar mantenimiento.",
-      detalle: err.message,
+      message,
+      error: message, // Para compatibilidad con el frontend
+      detalle: errStr,
     });
   }
 }

@@ -50,6 +50,12 @@ export const projectHomeApi = {
     const { data } = await axios.get(`${API_URL}/project-home/resumen`, config);
     return data;
   },
+
+  getProjectHomeExecutiveResumen: async ({ id_proyecto }) => {
+    const config = { ...getAuthConfig(), params: { id_proyecto } };
+    const { data } = await axios.get(`${API_URL}/project-home/resumen-ejecutivo`, config);
+    return data;
+  },
   getProjectHomeConfig: async ({ id_proyecto, id_plantilla }) => {
     const params = { id_proyecto };
     if (id_plantilla) params.id_plantilla = id_plantilla;

@@ -206,46 +206,6 @@ export default function GVCharts({ dashboard, onCompositionSelect, onMejoraPhase
 
     return (
         <div className="mt-4">
-            {hierarchyEnabled && (
-                <div className="row g-4 mb-4">
-                    <div className="col-12">
-                        <div className="card shadow-sm h-100">
-                            <div className="card-body">
-                                <h5 className="card-title text-center text-secondary mb-3">{hierarchyBar.title || "Jerarquía"}</h5>
-                                <div className="gv-chartWrap gv-chart-box" style={{ minHeight: 260 }}>
-                                    {hierarchyData && hierarchyData.labels.length > 0 ? (
-                                        <Bar
-                                            data={hierarchyData}
-                                            options={hierarchyOptions}
-                                        />
-                                    ) : (
-                                        <div className="d-flex h-100 align-items-center justify-content-center text-muted">
-                                            Sin datos
-                                        </div>
-                                    )}
-                                </div>
-                                {hierarchyLabels.length > 0 && (
-                                    <div className="mt-3 small">
-                                        {hierarchyLabels.map((label, i) => {
-                                            const cens = hierarchyCensados[i] ?? 0;
-                                            const uni = hierarchyUniverso[i] ?? 0;
-                                            const pct = hierarchyPct[i] ?? 0;
-                                            const isActive = selectedIdx !== null && i === selectedIdx;
-                                            return (
-                                                <div key={`${label}-${i}`} className={`d-flex justify-content-between ${isActive ? "fw-semibold" : ""}`}>
-                                                    <span>{label}</span>
-                                                    <span>{cens} / {uni} ({pct.toFixed(1)}%)</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <div className="row g-4">
                 {/* Card 1: Composición */}
                 <div className="col-md-4">

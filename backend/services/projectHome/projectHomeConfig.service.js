@@ -61,11 +61,14 @@ function normalizeIdList(v) {
   return Array.from(new Set(out));
 }
 
-function isKpiSummaryCandidate(summary) {
+function isKpiSummaryCandidate(summary, isForced = false) {
   if (!summary) return false;
   if (summary.summary_type !== "counts") return false;
   const distinct = Number(summary.distinct_count) || 0;
-  if (!(distinct > 1 && distinct <= 10)) return false;
+  // If forced, we are more lenient with category counts (up to 100)
+  // because the frontend can handle it with the "list" view.
+  const maxCategories = isForced ? 100 : 10;
+  if (!(distinct > 1 && distinct <= maxCategories)) return false;
   if (!Array.isArray(summary.items) || summary.items.length === 0) return false;
   const total = summary.items.reduce((acc, it) => acc + (Number(it?.count) || 0), 0);
   return total > 0;
@@ -290,7 +293,7 @@ function resolveProjectHomeKpiOverridesFromSummaries(
   // primary
   if (cfgPrimaryId) {
     const s = byId.get(cfgPrimaryId);
-    if (isKpiSummaryCandidate(s)) {
+    if (isKpiSummaryCandidate(s, true)) {
       resolved.primary = s;
       resolved.has_any_kpi_override = true;
       applied_overrides.push("kpi_primary_field_id");
@@ -305,7 +308,7 @@ function resolveProjectHomeKpiOverridesFromSummaries(
     for (const id of cfgSecondaryIds) {
       if (resolved.primary && toInt(resolved.primary?.id_pregunta, null) === id) continue;
       const s = byId.get(id);
-      if (!isKpiSummaryCandidate(s)) continue;
+      if (!isKpiSummaryCandidate(s, true)) continue;
       sec.push(s);
       if (sec.length >= 2) break;
     }

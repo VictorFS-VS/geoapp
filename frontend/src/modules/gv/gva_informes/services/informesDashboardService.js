@@ -72,6 +72,24 @@ export async function getResumen(params = {}) {
     }
   }
 
+  // Configuración explícita para KPIs y comportamientos temporales
+  if (params.kpi_primary_field_id) {
+    qp.set("kpi_primary_field_id", String(params.kpi_primary_field_id));
+  }
+  if (params.kpi_secondary_field_ids && Array.isArray(params.kpi_secondary_field_ids)) {
+    try {
+      qp.set("kpi_secondary_field_ids", JSON.stringify(params.kpi_secondary_field_ids));
+    } catch (e) {
+      console.warn("getResumen: falló serialización kpi_secondary_field_ids", e);
+    }
+  }
+  if (params.preferred_date_field_id) {
+    qp.set("preferred_date_field_id", String(params.preferred_date_field_id));
+  }
+  if (params.preferred_time_grouping) {
+    qp.set("preferred_time_grouping", String(params.preferred_time_grouping));
+  }
+
   const url = `${API_URL}/informes-dashboard/resumen?${qp.toString()}`;
   const resp = await fetch(url, { headers: { ...authHeaders() } });
 

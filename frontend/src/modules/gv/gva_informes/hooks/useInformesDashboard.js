@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getResumen, getPlantillas, getPlantillaMetadata } from "../services/informesDashboardService";
+import { projectHomeApi } from "../../../projectHome/projectHome.service";
 
 const MAX_DEFAULT_SELECTED_FIELDS = 10;
 const DEFAULT_TEMPORAL_SOURCE_ID = "__created_at";
@@ -280,6 +281,8 @@ export function useInformesDashboard() {
   const [metadataLoading, setMetadataLoading] = useState(false);
   const [metadataError, setMetadataError] = useState("");
   const [metadata, setMetadata] = useState(null);
+  const [dbConfig, setDbConfig] = useState(null);
+  const [dbConfigLoading, setDbConfigLoading] = useState(false);	
 
   const [selectedFieldIds, setSelectedFieldIds] = useState(new Set());
   const [selectedFilterFieldIds, setSelectedFilterFieldIds] = useState(new Set());
@@ -622,6 +625,11 @@ export function useInformesDashboard() {
     };
   };
 
+  const [appliedKpiPrimaryId, setAppliedKpiPrimaryId] = useState(null);
+  const [appliedKpiSecondaryIds, setAppliedKpiSecondaryIds] = useState([]);
+  const [appliedPreferredDateFieldId, setAppliedPreferredDateFieldId] = useState(null);
+  const [appliedPreferredTimeGrouping, setAppliedPreferredTimeGrouping] = useState(null);
+
   const buildAppliedSnapshot = ({
     plantillaId,
     fieldIds,
@@ -631,6 +639,10 @@ export function useInformesDashboard() {
     filtersState,
     fields,
     plantillaNombre,
+    kpiPrimaryId,
+    kpiSecondaryIds,
+    preferredDateFieldId,
+    preferredTimeGrouping,
   }) => {
     const fieldsById = new Map();
     for (const f of fields) fieldsById.set(f.id_pregunta, f);
@@ -692,6 +704,10 @@ export function useInformesDashboard() {
       filtersPayload: payload,
       fieldLabels: labels,
       filtersSummary: summary,
+      kpiPrimaryId: kpiPrimaryId ?? null,
+      kpiSecondaryIds: Array.isArray(kpiSecondaryIds) ? kpiSecondaryIds : [],
+      preferredDateFieldId: preferredDateFieldId ?? null,
+      preferredTimeGrouping: preferredTimeGrouping ?? null,
     };
   };
 
@@ -736,8 +752,7 @@ export function useInformesDashboard() {
       setLoading(true);
       setError("");
       try {
-        const selectedFieldsApplied = Array.from(appliedSelectedFieldIds || []);
-        const resp = await getResumen({
+        const resParams = {
           ...params,
           id_plantilla: appliedPlantillaId || params.id_plantilla,
           filters: appliedFiltersPayload,
@@ -749,7 +764,13 @@ export function useInformesDashboard() {
           search_text: appliedSearchText || undefined,
           search_field_ids: Array.from(appliedSearchFieldIds || []),
           interactive_filters: appliedInteractiveFilters,
-        });
+          kpi_primary_field_id: appliedKpiPrimaryId,
+          kpi_secondary_field_ids: appliedKpiSecondaryIds,
+          preferred_date_field_id: appliedPreferredDateFieldId,
+          preferred_time_grouping: appliedPreferredTimeGrouping,
+        };
+        console.log("useInformesDashboard: Fetching resumen with config", resParams);
+        const resp = await getResumen(resParams);
         setData(resp);
       } catch (e) {
         setError(String(e?.message || e));
@@ -769,6 +790,10 @@ export function useInformesDashboard() {
     appliedSearchText,
     appliedSearchFieldIds,
     appliedInteractiveFilters,
+    appliedKpiPrimaryId,
+    appliedKpiSecondaryIds,
+    appliedPreferredDateFieldId,
+    appliedPreferredTimeGrouping,
   ]);
 
   useEffect(() => {
@@ -873,6 +898,10 @@ export function useInformesDashboard() {
           search_text: appliedSearchText || undefined,
           search_field_ids: Array.from(appliedSearchFieldIds || []),
           interactive_filters: appliedInteractiveFilters,
+          kpi_primary_field_id: appliedKpiPrimaryId,
+          kpi_secondary_field_ids: appliedKpiSecondaryIds,
+          preferred_date_field_id: appliedPreferredDateFieldId,
+          preferred_time_grouping: appliedPreferredTimeGrouping,
         });
         if (!cancelled) setData(resp);
       } catch (e) {
@@ -897,6 +926,10 @@ export function useInformesDashboard() {
     appliedSearchText,
     appliedSearchFieldIds,
     appliedInteractiveFilters,
+    appliedKpiPrimaryId,
+    appliedKpiSecondaryIds,
+    appliedPreferredDateFieldId,
+    appliedPreferredTimeGrouping,
   ]);
 
   useEffect(() => {
@@ -963,6 +996,37 @@ export function useInformesDashboard() {
     };
   }, [params.id_proyecto, selectedPlantillaId]);
 
+  // Nuevo efecto para cargar la configuración desde la DB (fuente única de verdad)
+  useEffect(() => {
+    let cancelled = false;
+    const projectId = params.id_proyecto;
+    const plantillaId = selectedPlantillaId;
+    if (!projectId || !plantillaId) return;
+
+    (async () => {
+      setDbConfigLoading(true);
+      setDbConfig(null);
+      try {
+        const payload = await projectHomeApi.getProjectHomeConfig({ 
+          id_proyecto: projectId, 
+          id_plantilla: plantillaId 
+        });
+        if (!cancelled) {
+          // Usamos effective_config para tener los fallbacks automáticos del backend si no hay manual
+          setDbConfig(payload?.effective_config || payload?.config || null);
+        }
+      } catch (err) {
+        console.error("useInformesDashboard: Error fetching DB config", err);
+      } finally {
+        if (!cancelled) setDbConfigLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params.id_proyecto, selectedPlantillaId]);
+
   useEffect(() => {
     const previousId = previousSelectedPlantillaIdRef.current;
     if (
@@ -997,9 +1061,9 @@ export function useInformesDashboard() {
 
   useEffect(() => {
     const isMetadataReady = !metadataLoading && metadata && Number(metadata.plantilla?.id_plantilla) === Number(selectedPlantillaId);
-    if (!selectedPlantillaId || !isMetadataReady || !availableFields.length) return;
+    if (!selectedPlantillaId || !isMetadataReady || !availableFields.length || dbConfigLoading) return;
 
-
+    // 0. Preparar sets de ayuda para validación
     const resultableIds = new Set(
       availableFields.filter((f) => f.resultable).map((f) => f.id_pregunta)
     );
@@ -1007,21 +1071,42 @@ export function useInformesDashboard() {
       availableFields.filter((f) => f.structured_filterable).map((f) => f.id_pregunta)
     );
 
+    // 1. Obtener config del backend (prioridad)
+    const backendRaw = dbConfig || null;
+    const backendMapped = backendRaw ? {
+      selectedFieldIds: [
+        ...(backendRaw.kpi_primary_field_id ? [Number(backendRaw.kpi_primary_field_id)] : []),
+        ...(Array.isArray(backendRaw.kpi_secondary_field_ids) ? backendRaw.kpi_secondary_field_ids.map(Number) : [])
+      ],
+      dateFieldId: backendRaw.preferred_date_field_id,
+      timeGrouping: backendRaw.preferred_time_grouping,
+      // No manejamos filtros dinámicos ni búsqueda en project_home_config (DB), 
+      // dejamos que sanitizePersistedConfig use defaults para lo que falte.
+    } : null;
+
+    // 2. Obtener config local (cache secundaria/fallback)
     const rawLocalStored = readStoredConfig(params.id_proyecto, selectedPlantillaId);
+
     const localStored = sanitizePersistedConfig(
       rawLocalStored,
       availableFields,
       availableTemporalSources
     );
+
     const memoryStored = sanitizePersistedConfig(
       draftConfigByPlantillaRef.current[String(selectedPlantillaId)],
       availableFields,
       availableTemporalSources
     );
-    const baseDraft =
-      localStored ||
-      memoryStored ||
-      buildDefaultDraftConfig(availableFields);
+
+    // Fuente de verdad: DB (si existe con campos específicos) > LocalStorage > Memoria > Default
+    const hasDbConfig = backendMapped && (backendMapped.selectedFieldIds.length > 0 || backendMapped.dateFieldId);
+    
+    // Si tenemos config de DB, la tratamos como base, pero permitimos que localStorage rellene 
+    // cosas que no están en DB (como filtros interactivos o tipos de gráfico) para suavizar la UX.
+    const baseDraft = hasDbConfig 
+      ? { ...backendMapped, fieldChartTypes: localStored?.fieldChartTypes || {} } 
+      : (localStored || memoryStored || buildDefaultDraftConfig(availableFields));
     const persistedDateFieldId = localStored?.dateFieldId || memoryStored?.dateFieldId || null;
     const storedDraft = sanitizeTemporalDraft({
       draft: baseDraft,
@@ -1116,6 +1201,10 @@ export function useInformesDashboard() {
       filtersState: nextDynamicFilters,
       fields: availableFields,
       plantillaNombre: metadata?.plantilla?.nombre || "",
+      kpiPrimaryId: dbConfig?.kpi_primary_field_id,
+      kpiSecondaryIds: dbConfig?.kpi_secondary_field_ids,
+      preferredDateFieldId: dbConfig?.preferred_date_field_id,
+      preferredTimeGrouping: dbConfig?.preferred_time_grouping,
     });
 
     appliedConfigByPlantillaRef.current[String(selectedPlantillaId)] = initialApplied;
@@ -1139,6 +1228,10 @@ export function useInformesDashboard() {
     setAppliedFiltersPayload(initialApplied.filtersPayload);
     setAppliedFieldLabels(initialApplied.fieldLabels);
     setAppliedFiltersSummary(initialApplied.filtersSummary);
+    setAppliedKpiPrimaryId(initialApplied.kpiPrimaryId || null);
+    setAppliedKpiSecondaryIds(initialApplied.kpiSecondaryIds || []);
+    setAppliedPreferredDateFieldId(initialApplied.preferredDateFieldId || null);
+    setAppliedPreferredTimeGrouping(initialApplied.preferredTimeGrouping || null);
     initialRestoredPlantillaIdRef.current = null;
   }, [selectedPlantillaId, availableFields, availableTemporalSources, metadata?.plantilla?.nombre, params.id_plantilla, appliedPlantillaId]);
 

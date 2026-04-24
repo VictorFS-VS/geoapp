@@ -36,7 +36,7 @@ function cmpNum(a, b) {
  * - prioritizes tipo === "semaforo" if present
  * - stable ordering by (seccion.orden, pregunta.orden, id_pregunta)
  */
-async function getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla }) {
+async function getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla, config = null }) {
   if (!id_plantilla) return [];
 
   const metaReq = {
@@ -48,6 +48,48 @@ async function getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla }) 
   const r = await callController(getPlantillaDashboardMetadata, metaReq);
   const meta = r.payload;
   if (r.statusCode >= 400 || !meta?.ok || !Array.isArray(meta.secciones)) return [];
+
+  // Capture forced KPI IDs
+  let forcedIds = [];
+  
+  // 1. From Config (Persisted in DB)
+  if (config) {
+    const primaryId = Number(config.kpi_primary_field_id);
+    if (Number.isFinite(primaryId) && primaryId > 0) forcedIds.push(primaryId);
+    
+    const secondaries = config.kpi_secondary_field_ids;
+    if (secondaries) {
+      try {
+        const parsed = typeof secondaries === "string" ? JSON.parse(secondaries) : secondaries;
+        if (Array.isArray(parsed)) {
+          for (const id of parsed) {
+            const nid = Number(id);
+            if (Number.isFinite(nid) && nid > 0) forcedIds.push(nid);
+          }
+        }
+      } catch (_e) { /* ignore */ }
+    }
+  }
+
+  // 2. From Query (Sent by frontend/overrides) - Query has priority over config if present
+  const qPrimaryId = Number(req?.query?.kpi_primary_field_id);
+  if (Number.isFinite(qPrimaryId) && qPrimaryId > 0) {
+    forcedIds = forcedIds.filter(id => id !== qPrimaryId); // avoid duplicates
+    forcedIds.unshift(qPrimaryId); // query primary goes first
+  }
+  
+  const qSecondariesRaw = req?.query?.kpi_secondary_field_ids;
+  if (qSecondariesRaw) {
+    try {
+      const parsed = typeof qSecondariesRaw === "string" ? JSON.parse(qSecondariesRaw) : qSecondariesRaw;
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          const nid = Number(id);
+          if (Number.isFinite(nid) && nid > 0 && !forcedIds.includes(nid)) forcedIds.push(nid);
+        }
+      }
+    } catch (_e) { /* ignore */ }
+  }
 
   const eligibles = [];
   for (const sec of meta.secciones) {
@@ -75,10 +117,23 @@ async function getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla }) 
     return cmpNum(a.id, b.id);
   });
 
+  const selectedForced = [];
   const semaforos = [];
   const rest = [];
   const seen = new Set();
+  const forcedSet = new Set(forcedIds);
 
+  // 1. First Pass: Forced IDs (if they are valid eligibles)
+  const eligibleMap = new Map(eligibles.map(e => [e.id, e]));
+  for (const id of forcedIds) {
+    if (seen.has(id)) continue;
+    if (eligibleMap.has(id)) {
+      seen.add(id);
+      selectedForced.push(id);
+    }
+  }
+
+  // 2. Second Pass: Rest (semaphores prioritized)
   for (const e of eligibles) {
     if (seen.has(e.id)) continue;
     seen.add(e.id);
@@ -86,7 +141,7 @@ async function getProjectHomeSelectedFields({ req, id_proyecto, id_plantilla }) 
     else rest.push(e.id);
   }
 
-  return semaforos.concat(rest).slice(0, 20);
+  return selectedForced.concat(semaforos).concat(rest).slice(0, 20);
 }
 
 /**

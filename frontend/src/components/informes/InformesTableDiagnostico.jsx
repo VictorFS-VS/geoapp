@@ -22,7 +22,8 @@ export default function InformesTableDiagnostico({
   setIdRegistroSel,
   setShowScoringModal,
   handleGenerar,
-  abrirVer
+  abrirVer,
+  formulaActiva,
 }) {
   return (
     <div className="table-responsive shadow-sm rounded border">
@@ -64,13 +65,30 @@ export default function InformesTableDiagnostico({
               indicatorIcon = hayDiferencia ? "bi-record-circle-fill" : "bi-check-circle-fill";
             }
 
+            const isOutdated = 
+              formulaActiva && 
+              inf.version_formula != null && 
+              Number(inf.version_formula) < Number(formulaActiva.version);
+
             return (
               <tr key={inf.id_informe}>
                 <td className="ps-3 align-middle py-2">
                   <Badge bg="secondary" className="fw-normal">#{inf.id_informe}</Badge>
                 </td>
                 <td className="text-center fw-bold text-primary align-middle py-2">
-                  {inf.score_total != null ? Number(inf.score_total).toFixed(1) : "-"}
+                  <div className="d-flex flex-column align-items-center">
+                    <span>{inf.score_total != null ? Number(inf.score_total).toFixed(1) : "-"}</span>
+                    {isOutdated && (
+                      <OverlayTrigger
+                        placement="bottom"
+                        overlay={<Tooltip>Resultados calculados con versión antigua de la fórmula (V{inf.version_formula}). Se recomienda volver a evaluar para aplicar reglas V{formulaActiva.version}.</Tooltip>}
+                      >
+                        <Badge bg="warning" text="dark" className="mt-1" style={{ fontSize: '0.6rem', cursor: 'help' }}>
+                          <i className="bi bi-exclamation-triangle-fill me-1"></i>V{inf.version_formula}
+                        </Badge>
+                      </OverlayTrigger>
+                    )}
+                  </div>
                 </td>
                 <td className="text-center align-middle py-2">
                    <Badge bg={autoData.bg} className="px-2" style={{ minWidth: '70px' }}>{autoData.text}</Badge>

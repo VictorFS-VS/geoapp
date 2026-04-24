@@ -18,6 +18,16 @@ router.get(
 );
 
 /* =========================================================
+   ESTADÍSTICAS
+========================================================= */
+router.get(
+  "/stats",
+  verifyToken,
+  requirePerm("quejas_reclamos.read"),
+  quejasCtrl.obtenerEstadisticasQuejas
+);
+
+/* =========================================================
    OBTENER UNO
 ========================================================= */
 router.get(

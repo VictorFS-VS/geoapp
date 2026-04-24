@@ -16,11 +16,13 @@ import { listarProyectosParaSelect } from "@/services/proyectosService";
 import Swal from "sweetalert2";
 import { alerts } from "@/utils/alerts";
 import QRCode from "qrcode";
+import { FaCaretUp, FaCaretDown } from "react-icons/fa";
 import ImportarRespuestasExcelModal from "@/components/informes/ImportarRespuestasExcelModal";
 import ImportarInformesNuevoModal from "@/modules/informes/ImportarInformesNuevoModal";
 import DuplicarPlantillaModal from "@/components/informes/DuplicarPlantillaModal";
 import ScoringBuilderTab from "@/modules/diagnostico/ScoringBuilderTab";
 import { hasPerm as hasUserPerm } from "@/utils/auth";
+import "@/styles/plantilla-builder-buttons.css";
 
 /* =========================
    API base (robusto)
@@ -1770,6 +1772,80 @@ export default function InformeBuilder() {
     setCollapsedBySection((prev) => ({ ...prev, [idSeccion]: false }));
   }
 
+  function openDuplicarPregunta(idSeccion, preg) {
+    if (!canEditSelected) return toastWarn("Solo lectura: no tenés permiso para editar.");
+    setPreguntaEditId(null);
+    setPreguntaSeccionId(idSeccion);
+
+    const sec = (estructura?.secciones || []).find((s) => Number(s.id_seccion) === Number(idSeccion));
+    const nextOrden = (sec?.preguntas?.length || 0) + 1;
+
+    const init = {
+      etiqueta: preg.etiqueta ? `${preg.etiqueta} (copia)` : "Pregunta (copia)",
+      tipo: preg.tipo || "texto",
+      opciones_json: preg.opciones_json ?? null,
+      obligatorio: !!preg.obligatorio,
+      orden: nextOrden,
+      permite_foto: !!preg.permite_foto,
+      id_unico: false,
+      visible_if: preg.visible_if ?? null,
+      required_if: preg.required_if ?? null,
+      visible_en_listado: !!preg.visible_en_listado,
+    };
+
+    setPreguntaForm(init);
+    setVisibleIfText(safeStringifyJson(init.visible_if));
+    setRequiredIfText(safeStringifyJson(init.required_if));
+
+    const ui =
+      tryLoadRuleUIFromCond(init.visible_if, true, false) || tryLoadRuleUIFromCond(init.required_if, false, true);
+
+    if (ui) {
+      setUseSimpleRules(true);
+      setRuleUI(ui);
+    } else {
+      setUseSimpleRules(true);
+      setRuleUI({
+        enabled: false,
+        parentId: "",
+        when: "EQ_TRUE",
+        valueText: "",
+        valueList: [],
+        applyVisible: true,
+        applyRequired: true,
+      });
+    }
+
+    if (String(init.tipo).toLowerCase() === "semaforo") {
+      const arr = Array.isArray(init.opciones_json) ? init.opciones_json : SEMAFORO_PALETTE;
+      const defaultsSet = new Set(SEMAFORO_PALETTE.map((x) => String(x.value)));
+
+      const selectedDefaults = (arr || [])
+        .filter((o) => o && typeof o === "object" && defaultsSet.has(String(o.value)))
+        .map((o) => String(o.value));
+
+      const customItems = (arr || [])
+        .filter((o) => o && typeof o === "object" && !defaultsSet.has(String(o.value)))
+        .map((o) => ({
+          value: String(o.value || ""),
+          label: String(o.label || o.value || ""),
+          color: String(o.color || ""),
+        }));
+
+      setSemaforoUI((s) => ({
+        ...s,
+        selectedValues: selectedDefaults.length ? selectedDefaults : SEMAFORO_PALETTE.map((x) => x.value),
+        customItems,
+        customLabel: "",
+        customColor: "#2ECC71",
+        showAdvancedJson: false,
+      }));
+    }
+
+    setShowPreguntaModal(true);
+    setCollapsedBySection((prev) => ({ ...prev, [idSeccion]: false }));
+  }
+
   function parseOpciones(tipo, raw) {
     const t = (tipo || "").toLowerCase();
 
@@ -2273,13 +2349,16 @@ export default function InformeBuilder() {
 
                               <div className="d-flex gap-2">
                                 <Button size="sm" variant="outline-primary" onClick={() => openCrearPregunta(sec.id_seccion)}>
-                                  + Pregunta
+                                  <i className="bi bi-plus-circle me-1"></i>
+                                  <span className="small">Añadir Campo</span>
                                 </Button>
                                 <Button size="sm" variant="outline-secondary" onClick={() => openEditarSeccion(sec)}>
-                                  <i className="bi bi-pencil"></i>
+                                  <i className="bi bi-gear me-1"></i>
+                                  <span className="small">Configurar Sección</span>
                                 </Button>
                                 <Button size="sm" variant="outline-danger" onClick={() => borrarSeccion(sec.id_seccion)}>
-                                  <i className="bi bi-trash"></i>
+                                  <i className="bi bi-trash me-1"></i>
+                                  <span className="small">Eliminar Sección</span>
                                 </Button>
                               </div>
                             </div>
@@ -2320,11 +2399,64 @@ export default function InformeBuilder() {
                                               <td className="small">{tiposLabel[preg.tipo] || preg.tipo}</td>
                                               <td className="text-center">{preg.obligatorio ? <i className="bi bi-check-circle-fill text-success"></i> : "—"}</td>
                                               <td className="text-end">
-                                                <div className="btn-group btn-group-sm">
-                                                  <Button variant="link" className="text-secondary py-0" disabled={idx === 0} onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx })}>↑</Button>
-                                                  <Button variant="link" className="text-secondary py-0" disabled={idx === arr.length - 1} onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx + 2 })}>↓</Button>
-                                                  <Button variant="link" className="text-primary py-0" onClick={() => openEditarPregunta(sec.id_seccion, preg)}><i className="bi bi-pencil-square"></i></Button>
-                                                  <Button variant="link" className="text-danger py-0" onClick={() => borrarPregunta(preg.id_pregunta)}><i className="bi bi-trash"></i></Button>
+                                                <div className="d-flex justify-content-end flex-wrap align-items-center gap-2">
+                                                  <div className="btn-group btn-group-sm" role="group" aria-label="Mover pregunta">
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline-secondary"
+                                                      className="px-2 py-1 d-inline-flex align-items-center justify-content-center"
+                                                      disabled={idx === 0}
+                                                      onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx })}
+                                                    title="Mover pregunta hacia arriba"
+                                                    aria-label="Mover pregunta hacia arriba"
+                                                  >
+                                                      <FaCaretUp className="fs-5 lh-1" />
+                                                    </Button>
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline-secondary"
+                                                      className="px-2 py-1 d-inline-flex align-items-center justify-content-center"
+                                                      disabled={idx === arr.length - 1}
+                                                      onClick={() => moverPregunta(preg.id_pregunta, { to_seccion_id: sec.id_seccion, to_orden: idx + 2 })}
+                                                    title="Mover pregunta hacia abajo"
+                                                    aria-label="Mover pregunta hacia abajo"
+                                                  >
+                                                      <FaCaretDown className="fs-5 lh-1" />
+                                                    </Button>
+                                                  </div>
+
+                                                  <div className="btn-group btn-group-sm ms-3" role="group" aria-label="Acciones de pregunta">
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline-primary"
+                                                      onClick={() => openEditarPregunta(sec.id_seccion, preg)}
+                                                      title="Editar esta pregunta"
+                                                      aria-label="Editar pregunta"
+                                                    >
+                                                      <i className="bi bi-pencil-square me-1"></i>
+                                                      <span className="d-none d-md-inline small">Editar</span>
+                                                    </Button>
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline-secondary"
+                                                      onClick={() => openDuplicarPregunta(sec.id_seccion, preg)}
+                                                      title="Duplicar esta pregunta"
+                                                      aria-label="Duplicar pregunta"
+                                                    >
+                                                      <i className="bi bi-files me-1"></i>
+                                                      <span className="d-none d-md-inline small">Duplicar</span>
+                                                    </Button>
+                                                    <Button
+                                                      size="sm"
+                                                      variant="outline-danger"
+                                                      onClick={() => borrarPregunta(preg.id_pregunta)}
+                                                      title="Eliminar esta pregunta"
+                                                      aria-label="Eliminar pregunta"
+                                                    >
+                                                      <i className="bi bi-trash me-1"></i>
+                                                      <span className="d-none d-md-inline small">Eliminar</span>
+                                                    </Button>
+                                                  </div>
                                                 </div>
                                               </td>
                                             </tr>
@@ -2383,10 +2515,34 @@ export default function InformeBuilder() {
                       <Col md={3}>
                         <Form.Label className="small fw-bold">Expira en</Form.Label>
                         <Form.Control size="sm" type="datetime-local" value={shareForm.expira_en_local} onChange={(e) => setShareForm((s) => ({ ...s, expira_en_local: e.target.value }))} />
-                        <div className="d-flex gap-1 mt-1">
-                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(1)}>+1m</Button>
-                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(3)}>+3m</Button>
-                          <Button size="sm" variant="link" className="p-0 text-decoration-none" style={{fontSize: '0.65rem'}} onClick={() => setExpInMonths(6)}>+6m</Button>
+                        <div className="d-flex flex-wrap gap-2 mt-2">
+                          <Button
+                            size="sm"
+                            variant="outline-primary"
+                            className="px-2 py-1 rounded-pill fw-semibold"
+                            style={{ minWidth: 54, fontSize: "0.8rem", lineHeight: 1.1 }}
+                            onClick={() => setExpInMonths(1)}
+                          >
+                            +1m
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline-primary"
+                            className="px-2 py-1 rounded-pill fw-semibold"
+                            style={{ minWidth: 54, fontSize: "0.8rem", lineHeight: 1.1 }}
+                            onClick={() => setExpInMonths(3)}
+                          >
+                            +3m
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline-primary"
+                            className="px-2 py-1 rounded-pill fw-semibold"
+                            style={{ minWidth: 54, fontSize: "0.8rem", lineHeight: 1.1 }}
+                            onClick={() => setExpInMonths(6)}
+                          >
+                            +6m
+                          </Button>
                         </div>
                       </Col>
                       <Col md={1}>

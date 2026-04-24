@@ -10,6 +10,7 @@ const massiveImportCtrl = require("../controllers/informes.massiveImport.control
 const { verifyToken } = require("../middlewares/auth.middleware");
 const { requirePerm } = require("../middlewares/requirePerm");
 
+
 /* =========================================================
    ✅ IMPORTANTE
    - Este router es PRIVADO (con JWT)
@@ -277,6 +278,13 @@ router.post(
   informesCtrl.bulkDeleteInformesByProyectoPlantilla
 );
 
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete-fotos",
+  verifyToken,
+  requirePerm("informes.delete"),
+  informesCtrl.bulkDeleteFotosByProyectoPlantilla
+);
+
 /* =========================================================
    IMPORTADOR MASIVO (ZIP)
    ========================================================= */
@@ -304,6 +312,13 @@ router.get(
   informesCtrl.generarWordProyecto
 );
 
+router.get(
+  "/proyecto/:idProyecto/docx-rango-unico",
+  verifyToken,
+  requirePerm("informes.export.docx"),
+  informesCtrl.generarWordProyectoRangoUnico
+);
+
 // ✅ compat antigua
 router.get(
   "/proyecto/:idProyecto/export/excel",
@@ -328,6 +343,27 @@ router.post(
   verifyToken,
   requirePerm("informes.create"),
   informesCtrl.crearInforme
+);
+
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/import-excel-update",
+  verifyToken,
+  requirePerm("informes.update"),
+  informesCtrl.importExcelUpdateRespuestas
+);
+
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/consolidacion/preview",
+  verifyToken,
+  requirePerm("informes.update"),
+  informesCtrl.previewConsolidacionCampos
+);
+
+router.post(
+  "/proyecto/:idProyecto/plantilla/:idPlantilla/consolidacion/apply",
+  verifyToken,
+  requirePerm("informes.update"),
+  informesCtrl.applyConsolidacionCampos
 );
 
 router.put(

@@ -183,26 +183,130 @@ function normalizeCodigoUnicoBase(raw) {
   return String(n); // Sin ceros a la izquierda innecesarios (padding 10 eliminado)
 }
 
-async function buildCodigoUnico({ client, id_proyecto, codigo_exp, tipo_expediente }) {
+function normalizeCodigoJerarquicoLabel(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+
+  return s
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\b(?:sub\s*tramo|subtramo|tramo)\b/gi, " ")
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, " ")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractCodigoUnicoBase(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+
+  const parts = s.split("-");
+  if (parts.length >= 4 && /^(?:st|tr)[a-z0-9.]+$/i.test(parts[0])) {
+    const digits = String(parts[1] || "").replace(/\D+/g, "");
+    return digits ? String(Number.parseInt(digits, 10)) : null;
+  }
+
+  const digits = String(parts[0] || "").replace(/\D+/g, "");
+  return digits ? String(Number.parseInt(digits, 10)) : null;
+}
+
+function isLegacyCodigoUnicoFormat(raw) {
+  return !/^(?:(?:ST|TR)[A-Z0-9.]+-)\d+-\d+-(T|M)$/i.test(String(raw ?? "").trim());
+}
+
+async function resolveCodigoUnicoPrefix({
+  client,
+  id_tramo = null,
+  id_sub_tramo = null,
+  tramo = null,
+  subtramo = null,
+}) {
+  const qClient = client || pool;
+
+  const hasSubtramo =
+    (Number.isFinite(Number(id_sub_tramo)) && Number(id_sub_tramo) > 0) ||
+    Boolean(String(subtramo ?? "").trim());
+  const hasTramo =
+    (Number.isFinite(Number(id_tramo)) && Number(id_tramo) > 0) ||
+    Boolean(String(tramo ?? "").trim());
+
+  if (hasSubtramo) {
+    let label = String(subtramo ?? "").trim();
+    if (!label && Number.isFinite(Number(id_sub_tramo)) && Number(id_sub_tramo) > 0) {
+      const { rows } = await qClient.query(
+        `SELECT descripcion
+           FROM ema.proyecto_subtramos
+          WHERE id_proyecto_subtramo = $1`,
+        [Number(id_sub_tramo)]
+      );
+      label = rows[0]?.descripcion || "";
+    }
+    const normalized = normalizeCodigoJerarquicoLabel(label);
+    return normalized ? `ST${normalized}` : null;
+  }
+
+  if (hasTramo) {
+    let label = String(tramo ?? "").trim();
+    if (!label && Number.isFinite(Number(id_tramo)) && Number(id_tramo) > 0) {
+      const { rows } = await qClient.query(
+        `SELECT descripcion
+           FROM ema.proyecto_tramos
+          WHERE id_proyecto_tramo = $1`,
+        [Number(id_tramo)]
+      );
+      label = rows[0]?.descripcion || "";
+    }
+    const normalized = normalizeCodigoJerarquicoLabel(label);
+    return normalized ? `TR${normalized}` : null;
+  }
+
+  return null;
+}
+
+async function buildCodigoUnico({
+  client,
+  id_proyecto,
+  codigo_exp,
+  tipo_expediente,
+  id_tramo = null,
+  id_sub_tramo = null,
+  tramo = null,
+  subtramo = null,
+}) {
   if (!id_proyecto || !codigo_exp) return null;
-  const baseRaw = String(codigo_exp || "").split("/")[0];
-  const base = parseInt(baseRaw, 10);
-  if (Number.isNaN(base)) return null;
+  const base = normalizeCodigoUnicoBase(codigo_exp);
+  if (!base) return null;
 
   const tipo = tipo_expediente || "T";
-  const like = `${base}-%`;
   const qClient = client || pool;
+  const prefix = await resolveCodigoUnicoPrefix({
+    client: qClient,
+    id_tramo,
+    id_sub_tramo,
+    tramo,
+    subtramo,
+  });
 
   const { rows } = await qClient.query(
     `SELECT COUNT(*) as total 
        FROM ema.expedientes 
       WHERE id_proyecto = $1 
-        AND codigo_unico LIKE $2`,
-    [id_proyecto, like]
+        AND id_tramo IS NOT DISTINCT FROM $3
+        AND id_sub_tramo IS NOT DISTINCT FROM $4
+        AND (
+          split_part(codigo_unico, '-', 2) = $2
+          OR (
+            split_part(codigo_unico, '-', 2) = ''
+            AND split_part(codigo_unico, '-', 1) = $2
+          )
+        )`,
+    [id_proyecto, base, id_tramo, id_sub_tramo]
   );
 
   const n = Number(rows?.[0]?.total || 0) + 1;
-  return `${base}-${n}-${tipo}`;
+  return `${prefix ? `${prefix}-` : ""}${base}-${n}-${tipo}`;
 }
 
 function isRemoteUrl(url) {
@@ -296,36 +400,60 @@ function resolveRecoveredRemotePath(url) {
   }
 }
 
-function buildExpedientesListFilter({ idProyecto, q, tramoId, subtramoId }) {
+function buildExpedientesListFilter({ idProyecto, q, tramoId, subtramoId, dateStart, dateEnd, estado, tipoExp }) {
   const params = [idProyecto];
   let idx = 2;
-  let whereSql = `WHERE id_proyecto = $1`;
+  let whereSql = `WHERE e.id_proyecto = $1`;
 
   if (q) {
     params.push(`%${q}%`);
     whereSql +=
       ` AND (` +
-      `propietario_nombre ILIKE $${idx} OR ` +
-      `propietario_ci ILIKE $${idx} OR ` +
-      `pareja_nombre ILIKE $${idx} OR ` +
-      `pareja_ci ILIKE $${idx} OR ` +
-      `codigo_exp ILIKE $${idx} OR ` +
-      `codigo_censo ILIKE $${idx} OR ` +
-      `COALESCE(carpeta_dbi->>'codigo','') ILIKE $${idx}` +
+      `e.propietario_nombre ILIKE $${idx} OR ` +
+      `e.propietario_ci ILIKE $${idx} OR ` +
+      `e.pareja_nombre ILIKE $${idx} OR ` +
+      `e.pareja_ci ILIKE $${idx} OR ` +
+      `e.codigo_exp ILIKE $${idx} OR ` +
+      `e.codigo_censo ILIKE $${idx} OR ` +
+      `COALESCE(e.carpeta_dbi->>'codigo','') ILIKE $${idx}` +
       `)`;
     idx += 1;
   }
 
   if (Number.isFinite(tramoId) && tramoId > 0) {
     params.push(tramoId);
-    whereSql += ` AND id_tramo = $${idx}`;
+    whereSql += ` AND e.id_tramo = $${idx}`;
     idx += 1;
   }
 
   if (Number.isFinite(subtramoId) && subtramoId > 0) {
     params.push(subtramoId);
-    whereSql += ` AND id_sub_tramo = $${idx}`;
+    whereSql += ` AND e.id_sub_tramo = $${idx}`;
     idx += 1;
+  }
+
+  if (dateStart) {
+    params.push(dateStart);
+    whereSql += ` AND e.fecha_relevamiento >= $${idx}`;
+    idx += 1;
+  }
+
+  if (dateEnd) {
+    params.push(dateEnd);
+    whereSql += ` AND e.fecha_relevamiento <= $${idx}`;
+    idx += 1;
+  }
+
+  if (estado === "activo") {
+    whereSql += ` AND (e.desafectado IS FALSE OR e.desafectado IS NULL)`;
+  } else if (estado === "inactivo") {
+    whereSql += ` AND e.desafectado IS TRUE`;
+  }
+
+  if (tipoExp === "M") {
+    whereSql += ` AND e.tipo_expediente = 'M'`;
+  } else if (tipoExp === "T") {
+    whereSql += ` AND e.tipo_expediente = 'T'`;
   }
 
   return { whereSql, params };
@@ -614,23 +742,23 @@ function normalizeDbiState(dbi) {
     seg_estado: segEstado === "" ? null : segEstado,
     resolucion: resRaw
       ? {
-          ...resRaw,
-          numero:
-            resRaw.numero === null || resRaw.numero === undefined
-              ? null
-              : String(resRaw.numero).trim() || null,
-          fecha: parseToIsoOrNull(resRaw.fecha) || null,
-        }
+        ...resRaw,
+        numero:
+          resRaw.numero === null || resRaw.numero === undefined
+            ? null
+            : String(resRaw.numero).trim() || null,
+        fecha: parseToIsoOrNull(resRaw.fecha) || null,
+      }
       : undefined,
     decreto: decRaw
       ? {
-          ...decRaw,
-          numero:
-            decRaw.numero === null || decRaw.numero === undefined
-              ? null
-              : String(decRaw.numero).trim() || null,
-          fecha: parseToIsoOrNull(decRaw.fecha) || null,
-        }
+        ...decRaw,
+        numero:
+          decRaw.numero === null || decRaw.numero === undefined
+            ? null
+            : String(decRaw.numero).trim() || null,
+        fecha: parseToIsoOrNull(decRaw.fecha) || null,
+      }
       : undefined,
     estados: estadosFiltrados,
   };
@@ -908,14 +1036,64 @@ exports.listByProyecto = async (req, res) => {
   const q = String(req.query.q || "").trim();
   const tramoId = Number(req.query.tramoId);
   const subtramoId = Number(req.query.subtramoId);
+  const dateStart = req.query.dateStart || null;
+  const dateEnd = req.query.dateEnd || null;
+  const estado = req.query.estado || "todos";
 
   const { whereSql, params } = buildExpedientesListFilter({
     idProyecto,
     q,
     tramoId,
     subtramoId,
+    dateStart,
+    dateEnd,
+    estado,
+    tipoExp: req.query.tipoExp || null,
   });
-  const sql = `SELECT * FROM ema.expedientes ${whereSql} ORDER BY created_at DESC`;
+  const sql = `
+    WITH listado AS (
+      SELECT 
+        e.*, 
+        t.descripcion AS tramo_nombre, 
+        st.descripcion AS subtramo_nombre,
+        BTRIM(COALESCE(e.codigo_unico, '')) AS codigo_unico_sort,
+        CASE
+          WHEN BTRIM(COALESCE(e.codigo_unico, '')) ~ '^(?:ST|TR)[A-Z0-9.]+-'
+          THEN split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 1)
+          ELSE ''
+        END AS sort_prefijo,
+        CASE
+          WHEN BTRIM(COALESCE(e.codigo_unico, '')) ~ '^(?:ST|TR)[A-Z0-9.]+-'
+          THEN NULLIF(
+            regexp_replace(split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 1), '^[A-Za-z]+', '', 'g'),
+            ''
+          )::numeric
+          ELSE NULL
+        END AS sort_jerarquia,
+        CASE
+          WHEN BTRIM(COALESCE(e.codigo_unico, '')) ~ '^(?:ST|TR)[A-Z0-9.]+-'
+          THEN NULLIF(regexp_replace(split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 2), '[^0-9]', '', 'g'), '')::int
+          ELSE NULLIF(regexp_replace(split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 1), '[^0-9]', '', 'g'), '')::int
+        END AS sort_base,
+        CASE
+          WHEN BTRIM(COALESCE(e.codigo_unico, '')) ~ '^(?:ST|TR)[A-Z0-9.]+-'
+          THEN NULLIF(regexp_replace(split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 3), '[^0-9]', '', 'g'), '')::int
+          ELSE NULLIF(regexp_replace(split_part(BTRIM(COALESCE(e.codigo_unico, '')), '-', 2), '[^0-9]', '', 'g'), '')::int
+        END AS sort_correlativo
+      FROM ema.expedientes e
+      LEFT JOIN ema.proyecto_tramos t ON e.id_tramo = t.id_proyecto_tramo
+      LEFT JOIN ema.proyecto_subtramos st ON e.id_sub_tramo = st.id_proyecto_subtramo
+      ${whereSql}
+    )
+    SELECT *
+    FROM listado
+    ORDER BY 
+      sort_prefijo ASC,
+      sort_jerarquia ASC NULLS LAST,
+      sort_base ASC NULLS LAST,
+      sort_correlativo ASC NULLS LAST,
+      created_at DESC
+  `;
 
   const { rows } = await pool.query(sql, params);
   res.json(rows);
@@ -933,7 +1111,10 @@ exports.getOne = async (req, res) => {
     [idExp]
   );
   if (!rows.length) return res.status(404).json({ error: "Expediente no encontrado" });
-  res.json(rows[0]);
+  res.json({
+    ...rows[0],
+    is_legacy_format: isLegacyCodigoUnicoFormat(rows[0]?.codigo_unico),
+  });
 };
 
 exports.create = async (req, res) => {
@@ -970,8 +1151,10 @@ exports.create = async (req, res) => {
     const resolvedTipo = tipoExpediente.present ? tipoExpediente.value : "T";
     const codigoUnicoManual = parseOptionalString(b, "codigo_unico");
     let codigoUnico = null;
+    const codigoUnicoBaseManual = extractCodigoUnicoBase(codigoUnicoManual.present ? codigoUnicoManual.value : "");
+    const codigoExpIngresado = normalizeCodigoUnicoBase(b.codigo_exp);
 
-    const regexStrict = /^\d+-\d+-(T|M)$/;
+    const regexStrict = /^(?:(?:ST|TR)[A-Z0-9.]+-)?\d+-\d+-(T|M)$/i;
 
     if (codigoUnicoManual.present && String(codigoUnicoManual.value).trim()) {
       codigoUnico = String(codigoUnicoManual.value).trim().toUpperCase();
@@ -980,40 +1163,59 @@ exports.create = async (req, res) => {
       if (!regexStrict.test(codigoUnico)) {
         return res.status(400).json({
           message:
-            "Formato de código único inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda innecesarios.",
+            "Formato de código único inválido. Debe ser PREFIX-BASE-N-TIPO (ej: ST1.1-55-1-T) o el formato legado BASE-N-TIPO.",
         });
       }
 
-      // Validar consistencia de base
-      const normalizedBase = normalizeCodigoUnicoBase(b.codigo_exp);
-      const manualBase = codigoUnico.split("-")[0];
-      if (normalizedBase && manualBase !== normalizedBase) {
-        return res.status(400).json({
-          message: `Inconsistencia: La base del código único (${manualBase}) debe coincidir con la base de notificación (${normalizedBase}).`,
+      const manualPrefixMatch = codigoUnico.match(/^((?:ST|TR)[A-Z0-9.]+)-/i);
+      if (manualPrefixMatch) {
+        const expectedPrefix = await resolveCodigoUnicoPrefix({
+          client: pool,
+          id_tramo: resTramo.id_tramo,
+          id_sub_tramo: resTramo.id_sub_tramo,
+          tramo: resTramo.tramo,
+          subtramo: resTramo.subtramo,
         });
+
+        // ✅ AUTO-CORRECCIÓN: Si el prefijo no coincide, lo regeneramos para que sea consistente
+        if (expectedPrefix && manualPrefixMatch[1].toUpperCase() !== String(expectedPrefix).toUpperCase()) {
+          console.log(`Auto-corrigiendo prefijo: ${manualPrefixMatch[1]} -> ${expectedPrefix}`);
+          const base = extractCodigoUnicoBase(codigoUnico);
+          const tipo = extractTipoFromCodigoUnico(codigoUnico) || resolvedTipo;
+          
+          codigoUnico = await buildCodigoUnico({
+            client: pool,
+            id_proyecto: idProyecto,
+            codigo_exp: base,
+            tipo_expediente: tipo,
+            id_tramo: resTramo.id_tramo,
+            id_sub_tramo: resTramo.id_sub_tramo,
+            tramo: resTramo.tramo,
+            subtramo: resTramo.subtramo,
+          });
+        }
       }
 
-      // Validar consistencia de tipo
-      if (codigoUnico.endsWith("-T") && resolvedTipo !== "T") {
-        return res.status(400).json({
-          message:
-            "Inconsistencia: El código único finaliza en -T pero el tipo es 'Mejora'.",
-        });
-      }
-      if (codigoUnico.endsWith("-M") && resolvedTipo !== "M") {
-        return res.status(400).json({
-          message:
-            "Inconsistencia: El código único finaliza en -M pero el tipo es 'Terreno'.",
-        });
+      // ✅ SINCRONIZACIÓN DE TIPO: El sufijo del código manda
+      const tipoDesdeCodigo = extractTipoFromCodigoUnico(codigoUnico);
+      if (tipoDesdeCodigo) {
+        // Actualizamos resolvedTipo para que se guarde correctamente el atributo
+        resolvedTipo = tipoDesdeCodigo;
       }
     } else {
       codigoUnico = await buildCodigoUnico({
         client: pool,
         id_proyecto: idProyecto,
-        codigo_exp: b.codigo_exp,
+        codigo_exp: b.codigo_exp || codigoUnicoBaseManual || null,
         tipo_expediente: resolvedTipo,
+        id_tramo: resTramo.id_tramo,
+        id_sub_tramo: resTramo.id_sub_tramo,
+        tramo: resTramo.tramo,
+        subtramo: resTramo.subtramo,
       });
     }
+
+    const codigoExpFinal = codigoExpIngresado || codigoUnicoBaseManual || null;
 
     const { rows } = await pool.query(
       `INSERT INTO ema.expedientes
@@ -1062,7 +1264,7 @@ exports.create = async (req, res) => {
         fechaRelevamiento,
         b.gps || null,
         b.tecnico || null,
-        normalizeCodigoUnicoBase(b.codigo_exp) || (codigoUnico ? codigoUnico.split("-")[0] : null),
+        codigoExpFinal,
         b.propietario_nombre || null,
         b.propietario_ci || null,
         cleanStr(b.pareja_nombre),
@@ -1101,7 +1303,10 @@ exports.create = async (req, res) => {
       [rows[0].id_expediente]
     );
 
-    res.json(rows2[0]);
+    res.json({
+      ...rows2[0],
+      is_legacy_format: isLegacyCodigoUnicoFormat(rows2[0]?.codigo_unico),
+    });
   } catch (e) {
     return res.status(e?.statusCode || 500).json({ message: e?.message || String(e) });
   }
@@ -1148,13 +1353,15 @@ exports.update = async (req, res) => {
 
     let codigoUnicoToSet = null;
     const codigoUnicoManual = parseOptionalString(b, "codigo_unico");
+    const codigoUnicoBaseManual = extractCodigoUnicoBase(codigoUnicoManual.present ? codigoUnicoManual.value : "");
+    const codigoExpIngresado = normalizeCodigoUnicoBase(b.codigo_exp);
 
     const cambioCodigo = existing && b.codigo_exp != null && String(b.codigo_exp).trim() !== String(existing.codigo_exp).trim();
     const cambioTipo = existing && tipoExpediente.present && String(tipoExpediente.value).trim() !== String(existing.tipo_expediente).trim();
     const noTiene = existing && !String(existing.codigo_unico || "").trim();
 
     const finalTipo = tipoExpediente.present ? tipoExpediente.value : (existing ? existing.tipo_expediente : "T");
-    const regexStrict = /^\d+-\d+-(T|M)$/;
+    const regexStrict = /^(?:(?:ST|TR)[A-Z0-9.]+-)?\d+-\d+-(T|M)$/i;
 
     if (codigoUnicoManual.present && String(codigoUnicoManual.value).trim()) {
       codigoUnicoToSet = String(codigoUnicoManual.value).trim().toUpperCase();
@@ -1163,16 +1370,34 @@ exports.update = async (req, res) => {
       if (!regexStrict.test(codigoUnicoToSet)) {
         return res.status(400).json({
           message:
-            "Formato de código único inválido. Debe ser BASE-N-TIPO (ej: 55-1-T) sin ceros a la izquierda innecesarios.",
+            "Formato de código único inválido. Debe ser PREFIX-BASE-N-TIPO (ej: ST1.1-55-1-T) o el formato legado BASE-N-TIPO.",
         });
       }
 
+      const manualPrefixMatch = codigoUnicoToSet.match(/^((?:ST|TR)[A-Z0-9.]+)-/i);
+      if (manualPrefixMatch) {
+        const expectedPrefix = await resolveCodigoUnicoPrefix({
+          client: pool,
+          id_tramo: resTramo.id_tramo,
+          id_sub_tramo: resTramo.id_sub_tramo,
+          tramo: resTramo.tramo,
+          subtramo: resTramo.subtramo,
+        });
+        if (
+          expectedPrefix &&
+          manualPrefixMatch[1].toUpperCase() !== String(expectedPrefix).toUpperCase()
+        ) {
+          return res.status(400).json({
+            message: `Inconsistencia: El prefijo del código único (${manualPrefixMatch[1]}) debe coincidir con la jerarquía resuelta (${expectedPrefix}).`,
+          });
+        }
+      }
+
       // Validar consistencia de base
-      const normalizedBase = normalizeCodigoUnicoBase(b.codigo_exp != null ? b.codigo_exp : existing.codigo_exp);
-      const manualBase = codigoUnicoToSet.split("-")[0];
-      if (normalizedBase && manualBase !== normalizedBase) {
+      const baseNotificacion = codigoExpIngresado || normalizeCodigoUnicoBase(existing ? existing.codigo_exp : null);
+      if (baseNotificacion && codigoUnicoBaseManual && codigoUnicoBaseManual !== baseNotificacion) {
         return res.status(400).json({
-          message: `Inconsistencia: La base del código único (${manualBase}) debe coincidir con la base de notificación (${normalizedBase}).`,
+          message: `Inconsistencia: La base del código único (${codigoUnicoBaseManual}) debe coincidir con la base de notificación (${baseNotificacion}).`,
         });
       }
 
@@ -1193,16 +1418,20 @@ exports.update = async (req, res) => {
       codigoUnicoToSet = await buildCodigoUnico({
         client: pool,
         id_proyecto: existing.id_proyecto,
-        codigo_exp: cambioCodigo ? b.codigo_exp : existing.codigo_exp,
+        codigo_exp: cambioCodigo ? b.codigo_exp : (existing.codigo_exp || codigoUnicoBaseManual || null),
         tipo_expediente: finalTipo,
+        id_tramo: resTramo.id_tramo,
+        id_sub_tramo: resTramo.id_sub_tramo,
+        tramo: resTramo.tramo,
+        subtramo: resTramo.subtramo,
       });
     }
     const codigoFinal = codigoUnicoToSet || (existing ? existing.codigo_unico : null);
-    let codigoExpFinal = normalizeCodigoUnicoBase(b.codigo_exp != null ? b.codigo_exp : (existing ? existing.codigo_exp : null));
+    let codigoExpFinal = codigoExpIngresado || codigoUnicoBaseManual || normalizeCodigoUnicoBase(b.codigo_exp != null ? b.codigo_exp : (existing ? existing.codigo_exp : null));
 
     // Fallback si codigo_exp sigue vacío
     if (!codigoExpFinal && codigoFinal) {
-      codigoExpFinal = codigoFinal.split("-")[0];
+      codigoExpFinal = extractCodigoUnicoBase(codigoFinal);
     }
 
     const sets = [
@@ -1392,6 +1621,10 @@ exports.clonarBase = async (req, res) => {
         id_proyecto: src.id_proyecto,
         codigo_exp: src.codigo_exp,
         tipo_expediente: tipoDestino.value,
+        id_tramo: src.id_tramo,
+        id_sub_tramo: src.id_sub_tramo,
+        tramo: src.tramo,
+        subtramo: src.subtramo,
       });
 
       const { rows: createdRows } = await client.query(
@@ -1473,7 +1706,7 @@ exports.clonarBase = async (req, res) => {
     } catch (e) {
       try {
         await client.query("ROLLBACK");
-      } catch {}
+      } catch { }
       throw e;
     } finally {
       client.release();
@@ -1526,7 +1759,7 @@ exports.remove = async (req, res) => {
       },
     });
   } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
+    try { await client.query("ROLLBACK"); } catch { }
     if (String(e?.code) === "23503") {
       return res.status(409).json({ message: "Conflicto de integridad al eliminar expediente." });
     }
@@ -1655,7 +1888,7 @@ exports.bulkDeleteExpedientesByProyecto = async (req, res) => {
 
     return res.json(payload);
   } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
+    try { await client.query("ROLLBACK"); } catch { }
     if (String(e?.code) === "23503") {
       return res.status(409).json({ message: "Conflicto de integridad al eliminar expedientes." });
     }
@@ -1983,7 +2216,7 @@ exports.subirDocs = async (req, res) => {
       if (destPath) {
         try {
           await fs.remove(destPath);
-        } catch {}
+        } catch { }
       }
       fallidos.push({
         nombre: f?.name || "archivo",
@@ -2473,12 +2706,12 @@ exports.iniciarDbi = async (req, res) => {
   }
 
   const fechaIngreso = fechaIngresoDate.toISOString();
-  const estadoManual = String(req.body?.seg_estado || "").trim(); 
-  let estadoInicial = normalizeDbiEstadoFromCatalog(estadoManual); 
-  if (!estadoInicial) { 
-    estadoInicial = normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada"; 
+  const estadoManual = String(req.body?.seg_estado || "").trim();
+  let estadoInicial = normalizeDbiEstadoFromCatalog(estadoManual);
+  if (!estadoInicial) {
+    estadoInicial = normalizeDbiEstadoFromCatalog("mesa_entrada") || "mesa_entrada";
   }
-  
+
   dbi = {
     ...dbi,
     codigo,
@@ -2487,7 +2720,7 @@ exports.iniciarDbi = async (req, res) => {
     obs,
     ok: true,
   };
-  
+
   const pBody = { ...(req.body || {}) };
   delete pBody.seg_estado; // No usar seg_estado como metadato administrativo si se envia aca
   dbi = mergeDbiExtrasFromBody(dbi, pBody);
@@ -2691,6 +2924,7 @@ exports.importExcel = async (req, res) => {
     codigo_exp: normalizeSignificant(r.codigo_exp),
     codigo_censo: normalizeSignificant(r.codigo_censo),
     propietario_nombre: cleanStr(r.propietario_nombre),
+    nro_documento: normalizeSignificant(r.nro_documento ?? r.propietario_ci),
     propietario_ci: normalizeSignificant(r.propietario_ci),
     pareja_nombre: cleanStr(r.pareja_nombre),
     pareja_ci: normalizeSignificant(r.pareja_ci),
@@ -2765,6 +2999,7 @@ exports.importExcel = async (req, res) => {
     let updated_by_codigo_censo = 0;
     let rejected = 0;
     const errors = [];
+    const invalidRows = [];
     const warnings = [];
     const postCommitWarnings = [];
     let documentsInserted = 0;
@@ -2773,15 +3008,28 @@ exports.importExcel = async (req, res) => {
     const affectedExpedientes = new Set();
     const attemptedRemoteRecoveries = new Set();
     // Tracker de bases ya insertadas en ESTE lote (para detectar dupes dentro del mismo Excel)
-    const basesInsertedThisBatch = new Set();
+    const geoInsertedThisBatch = new Set();
 
     function normalizeCatalogText(v) {
       if (!v) return "";
       return v
         .toString()
         .normalize("NFD")
-        .replace(/\p{Diacritic}/gu, "")
+        .replace(/\p{Diacritic}/gu, "")  // Quita acentos: Ángel → Angel
         .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")     // Reemplaza todo lo que no sea alfanumérico por espacio
+        .trim();                          // Elimina espacios al inicio/fin
+    }
+
+    function normalizeCatalogTextV2(v) {
+      if (!v) return "";
+      return String(v)
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .replace(/\b(?:sub\s*tramo|subtramo|tramo)\b/gi, " ")
+        .toLowerCase()
+        .replace(/[^a-z0-9.]+/g, " ")
+        .replace(/\s*\.\s*/g, ".")
         .replace(/\s+/g, " ")
         .trim();
     }
@@ -2812,14 +3060,14 @@ exports.importExcel = async (req, res) => {
     };
 
     tramos.forEach((t) =>
-      pushToMap(tramosByName, normalizeCatalogText(t.descripcion), {
+      pushToMap(tramosByName, normalizeCatalogTextV2(t.descripcion), {
         id: t.id_proyecto_tramo,
         descripcion: t.descripcion,
       })
     );
 
     subtramos.forEach((st) =>
-      pushToMap(subtramosByName, normalizeCatalogText(st.descripcion), {
+      pushToMap(subtramosByName, normalizeCatalogTextV2(st.descripcion), {
         id: st.id_proyecto_subtramo,
         id_tramo: st.id_proyecto_tramo,
         descripcion: st.descripcion,
@@ -2827,8 +3075,8 @@ exports.importExcel = async (req, res) => {
     );
 
     const resolveTramoSubtramo = (rawTramo, rawSubtramo, rowIndex) => {
-      const tramoKey = normalizeCatalogText(rawTramo);
-      const subKey = normalizeCatalogText(rawSubtramo);
+      const tramoKey = normalizeCatalogTextV2(rawTramo);
+      const subKey = normalizeCatalogTextV2(rawSubtramo);
       const tramoMatches = tramoKey ? tramosByName.get(tramoKey) || [] : [];
       const subMatches = subKey ? subtramosByName.get(subKey) || [] : [];
       const hasExplicitTramo = Boolean(tramoKey);
@@ -3047,12 +3295,50 @@ exports.importExcel = async (req, res) => {
         continue;
       }
 
+      const nroDocumento = normalizeSignificant(r.nro_documento ?? r.propietario_ci);
+      const codigoExpVal = normalizeSignificant(r.codigo_exp);
+      const missingRequired = [];
+      if (!nroDocumento) missingRequired.push("Documento/C.I.");
+      if (!codigoExpVal) missingRequired.push("Nro. Notificación");
+      if (missingRequired.length > 0) {
+        rejected += 1;
+        const identificadorFila =
+          cleanStr(r.propietario_nombre) ||
+          nroDocumento ||
+          codigoExpVal ||
+          cleanStr(r.codigo_censo) ||
+          `Fila ${r._rowIndex}`;
+        for (const columna of missingRequired) {
+          invalidRows.push({
+            fila: r._rowIndex,
+            columna_faltante: columna,
+            identificador_fila: identificadorFila,
+          });
+        }
+        continue;
+      }
+
       const hasIdentity = Boolean(r.id_import || r.codigo_exp || r.codigo_censo);
       if (!hasIdentity) {
         rejected += 1;
         errors.push({
           row: r._rowIndex,
           reason: "Sin identidad suficiente (id_import/codigo_exp/codigo_censo)",
+          identity: {
+            id_import: r.id_import,
+            codigo_exp: r.codigo_exp,
+            codigo_censo: r.codigo_censo,
+          },
+        });
+        continue;
+      }
+
+      const ciObligatorio = normalizeSignificant(r.nro_documento ?? r.propietario_ci);
+      if (!ciObligatorio) {
+        rejected += 1;
+        errors.push({
+          row: r._rowIndex,
+          reason: `Saltada por falta de Documento de Identidad/C.I. obligatorio`,
           identity: {
             id_import: r.id_import,
             codigo_exp: r.codigo_exp,
@@ -3089,78 +3375,177 @@ exports.importExcel = async (req, res) => {
         }
       }
 
-      // --- Búsqueda por codigo_exp normalizado ---
+      // =================================================================
+      // ✅ BÚSQUEDA SECUENCIAL: Intento A → Intento B (Blindaje geográfico)
+      // =================================================================
+
+      // --- Intento A: Filtro geográfico exacto (id_proyecto + codigo_exp + tramo + subtramo) ---
       let baseAlreadyExistsInDb = false;
+      let needsGeoCuratorship = false; // Flag para curar tramo/subtramo en el UPDATE
+
       if (!existing && r.codigo_exp) {
         const normalizedBase = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp;
-        const { rows: found } = await client.query(
-          `SELECT id_expediente, id_import, codigo_exp, codigo_censo, codigo_unico
-             FROM ema.expedientes
-            WHERE id_proyecto = $1
-              AND (
-                codigo_exp = $2
-                OR
-                CASE
-                  WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
-                  THEN (split_part(codigo_exp, '/', 1)::int)::text
-                  ELSE split_part(codigo_exp, '/', 1)
-                END = $2
-              )`,
-          [r.id_proyecto, normalizedBase]
-        );
-        if (found.length === 1) {
-          matchType = "codigo_exp";
-          existing = found[0];
-        } else if (found.length > 1) {
-          // Base ya existe con múltiples carpetas → NO insertar, solo informar
-          baseAlreadyExistsInDb = true;
-          warnings.push({
-            row: r._rowIndex,
-            type: "skipped_existing_base",
-            message: `Base '${normalizedBase}' ya tiene ${found.length} expediente(s). Fila omitida para evitar duplicado. Use id_import o codigo_censo para actualizar un registro específico.`,
-            value: { codigo_exp: r.codigo_exp, existing_ids: found.map(f => f.id_expediente) },
-          });
-        }
-      }
 
+        // Si la fila tiene tramo resuelto, buscamos coincidencia geográfica estricta
+        if (tramoResolution.id_tramo) {
+          // Intento A-1: coincidencia exacta (tramo + subtramo)
+          const { rows: foundA } = await client.query(
+            `SELECT id_expediente, id_import, codigo_exp, codigo_censo, codigo_unico,
+                    id_tramo, id_sub_tramo
+              FROM ema.expedientes
+              WHERE id_proyecto = $1
+                AND (
+                  codigo_exp = $2
+                  OR CASE
+                       WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+                       THEN (split_part(codigo_exp, '/', 1)::int)::text
+                       ELSE split_part(codigo_exp, '/', 1)
+                     END = $2
+                )
+                AND id_tramo IS NOT DISTINCT FROM $3
+                AND id_sub_tramo IS NOT DISTINCT FROM $4`,
+            [
+              r.id_proyecto,
+              normalizedBase,
+              tramoResolution.id_tramo,
+              tramoResolution.id_sub_tramo,
+            ]
+          );
 
-      if (!existing && r.codigo_censo) {
-        const { rows: found } = await client.query(
-          `SELECT id_expediente, id_import, codigo_exp, codigo_censo
-             FROM ema.expedientes
-            WHERE id_proyecto = $1 AND codigo_censo = $2`,
-          [r.id_proyecto, r.codigo_censo]
-        );
-        if (found.length > 1) {
-          rejected += 1;
-          errors.push({
-            row: r._rowIndex,
-            reason: "codigo_censo ambiguo (más de un expediente)",
-            identity: { codigo_censo: r.codigo_censo },
-          });
-          continue;
+          if (foundA.length === 1) {
+            matchType = "codigo_exp_geo";
+            existing = foundA[0];
+          } else if (foundA.length > 1) {
+            // Múltiples hits → intentar acotar por subtramo exacto antes de rechazar
+            const exactSub = foundA.filter(
+              (x) => x.id_sub_tramo === tramoResolution.id_sub_tramo
+            );
+            if (exactSub.length === 1) {
+              matchType = "codigo_exp_geo";
+              existing = exactSub[0];
+            } else {
+              // Geográficamente ambiguo → rechazar
+              rejected += 1;
+              errors.push({
+                row: r._rowIndex,
+                reason: "Búsqueda geográfica ambigua (Intento A): más de un expediente coincide con ese código y tramo/subtramo.",
+                identity: { codigo_exp: r.codigo_exp, id_tramo: tramoResolution.id_tramo },
+              });
+              continue;
+            }
+          }
         }
-        if (found.length === 1) {
-          matchType = "codigo_censo";
-          existing = found[0];
-        }
-      }
 
-      // Si la base ya existe en BD (con múltiples carpetas) y no hay otro match exacto,
-      // saltamos este registro sin insertar para evitar duplicados de código base.
-      if (!existing && baseAlreadyExistsInDb) {
-        continue;
+        // --- Intento B: Fallback por identidad (codigo_exp + CI o Nombre propietario) ---
+        // Normalización simétrica: se eliminan caracteres no alfanuméricos en ambos lados
+        // para evitar que diferencias de formato (12.345.678 vs 12345678) rompan el match.
+        if (!existing) {
+          const normalizedCI = normalizeSignificant(r.propietario_ci) || null;
+          const normalizedNombre = cleanStr(r.propietario_nombre) || null;
+
+          if (normalizedCI || normalizedNombre) {
+            const { rows: foundB } = await client.query(
+              `SELECT id_expediente, id_import, codigo_exp, codigo_censo, codigo_unico,
+                      id_tramo, id_sub_tramo
+                 FROM ema.expedientes
+                WHERE id_proyecto = $1
+                  AND (
+                    codigo_exp = $2
+                    OR CASE
+                         WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+                         THEN (split_part(codigo_exp, '/', 1)::int)::text
+                         ELSE split_part(codigo_exp, '/', 1)
+                       END = $2
+                  )
+                  AND (
+                    (
+                      $3::text IS NOT NULL
+                      AND REGEXP_REPLACE(COALESCE(propietario_ci,''), '[^A-Z0-9]', '', 'gi')
+                        = REGEXP_REPLACE($3, '[^A-Z0-9]', '', 'gi')
+                    )
+                    OR
+                    (
+                      $4::text IS NOT NULL
+                      AND LOWER(TRIM(COALESCE(propietario_nombre,''))) = LOWER(TRIM($4))
+                    )
+                  )`,
+              [r.id_proyecto, normalizedBase, normalizedCI, normalizedNombre]
+            );
+
+            if (foundB.length === 1) {
+              matchType = "codigo_exp_identidad"; // Intento B
+              existing = foundB[0];
+              needsGeoCuratorship = tramoResolution.id_tramo !== null;
+              if (needsGeoCuratorship) {
+                warnings.push({
+                  row: r._rowIndex,
+                  type: "geo_curatorship",
+                  message: `Expediente encontrado por identidad (Intento B). Se actualizará tramo/subtramo desde el Excel.`,
+                  value: {
+                    id_expediente: foundB[0].id_expediente,
+                    tramo_anterior: foundB[0].id_tramo,
+                    tramo_nuevo: tramoResolution.id_tramo,
+                  },
+                });
+              }
+            } else if (foundB.length > 1) {
+              rejected += 1;
+              errors.push({
+                row: r._rowIndex,
+                reason: "Fallback de identidad (Intento B) ambiguo: varios expedientes comparten ese código y propietario.",
+                identity: { codigo_exp: r.codigo_exp, propietario_ci: normalizedCI, propietario_nombre: normalizedNombre },
+              });
+              continue;
+            }
+          }
+
+          // Si ningún intento encontró nada pero la base existe en la BD con otros registros,
+          // emitimos advertencia para que el operador use id_import o codigo_censo.
+          if (!existing) {
+            const { rows: baseCheck } = await client.query(
+              `SELECT id_expediente FROM ema.expedientes
+                WHERE id_proyecto = $1
+                  AND (
+                    codigo_exp = $2
+                    OR CASE
+                         WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+                         THEN (split_part(codigo_exp, '/', 1)::int)::text
+                         ELSE split_part(codigo_exp, '/', 1)
+                       END = $2
+                  )
+               LIMIT 3`,
+              [r.id_proyecto, normalizedBase]
+            );
+            if (baseCheck.length > 0) {
+              baseAlreadyExistsInDb = true;
+              warnings.push({
+                row: r._rowIndex,
+                type: "skipped_existing_base",
+                message: `Base '${normalizedBase}' ya existe en la BD, pero no coincidió por geo ni identidad. Se insertará como un nuevo expediente porque la ubicación es distinta.`,
+                value: { codigo_exp: r.codigo_exp, existing_ids: baseCheck.map((f) => f.id_expediente) },
+              });
+            }
+          }
+        }
       }
 
       if (!existing) {
         // --- Deduplicación dentro del mismo lote de Excel ---
         const baseForBatch = normalizeCodigoUnicoBase(r.codigo_exp) || r.codigo_exp || null;
-        if (baseForBatch && basesInsertedThisBatch.has(baseForBatch)) {
+        const batchGeoKey = [
+          baseForBatch || "",
+          tramoResolution.id_tramo ?? "",
+          tramoResolution.id_sub_tramo ?? "",
+          normalizeCodigoJerarquicoLabel(r.tramo),
+          normalizeCodigoJerarquicoLabel(r.subtramo),
+        ].join("|");
+
+        if (baseForBatch && geoInsertedThisBatch.has(batchGeoKey)) {
           warnings.push({
             row: r._rowIndex,
             type: "skipped_duplicate_in_batch",
-            message: `Fila omitida: la base '${baseForBatch}' ya fue procesada en este mismo lote de importación.`,
-            value: { codigo_exp: r.codigo_exp },
+            message: `Fila omitida: la base '${baseForBatch}' ya fue procesada en este mismo tramo/subtramo dentro del lote de importación.`,
+            value: { codigo_exp: r.codigo_exp, tramo: r.tramo, subtramo: r.subtramo },
           });
           continue;
         }
@@ -3195,7 +3580,7 @@ exports.importExcel = async (req, res) => {
         if (q.rowCount > 0) {
           inserted += 1;
           // Registrar en el dedup set para evitar dupes de filas siguientes del mismo Excel
-          if (baseForBatch) basesInsertedThisBatch.add(baseForBatch);
+          if (baseForBatch) geoInsertedThisBatch.add(batchGeoKey);
           const idExpediente = q.rows[0]?.id_expediente;
 
 
@@ -3243,17 +3628,26 @@ exports.importExcel = async (req, res) => {
         continue;
       }
 
+      // ✅ Conflicto de id_import relajado:
+      // Si el match vino de una búsqueda geográfica clara (Intento A),
+      // priorizamos el UPDATE y sanamos el id_import en lugar de bloquear la fila.
       if (r.id_import && existing.id_import && String(existing.id_import) !== String(r.id_import)) {
-        rejected += 1;
-        errors.push({
-          row: r._rowIndex,
-          reason: "Conflicto de identidad: id_import distinto en expediente existente",
-          identity: {
-            id_import: r.id_import,
-            existing_id_import: existing.id_import,
-          },
-        });
-        continue;
+        if (matchType === "codigo_exp_geo") {
+          // Silencio intencional: el match geográfico es suficiente para curar el id_import.
+        } else {
+          // Otros tipos de match: bloquear por seguridad
+          rejected += 1;
+          errors.push({
+            row: r._rowIndex,
+            reason: "Conflicto de identidad: id_import distinto en expediente existente (match no geográfico).",
+            identity: {
+              id_import: r.id_import,
+              existing_id_import: existing.id_import,
+              match_type: matchType,
+            },
+          });
+          continue;
+        }
       }
 
       const sets = ["fecha_relevamiento=$1", "updated_at=now()"];
@@ -3303,6 +3697,8 @@ exports.importExcel = async (req, res) => {
         idx += 1;
       }
 
+      // ✅ Curación Geográfica: si el expediente fue encontrado via Intento B (identidad),
+      // el tramo/subtramo se escribe SIEMPRE (override), no solo si viene vacío en la BD.
       if (tramoResolution.id_tramo) {
         sets.push(`id_tramo=$${idx}`);
         params.push(tramoResolution.id_tramo);
@@ -3325,7 +3721,8 @@ exports.importExcel = async (req, res) => {
           params.push(r.subtramo);
           idx += 1;
         }
-      } else if (tramoResolution.shouldClearSubtramo) {
+      } else if (tramoResolution.shouldClearSubtramo || needsGeoCuratorship) {
+        // Limpia el subtramo si la jerarquía lo indica o si estamos curando la geo
         sets.push(`id_sub_tramo=$${idx}`);
         params.push(null);
         idx += 1;
@@ -3467,6 +3864,8 @@ exports.importExcel = async (req, res) => {
       updated_by_codigo_exp,
       updated_by_codigo_censo,
       rejected,
+      invalidRows,
+      validationErrors: invalidRows,
       errors,
       warnings,
       postCommitWarnings,
@@ -3477,7 +3876,7 @@ exports.importExcel = async (req, res) => {
   } catch (e) {
     try {
       await client.query("ROLLBACK");
-    } catch {}
+    } catch { }
     return res.status(500).json({
       message: "Error importando",
       detail: String(e?.message || e),
@@ -3637,7 +4036,9 @@ exports.resetCodigoUnico = async (req, res) => {
     if (!idExp) return res.status(400).json({ message: "idExpediente inválido" });
 
     const { rows: existingRows } = await pool.query(
-      `SELECT id_proyecto, codigo_exp, tipo_expediente FROM ema.expedientes WHERE id_expediente = $1`,
+      `SELECT id_proyecto, codigo_exp, tipo_expediente, id_tramo, id_sub_tramo, tramo, subtramo
+         FROM ema.expedientes
+        WHERE id_expediente = $1`,
       [idExp]
     );
     const existing = existingRows[0];
@@ -3648,6 +4049,10 @@ exports.resetCodigoUnico = async (req, res) => {
       id_proyecto: existing.id_proyecto,
       codigo_exp: existing.codigo_exp,
       tipo_expediente: existing.tipo_expediente || "T",
+      id_tramo: existing.id_tramo,
+      id_sub_tramo: existing.id_sub_tramo,
+      tramo: existing.tramo,
+      subtramo: existing.subtramo,
     });
 
     await pool.query(`UPDATE ema.expedientes SET codigo_unico = $1, updated_at = now() WHERE id_expediente = $2`, [
@@ -3667,13 +4072,12 @@ exports.reorderCodigoUnico = async (req, res) => {
     return res.status(400).json({ message: "id_proyecto y changes[] son requeridos" });
   }
 
-  const regexFormat = /^\d+-\d+-(T|M)$/;
+  const regexFormat = /^(?:(?:ST|TR)[A-Z0-9.]+-)?\d+-\d+-(T|M)$/i;
   const NEW_CODES = new Set();
   const AFFECTED_IDS = new Set();
 
   function getBase(s) {
-    if (!s) return null;
-    return String(s).split(/[\/\-]/)[0].replace(/\D/g, "");
+    return extractCodigoUnicoBase(s);
   }
 
   try {
@@ -3683,7 +4087,7 @@ exports.reorderCodigoUnico = async (req, res) => {
         return res.status(400).json({ message: "Cada cambio debe tener id_expediente y nuevo_codigo" });
       }
       if (!regexFormat.test(c.nuevo_codigo)) {
-        return res.status(400).json({ message: `Formato inválido en ${c.nuevo_codigo}. Debe ser BASE-N-TIPO (ej: 55-1-T)` });
+        return res.status(400).json({ message: `Formato inválido en ${c.nuevo_codigo}. Debe ser PREFIX-BASE-N-TIPO (ej: ST1.1-55-1-T) o el formato legado BASE-N-TIPO` });
       }
       if (NEW_CODES.has(c.nuevo_codigo)) {
         return res.status(400).json({ message: `Código duplicado en la solicitud: ${c.nuevo_codigo}` });
@@ -3739,7 +4143,7 @@ exports.reorderCodigoUnico = async (req, res) => {
       // Mover a temporal para evitar conflictos de Unique si existieran (o lógica de negocio)
       for (const row of currentRows) {
         const base = getBase(row.codigo_exp);
-        const parking = `${base}-9999-TEMP-${row.id_expediente}`;
+        const parking = `${base || "0"}-9999-TEMP-${row.id_expediente}`;
         await client.query(`UPDATE ema.expedientes SET codigo_unico = $1 WHERE id_expediente = $2`, [
           parking,
           row.id_expediente,
@@ -3770,20 +4174,96 @@ exports.reorderCodigoUnico = async (req, res) => {
 exports.suggestCodigoUnico = async (req, res) => {
   try {
     const idProyecto = Number(req.params.idProyecto);
-    const { base, tipo } = req.query;
+    const { base, tipo, idTramo, idSubtramo, tramo, subtramo } = req.query;
 
-    if (!idProyecto || !base) {
-      return res.status(400).json({ message: "idProyecto y base son requeridos" });
+    if (!idProyecto) {
+      return res.status(400).json({ message: "idProyecto es requerido" });
     }
 
-    const code = await buildCodigoUnico({
+    // Limpieza defensiva de IDs: si vienen como "" o "null" (string), pasar null real
+    const cleanId = (val) => {
+      const n = Number(val);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+
+    const tramoId    = cleanId(idTramo);
+    const subtramoId = cleanId(idSubtramo);
+    const tipoFinal  = (tipo || "T").toUpperCase();
+    const baseNumerica = normalizeCodigoUnicoBase(base);
+    const userProvidedBase = baseNumerica && Number(baseNumerica) > 0;
+
+    // ── Resolver prefijo jerárquico ──────────────────────────────────────────
+    const prefix = await resolveCodigoUnicoPrefix({
       client: pool,
-      id_proyecto: idProyecto,
-      codigo_exp: base,
-      tipo_expediente: tipo || "T",
+      id_tramo:     tramoId,
+      id_sub_tramo: subtramoId,
+      tramo,
+      subtramo,
     });
 
-    res.json({ codigo_unico: code });
+    let finalBase;
+    let finalCorrelativo;
+
+    if (!userProvidedBase) {
+      // ═══════════════════════════════════════════════════════════════════════
+      // RAMA A: Sin base → siguiente BASE = MAX(codigo_exp numérico) + 1
+      // Usamos codigo_exp directamente porque contiene el número puro de notificación.
+      // ═══════════════════════════════════════════════════════════════════════
+      const { rows: maxRows } = await pool.query(
+        `SELECT COALESCE(
+                  MAX(
+                    CASE WHEN codigo_exp ~ '^[0-9]+$'
+                         THEN codigo_exp::int
+                         ELSE NULL
+                    END
+                  ), 0
+                ) + 1 AS next_base
+           FROM ema.expedientes
+          WHERE id_proyecto    = $1
+            AND id_tramo       IS NOT DISTINCT FROM $2
+            AND id_sub_tramo   IS NOT DISTINCT FROM $3`,
+        [idProyecto, tramoId, subtramoId]
+      );
+      finalBase        = String(Number(maxRows[0]?.next_base ?? 1));
+      finalCorrelativo = 1;
+    } else {
+      // ═══════════════════════════════════════════════════════════════════════
+      // RAMA B: Usuario especificó base → siguiente CORRELATIVO para esa base
+      // Extraemos el correlativo del tramo de codigo_unico con split_part seguro.
+      // ═══════════════════════════════════════════════════════════════════════
+      finalBase = baseNumerica;
+
+      const { rows: corrRows } = await pool.query(
+        `SELECT COALESCE(
+                  MAX(
+                    NULLIF(
+                      regexp_replace(
+                        CASE
+                          WHEN COALESCE(codigo_unico,'') ~ '^(?:ST|TR)[A-Z0-9\\.]+-.+'
+                          THEN split_part(codigo_unico, '-', 3)
+                          ELSE split_part(COALESCE(codigo_unico, ''), '-', 2)
+                        END,
+                        '\\D', '', 'g'
+                      ), ''
+                    )::int
+                  ), 0
+                ) + 1 AS next_correlativo
+           FROM ema.expedientes
+          WHERE id_proyecto    = $1
+            AND id_tramo       IS NOT DISTINCT FROM $2
+            AND id_sub_tramo   IS NOT DISTINCT FROM $3
+            AND codigo_exp     = $4`,
+        [idProyecto, tramoId, subtramoId, finalBase]
+      );
+      finalCorrelativo = Number(corrRows[0]?.next_correlativo ?? 1);
+    }
+
+    // ── Ensamblar el código final directamente ───────────────────────────────
+    const suggested = prefix
+      ? `${prefix}-${finalBase}-${finalCorrelativo}-${tipoFinal}`
+      : `${finalBase}-${finalCorrelativo}-${tipoFinal}`;
+
+    res.json({ codigo_unico: suggested });
   } catch (e) {
     res.status(500).json({ message: e?.message || String(e) });
   }
@@ -3792,35 +4272,101 @@ exports.suggestCodigoUnico = async (req, res) => {
 exports.checkBaseAvailability = async (req, res) => {
   try {
     const { idProyecto } = req.params;
-    const { base } = req.query;
-    if (!idProyecto || !base) {
-      return res.status(400).json({ message: "Faltan parámetros idProyecto o base" });
+    const { base, codigo_unico: codigoUnicoRaw, idTramo, idSubtramo } = req.query;
+    if (!idProyecto || (!base && !codigoUnicoRaw)) {
+      return res.status(400).json({ message: "Faltan parámetros idProyecto o base/codigo_unico" });
     }
 
     const normalizedBase = normalizeCodigoUnicoBase(base);
+    const codigoUnico = String(codigoUnicoRaw || "").trim();
 
-    // Buscamos coincidencia normalizando el lado de la DB también
-    // Captura tanto formatos nuevos "55" como viejos "0055/..."
-    const { rows } = await pool.query(
-      `SELECT id_expediente, codigo_exp, propietario_nombre, codigo_unico
-       FROM ema.expedientes
-       WHERE id_proyecto = $1 
-         AND (
-           codigo_exp = $2 
-           OR 
-           CASE 
-             WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$' 
-             THEN (split_part(codigo_exp, '/', 1)::int)::text 
-             ELSE split_part(codigo_exp, '/', 1) 
-           END = $2
-         )
-       LIMIT 5`,
-      [idProyecto, normalizedBase]
-    );
+    let exactQuery = `
+      SELECT id_expediente, codigo_exp, propietario_nombre, codigo_unico, tramo, subtramo
+      FROM ema.expedientes
+      WHERE id_proyecto = $1 
+    `;
+
+    const exactParams = [idProyecto];
+    if (codigoUnico) {
+      exactQuery += ` AND codigo_unico = $2`;
+      exactParams.push(codigoUnico);
+    } else {
+      exactQuery += `
+        AND (
+          codigo_exp = $2
+          OR CASE
+               WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+               THEN (split_part(codigo_exp, '/', 1)::int)::text
+               ELSE split_part(codigo_exp, '/', 1)
+             END = $2
+        )`;
+      exactParams.push(normalizedBase);
+    }
+
+    let sameBaseQuery = `
+      SELECT id_expediente, codigo_exp, propietario_nombre, codigo_unico, tramo, subtramo
+      FROM ema.expedientes
+      WHERE id_proyecto = $1
+    `;
+
+    const sameBaseParams = [idProyecto];
+    let exactIdx = exactParams.length + 1;
+    let sameBaseIdx = sameBaseParams.length + 1;
+
+    if (idTramo && idTramo !== "null") {
+      exactQuery += ` AND id_tramo IS NOT DISTINCT FROM $${exactIdx}`;
+      sameBaseQuery += ` AND id_tramo IS NOT DISTINCT FROM $${sameBaseIdx}`;
+      exactParams.push(Number(idTramo));
+      sameBaseParams.push(Number(idTramo));
+      exactIdx++;
+      sameBaseIdx++;
+    }
+
+    if (idSubtramo && idSubtramo !== "null") {
+      exactQuery += ` AND id_sub_tramo IS NOT DISTINCT FROM $${exactIdx}`;
+      sameBaseQuery += ` AND id_sub_tramo IS NOT DISTINCT FROM $${sameBaseIdx}`;
+      exactParams.push(Number(idSubtramo));
+      sameBaseParams.push(Number(idSubtramo));
+      exactIdx++;
+      sameBaseIdx++;
+    }
+
+    if (codigoUnico) {
+      sameBaseQuery += `
+        AND (
+          codigo_exp = $${sameBaseIdx}
+          OR CASE
+               WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+               THEN (split_part(codigo_exp, '/', 1)::int)::text
+               ELSE split_part(codigo_exp, '/', 1)
+             END = $${sameBaseIdx}
+        )`;
+      sameBaseParams.push(normalizedBase);
+    } else {
+      sameBaseQuery += `
+        AND (
+          codigo_exp = $${sameBaseIdx}
+          OR CASE
+               WHEN split_part(codigo_exp, '/', 1) ~ '^[0-9]+$'
+               THEN (split_part(codigo_exp, '/', 1)::int)::text
+               ELSE split_part(codigo_exp, '/', 1)
+             END = $${sameBaseIdx}
+        )`;
+      sameBaseParams.push(normalizedBase);
+    }
+
+    exactQuery += " LIMIT 5";
+    sameBaseQuery += " LIMIT 5";
+
+    const [exactRows, sameBaseRows] = await Promise.all([
+      pool.query(exactQuery, exactParams),
+      pool.query(sameBaseQuery, sameBaseParams),
+    ]);
 
     res.json({
-      available: rows.length === 0,
-      existing: rows,
+      available: exactRows.rows.length === 0,
+      existing: exactRows.rows,
+      sameBaseExisting: sameBaseRows.rows,
     });
   } catch (e) {
     console.error("Error checking base availability:", e);

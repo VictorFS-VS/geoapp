@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { projectHomeApi } from "./projectHome.service";
 import { useProjectContext } from "@/context/ProjectContext";
-import { hasPerm, esAdmin } from "@/utils/auth";
+import { useAuth } from "@/auth/AuthContext";
+import { FaGlobeAmericas, FaTools, FaShieldAlt, FaHardHat, FaBullhorn, FaChartLine, FaCheckCircle, FaTrashAlt, FaEdit, FaEye, FaFileAlt, FaCog, FaChartBar, FaMapMarked, FaExclamationTriangle, FaClock } from "react-icons/fa";
+import { ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import "./ProjectHomePage.css";
 import ProjectHomeConfigPanel from "./ProjectHomeConfigPanel";
 import ProjectHomeKpiChart from "./ProjectHomeKpiChart";
+import QuejasReclamos from "@/pages/QuejasReclamos";
 
-const EMPTY_VALUE = "—";
+const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = BASE.endsWith("/api") ? BASE : `${BASE}/api`;
+const EMPTY_VALUE = "N/D";
 
 const renderValue = (value) =>
   value === undefined || value === null || value === "" ? EMPTY_VALUE : value;
@@ -26,7 +31,63 @@ const cleanTechnicalLabel = (str) => {
   return clean.trim();
 };
 
-const ProjectHomeFeaturedReportCard = ({ report, onClick }) => {
+const sumKpiItems = (items) =>
+  (Array.isArray(items) ? items : []).reduce(
+    (acc, item) => acc + (Number(item?.count) || 0),
+    0
+  );
+
+const withUniverseItem = (summary) => {
+  if (!summary || !Array.isArray(summary.items)) return summary;
+  const totalUniverse = Number(summary.total_universe);
+  if (!Number.isFinite(totalUniverse) || totalUniverse <= 0) return summary;
+
+  const currentTotal = sumKpiItems(summary.items);
+  const missing = Math.max(0, totalUniverse - currentTotal);
+  if (missing <= 0) return summary;
+
+  return {
+    ...summary,
+    items: [
+      ...summary.items,
+      {
+        label: "Sin responder",
+        count: missing,
+        color_hex: "#94a3b8",
+        isSynthetic: true,
+      },
+    ],
+  };
+};
+
+const timeAgo = (date) => {
+  if (!date) return "Sin actividad registrada";
+  const now = new Date();
+  const past = new Date(date);
+  if (isNaN(past.getTime())) return "Sin actividad registrada";
+  
+  const diffInMs = now - past;
+  const diffInMins = Math.floor(diffInMs / (1000 * 60));
+  const diffInHours = Math.floor(diffInMs / (1000 * 60 * 60));
+  const diffInDays = Math.floor(diffInMs / (1000 * 60 * 60 * 24));
+
+  if (diffInMins < 1) return "recientemente";
+  if (diffInMins < 60) return `hace ${diffInMins} min`;
+  if (diffInHours < 24) return `hace ${diffInHours} ${diffInHours === 1 ? 'hora' : 'horas'}`;
+  if (diffInDays < 7) return `hace ${diffInDays} ${diffInDays === 1 ? 'día' : 'días'}`;
+  
+  return past.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+};
+
+const authHeader = () => {
+  const token =
+    localStorage.getItem("token") ||
+    localStorage.getItem("access_token") ||
+    localStorage.getItem("jwt");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const ProjectHomeFeaturedReportCard = ({ report, onClick, compact = false }) => {
   const value = report?.primary_val;
   const title = report?.display_title || report?.label || "Resumen ejecutivo";
 
@@ -59,30 +120,30 @@ const ProjectHomeFeaturedReportCard = ({ report, onClick }) => {
   return (
     <button 
       type="button"
-      className="ph-card ph-card-compact ph-featured-card" 
+      className={`ph-card ph-card-compact ph-featured-card ${compact ? 'ph-featured-card--compact' : ''}`} 
       onClick={onClick}
     >
       <div className="ph-card-compact-header">
         <span className="ph-card-compact-title">{title}</span>
         {report?.base_total !== undefined && report?.base_total !== null && (
-          <div className="ph-card-subheader">Base analizada: {report.base_total.toLocaleString()}</div>
+          <div className="ph-card-subheader">Total registros: {report.base_total.toLocaleString()}</div>
         )}
       </div>
       <div className="ph-card-compact-value ph-featured-primary-value">
         {value !== undefined && value !== null ? renderNumeric(value) : EMPTY_VALUE}
       </div>
-      <div className="ph-card-compact-meta ph-featured-primary-meta" data-has-secondary={secondary.length > 0}>
-        <div style={{ color: "#0f172a", fontWeight: 500 }}>{finalLabel}</div>
-        {contextNode && <div style={{ marginTop: '0.15rem' }}>{contextNode}</div>}
+      <div className="ph-card-compact-meta ph-featured-primary-meta" data-has-secondary={!compact && secondary.length > 0}>
+        <div className="ph-featured-main-label">{finalLabel}</div>
+        {contextNode && <div className="ph-featured-context-label">{contextNode}</div>}
       </div>
-      {secondary.length > 0 && (
+      {!compact && secondary.length > 0 && (
         <div className="ph-featured-secondary-stack">
           {secondary.slice(0, 2).map((s, idx) => {
             const secLabel = cleanTechnicalLabel(s.label) || "Atributo";
             const secMeta = cleanTechnicalLabel(s.meta);
             return (
               <div key={idx} className="ph-featured-secondary-item">
-                <strong>{secLabel} dominante:</strong> {secMeta} <span style={{ opacity: 0.8 }}>({s.pct}% - {renderNumeric(s.val)})</span>
+                <strong>{secLabel}:</strong> {secMeta} <span className="ph-secondary-val">({s.pct}%)</span>
               </div>
             );
           })}
@@ -98,12 +159,12 @@ const ProjectHomeInformesResumen = ({ payload }) => {
   const plantillas = Array.isArray(payload?.plantillas) ? payload.plantillas : [];
 
   const primaryKpi = payload?.kpis?.primary
-    ? { ...payload.kpis.primary, etiqueta: cleanTechnicalLabel(payload.kpis.primary.etiqueta) }
+    ? withUniverseItem({ ...payload.kpis.primary, etiqueta: cleanTechnicalLabel(payload.kpis.primary.etiqueta) })
     : null;
   const secondaryKpis = (Array.isArray(payload?.kpis?.secondary) ? payload.kpis.secondary : []).map(k => ({
     ...k,
     etiqueta: cleanTechnicalLabel(k.etiqueta)
-  }));
+  })).map(withUniverseItem);
 
   const primaryDefaultChartType = Array.isArray(primaryKpi?.items) && primaryKpi.items.length > 6 ? "bar" : "donut";
   const getSecondaryDefaultChartType = (summary) => Array.isArray(summary?.items) && summary.items.length > 10 ? "list" : "bar";
@@ -170,29 +231,189 @@ const ProjectHomeInformesResumen = ({ payload }) => {
   );
 };
 
+const ExecutiveHealthCard = ({ title, data, icon, unitLabel, onClick, color, ctaUrl, ctaLabel = "Ver Dashboard", lastActivityLabel = "Última actividad", stats }) => {
+  const navigate = useNavigate();
+  if (!data) return null;
+
+  const handleCta = (e) => {
+    if (ctaUrl) {
+      e.stopPropagation();
+      navigate(ctaUrl);
+    }
+  };
+
+  const activityText = timeAgo(data.lastActivity);
+
+  return (
+    <div 
+      className="ph-health-card ph-health-card--executive ph-health-card--interactive"
+      style={{ borderTop: `4px solid ${color}` }}
+      onClick={onClick}
+    >
+      <div className="ph-health-header">
+        <span className="ph-health-title">{title}</span>
+        <span className="ph-health-badge" style={{ background: `${color}15`, color: color }}>
+          {icon}
+        </span>
+      </div>
+      
+      <div className="ph-health-body">
+        <div className="ph-health-hero">
+          <span className="ph-health-value">{renderNumeric(data.totalGlobal)}</span>
+          <span className="ph-health-label">Total registros</span>
+        </div>
+
+        {data.focoLabel && (
+          <div className="ph-health-foco">
+            <strong>{data.focoLabel}:</strong> {renderNumeric(data.foco)}
+          </div>
+        )}
+
+        {Array.isArray(data.desglose) && data.desglose.length > 0 && (
+          <div className="ph-health-desglose">
+            {data.desglose.slice(0, 4).map((item, idx) => (
+              <div key={idx} className="ph-desglose-item">
+                <span className="ph-desglose-label">{item.label}:</span>
+                <span className="ph-desglose-val">
+                  {renderNumeric(item.valor)} <small>({item.pct}%)</small>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {stats && (
+          <div className="ph-health-embedded-stats mt-3">
+             <div className="d-flex align-items-center gap-3 mb-2">
+                <div style={{ width: 60, height: 60 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={stats.estados.map(s => ({ value: s.count }))}
+                        innerRadius={15}
+                        outerRadius={25}
+                        paddingAngle={2}
+                        dataKey="value"
+                      >
+                        {stats.estados.map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={index === 0 ? "#ef4444" : "#22c55e"} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="small flex-grow-1">
+                  <div className="fw-bold text-muted mb-1" style={{ fontSize: '0.75rem', textTransform: 'uppercase' }}>Motivos principales</div>
+                  {(() => {
+                    const criticalTerms = ["tramos", "afectacion", "vial", "obra"];
+                    const sortedTipologias = [...stats.tipologias].sort((a, b) => {
+                      const aCritical = criticalTerms.some(t => (a.tipologia || "").toLowerCase().includes(t));
+                      const bCritical = criticalTerms.some(t => (b.tipologia || "").toLowerCase().includes(t));
+                      if (aCritical && !bCritical) return -1;
+                      if (!aCritical && bCritical) return 1;
+                      return b.count - a.count;
+                    });
+                    
+                    return sortedTipologias.slice(0, 2).map((t, i) => (
+                      <div key={i} className="text-truncate" style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                        • {t.tipologia}: <strong>{t.count}</strong>
+                      </div>
+                    ));
+                  })()}
+                </div>
+             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="ph-health-pulso">
+        <FaClock /> <span>{lastActivityLabel}: <strong>{activityText}</strong></span>
+      </div>
+
+      <div className="ph-health-footer">
+        {ctaUrl ? (
+          <button type="button" className="ph-health-cta-link" onClick={handleCta}>
+            {ctaLabel} &rarr;
+          </button>
+        ) : (
+          <span className="ph-health-cta-mock">Ver detalle &rarr;</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const ProjectHomePage = () => {
   const params = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const { setCurrentProjectId, currentProjectId } = useProjectContext();
 
+  const [searchParams, setSearchParams] = useSearchParams();
   const idProyecto = params.id_proyecto || params.idProyecto;
-  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const idPlantilla = searchParams.get("id_plantilla") || searchParams.get("idPlantilla");
 
-  const canConfigurePanel = useMemo(() => esAdmin(), []);
-  const canSeeInformes = useMemo(() => hasPerm("informes.read"), []);
-  const canSeeExpedientes = useMemo(() => hasPerm("expedientes.read"), []);
-  const canSeeQuejas = useMemo(() => hasPerm("quejas_reclamos.read"), []);
+  const [status, setStatus] = useState("loading");
+  const [data, setData] = useState(null);
+  const [executiveData, setExecutiveData] = useState(null);
+
+  const { can, user: authUser } = useAuth();
+  const esAdminUser = authUser?.group_id === 1 || authUser?.tipo_usuario === 1;
+
   const effectiveProjectId = useMemo(() => {
     const id = Number(currentProjectId || idProyecto || 0);
     return Number.isFinite(id) && id > 0 ? id : null;
   }, [currentProjectId, idProyecto]);
 
-  const [status, setStatus] = useState("loading");
-  const [data, setData] = useState(null);
+  const projectInfo = executiveData?.project || data?.project || {};
+  const projectId = Number(projectInfo?.id || effectiveProjectId || idProyecto || 0);
+
+  // Pure RBAC Logic: Strictly permissions-based
+  const canSeeInformes = can("informes.read");
+  const canSeeQuejas = can("quejas_reclamos.read");
+  const canSeeExpedientes = can("expedientes.read");
+  const canDIA = can("declaraciones.read");
+  const canPGA = can("pga.read");
+  const canResoluciones = can("resoluciones.read");
+  const canRegencia = can("regencia.contratos.read") || can("regencia.actividades.read");
+  const canEvaluaciones = can("evaluaciones.read");
+  const canReportes = can("reportes.read");
+  const canActasPreconstruccion = can("actas.create") || can("actas.update") || can("actas.generate");
+  const canActasListado = can("actas.read");
+  const canNDVI = can("use_change.read") || can("use_change.create");
+  const canPOI = can("poi.read");
+  const canConfigurePanel = can("proyectos.update") || esAdminUser;
+  const canVerMapa = can("proyectos.read");
+  const canTramos = can("tramos.read");
+  const canMantenimiento = can("mantenimiento.import") || can("mantenimiento.create");
+  const canCrearInforme = can("informes.create");
+  const canViewProject = can("proyectos.read");
+  const canDeleteProject = can("proyectos.delete");
+
+  // Multi-Nature Hub: Show anything allowed
+  const showLegalTools = canDIA || canPGA || canResoluciones;
+  const showTerritorialTools = canPOI || canSeeExpedientes || canNDVI || canTramos;
+  const showFollowUpTools = canRegencia || canEvaluaciones || canActasListado;
+  const showReportsTools = canSeeInformes || canReportes;
+  const showAdditionalTools =
+    canTramos ||
+    canActasListado ||
+    canMantenimiento ||
+    canCrearInforme ||
+    canSeeExpedientes;
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState("resumen");
+  const [activeTab, setActiveTabBase] = useState(searchParams.get("tab") || "resumen");
+  const [showActionHub, setShowActionHub] = useState(false);
+  
+  const setActiveTab = useCallback((tab) => {
+    setActiveTabBase(tab);
+    setSearchParams(prev => {
+      prev.set("tab", tab);
+      return prev;
+    }, { replace: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [setSearchParams]);
+
   const [showConfig, setShowConfig] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [fullTemporalStatus, setFullTemporalStatus] = useState("idle"); 
@@ -205,6 +426,7 @@ const ProjectHomePage = () => {
   const [childStatus, setChildStatus] = useState("idle"); 
   const [childData, setChildData] = useState(null);
   const [childError, setChildError] = useState("");
+  const [pqrStats, setPqrStats] = useState(null);
   const childReqRef = useRef(0);
 
   useEffect(() => {
@@ -216,13 +438,20 @@ const ProjectHomePage = () => {
     }
 
     setStatus("loading");
-    projectHomeApi
-      .getProjectHomeResumen({
+    Promise.all([
+      projectHomeApi.getProjectHomeResumen({
         id_proyecto: effectiveProjectId,
         id_plantilla: idPlantilla,
         skip_temporal: true,
-      })
-      .then((payload) => {
+      }),
+      projectHomeApi.getProjectHomeExecutiveResumen({
+        id_proyecto: effectiveProjectId
+      }),
+      canSeeQuejas ? fetch(`${window.location.origin}/api/quejas-reclamos/stats?id_proyecto=${effectiveProjectId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }
+      }).then(r => r.json()).catch(() => null) : Promise.resolve(null)
+    ])
+      .then(([payload, execPayload, pqrPayload]) => {
         if (!active) return;
         if (!payload?.ok) {
           setStatus("empty");
@@ -230,6 +459,8 @@ const ProjectHomePage = () => {
           return;
         }
         setData(payload);
+        setExecutiveData(execPayload);
+        setPqrStats(pqrPayload);
         setStatus("success");
       })
       .catch((err) => {
@@ -264,12 +495,58 @@ const ProjectHomePage = () => {
   const informeStats = data?.general || {};
   const expedienteStats = data?.expedientes || {};
   const quejasStats = data?.quejas || {};
+  const catastroSummary = data?.catastro_summary || null;
   const activity = data?.activity || {};
   const plantillas = Array.isArray(data?.plantillas) ? data.plantillas : [];
   const fieldSummaries = Array.isArray(data?.field_summaries) ? data.field_summaries : [];
   const temporalSources = Array.isArray(data?.temporal_sources) ? data.temporal_sources : [];
   const focus = data?.focus || null;
   const plantillaFocus = data?.informes?.plantilla_focus || null;
+
+  const catastroHomeCard = useMemo(() => {
+    if (!catastroSummary) return null;
+
+    const hero = catastroSummary.hero || {};
+    const totalRelevados = Number(hero.total_relevados || 0);
+    const totalTarget = Number(hero.total_target || 0);
+    const coberturaPctRaw = Number(hero.cobertura_pct);
+    const coberturaPct = Number.isFinite(coberturaPctRaw)
+      ? coberturaPctRaw
+      : (totalTarget > 0 ? (totalRelevados / totalTarget) * 100 : 0);
+    const pendientesRaw = Number(hero.pendientes);
+    const pendientes = Number.isFinite(pendientesRaw)
+      ? pendientesRaw
+      : Math.max(0, totalTarget - totalRelevados);
+
+    const isHealthySummary =
+      catastroSummary._error !== true &&
+      catastroSummary._fallback !== true &&
+      catastroSummary._forced !== true;
+
+    if (!isHealthySummary) {
+      return {
+        totalGlobal: null,
+        focoLabel: "Cobertura",
+        foco: null,
+        desglose: [],
+        lastActivity: null,
+      };
+    }
+
+    return {
+      totalGlobal: totalRelevados,
+      focoLabel: "Cobertura (%)",
+      foco: Number(coberturaPct.toFixed(1)),
+      desglose: [
+        {
+          label: "Pendientes",
+          valor: pendientes,
+          pct: totalTarget > 0 ? Math.round((pendientes / totalTarget) * 100) : 0,
+        },
+      ],
+      lastActivity: hero.last_activity || null,
+    };
+  }, [catastroSummary]);
 
   const visibleHeaderCards = useMemo(() => {
     if (!data) return [];
@@ -296,20 +573,8 @@ const ProjectHomePage = () => {
           url: `/proyectos/${effectiveProjectId}/gv-catastro`,
         },
       },
-      canSeeQuejas && data.quejas && {
-        id: "quejas",
-        title: "Quejas / Reclamos",
-        value: (quejasStats.total || 0).toLocaleString(),
-        meta: quejasStats.pendientes > 0 
-          ? `${quejasStats.pendientes} pendientes de resolución` 
-          : quejasStats.total === 0 ? "Sin actividad" : "Todas resueltas",
-        cta: {
-          label: "Ir a módulo",
-          url: `/quejas-reclamos?id_proyecto=${effectiveProjectId}`,
-        },
-      },
     ].filter(Boolean);
-  }, [data, canSeeInformes, canSeeExpedientes, canSeeQuejas, informeStats, expedienteStats, quejasStats, effectiveProjectId]);
+  }, [data, canSeeInformes, canSeeExpedientes, informeStats, expedienteStats, quejasStats, effectiveProjectId]);
 
   const plantillaById = useMemo(() => {
     const map = new Map();
@@ -327,6 +592,26 @@ const ProjectHomePage = () => {
     },
     [plantillaById]
   );
+
+  const goToTramosOrPoi = useCallback(async () => {
+    if (!effectiveProjectId) return;
+
+    try {
+      const res = await fetch(`${API_URL}/tramos/proyectos/${effectiveProjectId}/tramos`, {
+        headers: authHeader(),
+      });
+      if (!res.ok) {
+        navigate(`/proyectos/${effectiveProjectId}/tramos`);
+        return;
+      }
+
+      const data = await res.json();
+      const arr = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+      navigate((arr.length > 0 && canTramos) ? `/proyectos/${effectiveProjectId}/tramos` : `/proyectos/${effectiveProjectId}/poi`);
+    } catch {
+      navigate(`/proyectos/${effectiveProjectId}/tramos`);
+    }
+  }, [canTramos, effectiveProjectId, navigate]);
 
   const loadHomeItems = useCallback(() => {
     if (!effectiveProjectId || !canSeeInformes) {
@@ -358,6 +643,19 @@ const ProjectHomePage = () => {
       ) || null,
     [homeItems, selectedHomeItemId]
   );
+
+  const reportTitle =
+    selectedHomeItem?.label ||
+    selectedHomeItem?.plantilla_nombre ||
+    resolvePlantillaName(selectedHomeItem?.id_plantilla) ||
+    "Informe";
+  const plantillaLabel =
+    selectedHomeItem?.plantilla_nombre || resolvePlantillaName(selectedHomeItem?.id_plantilla);
+  const totalRegistros =
+    childData?.general?.selected_plantilla_total_records ??
+    childData?.general?.total_informes;
+  const rangeFrom = childData?.activity?.range_from || "?";
+  const rangeTo = childData?.activity?.range_to || "?";
 
   useEffect(() => {
     loadHomeItems();
@@ -392,7 +690,10 @@ const ProjectHomePage = () => {
     const isLegacyVirtual =
       selectedHomeItem?.is_virtual === true || String(selectedHomeItem?.source_kind) === "legacy";
     const resumenParams = isLegacyVirtual
-      ? { id_proyecto: effectiveProjectId }
+      ? {
+          id_proyecto: effectiveProjectId,
+          id_plantilla: selectedHomeItem?.id_plantilla,
+        }
       : {
           id_proyecto: effectiveProjectId,
           id_home_item: selectedHomeItemId,
@@ -467,7 +768,8 @@ const ProjectHomePage = () => {
     const catastro = data?.catastro_summary;
     if (!catastro) return null;
 
-    const { hero, calidad, operativa, economico, stats_estados, stats_dbi } = catastro;
+    const { hero, operativa, economico, stats_estados, stats_dbi } = catastro;
+    const lastActivityText = timeAgo(hero?.last_activity);
 
     return (
       <div className="ph-catastro-section">
@@ -497,9 +799,7 @@ const ProjectHomePage = () => {
           <div className="ph-catastro-footer-metrics-line">
             <span>Ubicación Geo: <strong>{hero.geolocalizacion_pct?.toFixed(1)}%</strong></span>
             <span className="ph-metric-sep">|</span>
-            {calidad && (
-              <span>Calidad Cartográfica: <strong>{calidad.precision_cartografica_pct.toFixed(1)}%</strong></span>
-            )}
+            <span>Última actividad: <strong>{lastActivityText}</strong></span>
           </div>
 
           {economico && (
@@ -526,7 +826,7 @@ const ProjectHomePage = () => {
                     </span>
                     <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
                       <span style={{ fontWeight: 800, color: '#ef4444' }}>{renderNumeric(t.pendientes)}</span> pendientes
-                      <span className="ph-dot-separator">•</span>
+                      <span className="ph-dot-separator">â€¢</span>
                       <span style={{ fontWeight: 800 }}>{t.cobertura_pct.toFixed(0)}%</span>
                     </div>
                   </div>
@@ -556,9 +856,15 @@ const ProjectHomePage = () => {
         <nav className="ph-tabs">
           {[
             { key: "resumen", label: "Resumen" },
-            { key: "informes", label: "Informes" },
-            { key: "expedientes", label: "Expedientes" },
-          ].filter(t => (t.key === 'resumen' || (t.key === 'informes' && canSeeInformes) || (t.key === 'expedientes' && canSeeExpedientes))).map((tab) => (
+            { key: "informes", label: "Gestión Socioambiental" },
+            { key: "expedientes", label: "Expedientes Catastrales" },
+            { key: "quejas", label: "Quejas y Reclamos" },
+          ].filter(t => (
+            t.key === 'resumen' || 
+            (t.key === 'informes' && canSeeInformes) || 
+            (t.key === 'expedientes' && canSeeExpedientes) ||
+            (t.key === 'quejas' && canSeeQuejas)
+          )).map((tab) => (
             <button
               key={tab.key}
               type="button"
@@ -569,14 +875,34 @@ const ProjectHomePage = () => {
             </button>
           ))}
         </nav>
-        {canConfigurePanel && (
-          <button
-            className="pc-btn pc-btn-outline pc-btn-small"
-            onClick={() => setShowConfig((prev) => !prev)}
+        <div className="ph-header-actions">
+          {canConfigurePanel && (
+            <button 
+              type="button" 
+              className="ph-config-minimal-btn"
+              onClick={() => setShowConfig(!showConfig)}
+              title="Personalizar Vista"
+            >
+              <FaCog />
+              <span className="ph-btn-label">Personalizar</span>
+            </button>
+          )}
+          <button 
+            type="button" 
+            className="ph-hero-map-btn"
+            onClick={() => navigate(`/visor-full/${effectiveProjectId}`)}
+            title="Abrir Visor Geográfico"
           >
-            Configurar panel
+            <FaGlobeAmericas /> Ver Mapa
           </button>
-        )}
+          <button 
+            type="button" 
+            className="ph-action-hub-toggle"
+            onClick={() => setShowActionHub(true)}
+          >
+            <FaTools /> Acciones
+          </button>
+        </div>
       </header>
 
       {showConfig && (
@@ -586,7 +912,7 @@ const ProjectHomePage = () => {
           fieldSummaries={fieldSummaries}
           temporalSources={temporalSources}
           plantillas={plantillas}
-          focus={focus}
+          onClose={() => setShowConfig(false)}
           onSaved={(options = {}) => {
             if (options?.closePanel) {
               setShowConfig(false);
@@ -605,51 +931,65 @@ const ProjectHomePage = () => {
         <>
           {activeTab === "resumen" && (
             <div className="ph-home-summary">
-              <div 
-                className="ph-home-header-grid"
-                style={visibleHeaderCards.length > 0 ? {
-                  gridTemplateColumns: `repeat(${visibleHeaderCards.length}, 1fr)`
-                } : {}}
-              >
-                {visibleHeaderCards.map((card) => (
-                  <div key={card.id} className="ph-card ph-card-compact">
-                    <div className="ph-card-compact-header">
-                      <span className="ph-card-compact-title">{card.title}</span>
-                      {card.cta && (
-                        <button 
-                          type="button" 
-                          className="ph-card-compact-cta"
-                          onClick={() => navigate(card.cta.url)}
-                        >
-                          {card.cta.label} &rarr;
-                        </button>
-                      )}
-                    </div>
-                    <div className="ph-card-compact-value">{card.value}</div>
-                    <div className="ph-card-compact-meta">{card.meta}</div>
-                  </div>
-                ))}
-              </div>
-
-              {canSeeInformes && data?.featured_reports && data.featured_reports.length > 0 && (
-                <div className="ph-kpi-section ph-kpi-section--featured">
-                  <div className="ph-card-title ph-card-title--featured">Indicadores Destacados</div>
-                  <div className="ph-featured-grid">
-                    {data.featured_reports.map((report) => (
-                      <ProjectHomeFeaturedReportCard 
-                        key={report.key} 
-                        report={report} 
-                        onClick={() => {
-                          setActiveTab("informes");
-                          setSelectedHomeItemId(report.source_kind === 'legacy' ? 'legacy-base' : report.id_home_item);
-                        }} 
-                      />
-                    ))}
-                  </div>
+              {status === "loading" ? (
+                <div className="ph-health-hub">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="ph-health-card ph-card-skeleton" style={{ height: '320px' }}></div>
+                  ))}
                 </div>
-              )}
+              ) : executiveData ? (
+                <div className="ph-health-hub">
+                  {canSeeInformes && executiveData.socioambiental && (
+                    <ExecutiveHealthCard 
+                      title="Gestión Socioambiental"
+                      data={{
+                        ...executiveData.socioambiental,
+                        focoLabel: executiveData.socioambiental.focoLabel || "Indicador Principal",
+                      }}
+                      color="#3b82f6"
+                      icon="Socioambiental"
+                      onClick={() => setActiveTab("informes")}
+                      ctaUrl={`/dashboardinformes?id_proyecto=${effectiveProjectId}`}
+                      ctaLabel="Ver Gestión"
+                      lastActivityLabel="Último informe"
+                    />
+                  )}
 
-              {renderCatastroBlock()}
+                  {canSeeExpedientes && catastroHomeCard && (
+                    <ExecutiveHealthCard 
+                      title="Catastro y Expedientes"
+                      data={catastroHomeCard}
+                      color="#22c55e"
+                      icon="Expedientes"
+                      onClick={() => setActiveTab("expedientes")}
+                      ctaUrl={`/proyectos/${effectiveProjectId}/gv-catastro`}
+                      ctaLabel="Ver Detalle"
+                      lastActivityLabel="Última actividad"
+                    />
+                  )}
+
+                  {canSeeQuejas && executiveData.quejas && (
+                    <ExecutiveHealthCard 
+                      title="Quejas y Reclamos"
+                      data={{
+                        ...executiveData.quejas,
+                        focoLabel: "Pendientes",
+                        foco: executiveData.quejas.foco
+                      }}
+                      color="#ef4444"
+                      icon="PQR"
+                      onClick={() => setActiveTab("quejas")}
+                      ctaUrl={`/quejas-reclamos?id_proyecto=${effectiveProjectId}`}
+                      ctaLabel="Gestión Operativa"
+                      lastActivityLabel="Último reclamo"
+                      stats={pqrStats}
+                    />
+                  )}
+
+                </div>
+              ) : (
+                <div className="ph-status">No se pudo cargar el resumen ejecutivo.</div>
+              )}
             </div>
           )}
 
@@ -665,27 +1005,34 @@ const ProjectHomePage = () => {
                     <div className="ph-informes-header-top">
                       <div>
                         <div className="ph-card-title">Informes del proyecto</div>
-                        <div className="ph-informes-public-list-subtitle">
-                          {selectedHomeItemId 
-                            ? `Viendo: ${selectedHomeItem?.label || resolvePlantillaName(selectedHomeItem?.id_plantilla)}`
-                            : "Selecciona un informe para ver su análisis detallado."
-                          }
-                        </div>
+                        {selectedHomeItemId ? (
+                          <h3 className="ph-report-title">{reportTitle}</h3>
+                        ) : (
+                          <div className="ph-informes-public-list-subtitle">
+                            Selecciona un informe para ver su análisis detallado.
+                          </div>
+                        )}
                       </div>
                       <div className="ph-informes-header-actions">
                         {selectedHomeItemId && childStatus === "success" && childData && (
                           <div className="ph-informes-compact-meta">
+                            {plantillaLabel && plantillaLabel !== reportTitle && (
+                              <div className="ph-meta-item">
+                                <span className="ph-meta-label">Plantilla:</span>
+                                <strong className="ph-meta-val">{plantillaLabel}</strong>
+                              </div>
+                            )}
                             <div className="ph-meta-item">
-                              <span className="ph-meta-label">Base:</span>
+                              <span className="ph-meta-label">Total registros:</span>
                               <strong className="ph-meta-val">
-                                {Number(childData?.general?.total_informes || 0).toLocaleString()}
+                                {Number(totalRegistros || 0).toLocaleString()}
                               </strong>
                             </div>
                             {(childData?.activity?.range_from || childData?.activity?.range_to) && (
                               <div className="ph-meta-item">
                                 <span className="ph-meta-label">Periodo:</span>
                                 <strong className="ph-meta-val">
-                                  {`${childData?.activity?.range_from || '?'} - ${childData?.activity?.range_to || '?'}`}
+                                  {`${rangeFrom} - ${rangeTo}`}
                                 </strong>
                               </div>
                             )}
@@ -798,10 +1145,134 @@ const ProjectHomePage = () => {
               {renderCatastroBlock()}
             </div>
           )}
+
+          {activeTab === "quejas" && (
+            <div className="ph-quejas-public-layout px-4">
+               {!canSeeQuejas && (
+                <div className="ph-status ph-status-error">No tienes permisos para ver Quejas y Reclamos.</div>
+              )}
+              {canSeeQuejas && (
+                <QuejasReclamos 
+                  idProyectoExternal={effectiveProjectId} 
+                  embedded={true} 
+                />
+              )}
+            </div>
+          )}
+
         </>
+      )}
+
+      {/* Right Action Hub Drawer with Intelligence & Glossary */}
+      {showActionHub && (
+        <div className="ph-drawer-overlay" onClick={() => setShowActionHub(false)}>
+          <div className="ph-drawer-panel" onClick={(e) => e.stopPropagation()}>
+            <header className="ph-drawer-header">
+              <div className="ph-drawer-title-stack">
+                <span className="ph-drawer-title">Centro de Mando</span>
+                <span className="ph-drawer-subtitle">{executiveData?.project?.nombre || "Proyecto"}</span>
+              </div>
+              <button className="ph-drawer-close" onClick={() => setShowActionHub(false)}>&times;</button>
+            </header>
+            <div className="ph-drawer-content">
+              {/* Grupo Operación Territorial */}
+              {(canVerMapa || canNDVI || canSeeExpedientes || canTramos || canPOI) && (
+                <div className="ph-drawer-group">
+                  <div className="ph-drawer-group-title">
+                    <FaHardHat /> Operación Territorial
+                  </div>
+                  <div className="ph-drawer-grid">
+                    {canVerMapa && (
+                      <button className="ph-hub-btn ph-hub-btn--blue" onClick={() => navigate(`/visor-full/${effectiveProjectId}`)}>
+                        <FaGlobeAmericas /> <span>Ver Mapa</span>
+                      </button>
+                    )}
+                    {canNDVI && (
+                      <button className="ph-hub-btn ph-hub-btn--green" onClick={() => navigate(`/proyectos/${effectiveProjectId}/analisis-ndvi`)}>
+                        <FaChartLine /> <span>Análisis Cambio de Uso</span>
+                      </button>
+                    )}
+                    {canSeeExpedientes && (
+                      <button className="ph-hub-btn ph-hub-btn--blue" onClick={() => navigate(`/proyectos/${effectiveProjectId}/gv-catastro`)}>
+                        <FaHardHat /> <span>Expedientes</span>
+                      </button>
+                    )}
+                    {(canTramos || canPOI) && (
+                      <button className="ph-hub-btn ph-hub-btn--yellow" onClick={goToTramosOrPoi}>
+                        <FaMapMarked /> <span>Tramos/POI</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Grupo Gestión y Seguimiento */}
+              {(canRegencia || canActasPreconstruccion || canActasListado) && (
+                <div className="ph-drawer-group">
+                  <div className="ph-drawer-group-title">
+                    <FaBullhorn /> Gestión y Seguimiento
+                  </div>
+                  <div className="ph-drawer-grid">
+                    {canRegencia && (
+                      <button className="ph-hub-btn ph-hub-btn--indigo" onClick={() => navigate(`/proyectos/${effectiveProjectId}/regencia`)}>
+                        <FaCheckCircle /> <span>Regencia</span>
+                      </button>
+                    )}
+                    {canActasPreconstruccion && (
+                      <button className="ph-hub-btn ph-hub-btn--teal" onClick={() => navigate(`/proyectos/${effectiveProjectId}/actas-preconstruccion`)}>
+                        <FaCheckCircle /> <span>Actas de Preconstrucción</span>
+                      </button>
+                    )}
+                    {canActasListado && (
+                      <button className="ph-hub-btn ph-hub-btn--slate" onClick={() => navigate(`/proyectos/${effectiveProjectId}/actas`)}>
+                        <FaFileAlt /> <span>Listado de Actas</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Grupo Informes */}
+              {canSeeInformes && (
+                <div className="ph-drawer-group">
+                  <div className="ph-drawer-group-title">
+                    <FaChartLine /> Gestión de Informes
+                  </div>
+                  <div className="ph-drawer-grid">
+                    <button className="ph-hub-btn ph-hub-btn--slate" onClick={() => navigate(`/proyectos/${effectiveProjectId}/informes`)}>
+                      <FaChartBar /> <span>Informes - Dashboard</span>
+                    </button>
+                    <button className="ph-hub-btn ph-hub-btn--slate" onClick={() => navigate(`/proyectos/${effectiveProjectId}/informes/lista`)}>
+                      <FaFileAlt /> <span>Informes por proyecto</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Grupo Administración */}
+              <div className="ph-drawer-group ph-drawer-group--bottom">
+                <div className="ph-drawer-group-title">Administración</div>
+                <div className="ph-drawer-grid">
+                  {can("proyectos.read") && (
+                    <button className="ph-hub-btn ph-hub-btn--slate" onClick={() => navigate(`/proyectos/${effectiveProjectId}/ver`)}>
+                      <FaEye /> <span>Ver Proyecto</span>
+                    </button>
+                  )}
+                  {canDeleteProject && (
+                    <button className="ph-hub-btn ph-hub-btn--red" onClick={() => alert("Función protegida administrativamente.")}>
+                      <FaTrashAlt /> <span>Eliminar</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 };
 
 export default ProjectHomePage;
+
+

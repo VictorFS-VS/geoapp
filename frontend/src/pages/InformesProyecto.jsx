@@ -1,16 +1,14 @@
-// src/pages/InformesProyecto.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Table, Button, Badge, Spinner, Modal, Alert, Form } from "react-bootstrap";
+import { Table, Button, Badge, Spinner, Modal, Alert, Form, Dropdown, ButtonGroup, Collapse } from "react-bootstrap";
 import Swal from "sweetalert2";
 
 import InformeModal from "@/components/InformeModal";
-import ScoringResultPanel from "@/modules/diagnostico/ScoringResultPanel";
-import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
-import { useAuth } from "@/auth/AuthContext";
-import { useInformesQuery } from "@/hooks/useInformesQuery";
 import InformesTableOperativo from "@/components/informes/InformesTableOperativo";
-import Pagination from "@/components/ui/Pagination";
+import ConsolidacionMasivaModal from "@/components/informes/ConsolidacionMasivaModal";
+import ImportarFotosZipModal from "@/modules/informes/ImportarFotosZipModal";
+import ImportarExcelActualizarModal from "@/components/informes/ImportarExcelActualizarModal";
+import { useAuth } from "@/auth/AuthContext";
 
 function normalizeApiBase(base) {
   const b = String(base || "").trim();
@@ -20,6 +18,7 @@ function normalizeApiBase(base) {
 
 const API_URL = normalizeApiBase(import.meta.env.VITE_API_URL) || "http://localhost:4000/api";
 const PUBLIC_API_URL = normalizeApiBase(import.meta.env.VITE_PUBLIC_API_URL) || API_URL;
+const USE_OPERATIVE_TABLE = true;
 
 const authHeaders = () => {
   const token =
@@ -44,6 +43,24 @@ const Toast = Swal.mixin({
     popup.style.whiteSpace = "normal";
   },
 });
+
+const fireSwalTop = (options) =>
+  Swal.fire({
+    target: document.body,
+    heightAuto: false,
+    allowOutsideClick: true,
+    allowEscapeKey: true,
+    ...options,
+    didOpen: (popup) => {
+      const container = Swal.getContainer();
+      if (container) {
+        container.style.zIndex = "3000";
+      }
+      if (typeof options.didOpen === "function") {
+        options.didOpen(popup);
+      }
+    },
+  });
 
 function getFilenameFromContentDisposition(cd) {
   if (!cd) return "";
@@ -96,16 +113,19 @@ async function downloadWithAuth(url, fallbackFilename) {
   window.URL.revokeObjectURL(blobUrl);
 }
 
-// ✅ storage key para pick global por proyecto+plantilla
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function kmzPickStorageKey(idProyecto, idPlantillaFiltro) {
   const pl = idPlantillaFiltro ? String(idPlantillaFiltro) : "ALL";
   return `kmz_pick_global:p${idProyecto}:pl${pl}`;
 }
+
 function kmzPickByInformeKey(idInforme) {
   return `kmz_pick_informe:${idInforme}`;
 }
 
-// fallback perms desde localStorage.user (por si AuthContext aún está cargando)
 function getUserPermsFromStorage() {
   try {
     const s = localStorage.getItem("user");
@@ -114,18 +134,18 @@ function getUserPermsFromStorage() {
 
     const p = u?.perms ?? u?.permissions ?? u?.permisos ?? [];
     if (Array.isArray(p)) return p.map(String);
-    if (typeof p === "string")
+    if (typeof p === "string") {
       return p
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
+    }
     return [];
   } catch {
     return [];
   }
 }
 
-// chequeo de permiso robusto (AuthContext -> auth.user.perms -> localStorage)
 function hasPerm(auth, code) {
   if (typeof auth?.hasPerm === "function") return !!auth.hasPerm(code);
   const permsAuth = auth?.user?.perms;
@@ -149,6 +169,47 @@ function isAdminUser(auth) {
   }
 }
 
+function normalizeOptionsJson(opcionesJson) {
+  try {
+    const parsed =
+      typeof opcionesJson === "string" ? JSON.parse(opcionesJson) : opcionesJson;
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map((opt) => {
+        if (typeof opt === "string") {
+          return { value: opt, label: opt };
+        }
+        if (opt && typeof opt === "object") {
+          return {
+            value:
+              opt.value ??
+              opt.valor ??
+              opt.id ??
+              opt.label ??
+              opt.nombre ??
+              opt.titulo ??
+              "",
+            label:
+              opt.label ??
+              opt.nombre ??
+              opt.titulo ??
+              opt.value ??
+              opt.valor ??
+              opt.id ??
+              "",
+          };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .filter((x) => String(x.value ?? "").trim() !== "");
+  } catch {
+    return [];
+  }
+}
+
 const InformesProyecto = () => {
   const { idProyecto } = useParams();
   const navigate = useNavigate();
@@ -165,22 +226,21 @@ const InformesProyecto = () => {
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [plantillaParam]);
 
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
-  const [limit, setLimit] = useState(20);
-
-  const { informes, meta, loading, error, preguntasPlantilla, formulaActiva, cargarInformes } = useInformesQuery(idProyecto, idPlantillaFiltro, { search, page, limit });
-
+  const [informes, setInformes] = useState([]);
+  const [searchText, setSearchText] = useState("");
+  const [listPage, setListPage] = useState(1);
+  const [listMeta, setListMeta] = useState({ total: 0, page: 1, limit: 20, total_pages: 1 });
+  const [listSort, setListSort] = useState({ sortBy: "fecha", sortOrder: "desc" });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkDeletingFotos, setBulkDeletingFotos] = useState(false);
+  const totalRegistrosExport = Number(listMeta.total || 0);
 
   const [showViewModal, setShowViewModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [idInformeSel, setIdInformeSel] = useState(null);
-  
-  // Scroring Modal
-  const [showScoringModal, setShowScoringModal] = useState(false);
-  const [idRegistroSel, setIdRegistroSel] = useState(null);
 
   const [downloading, setDownloading] = useState({
     pdf: false,
@@ -188,78 +248,109 @@ const InformesProyecto = () => {
     docxTabla: false,
     xlsx: false,
     kmz: false,
+    docxRange: false,
+    docxTablaRange: false,
+    docxSingleRange: false,
+    docxTablaSingleRange: false,
   });
 
   const [downloadingKmzByInforme, setDownloadingKmzByInforme] = useState({});
 
-  // ✅ Modal choice KMZ
   const [kmzChoiceOpen, setKmzChoiceOpen] = useState(false);
   const [kmzChoiceInfo, setKmzChoiceInfo] = useState(null);
   const [kmzChoiceSelected, setKmzChoiceSelected] = useState(null);
-  const [kmzChoiceScope, setKmzChoiceScope] = useState(null); // "proyecto" | "informe"
+  const [kmzChoiceScope, setKmzChoiceScope] = useState(null);
   const [kmzChoiceInformeId, setKmzChoiceInformeId] = useState(null);
 
   const kmzPickGlobalRef = useRef(null);
 
   const [showImportZip, setShowImportZip] = useState(false);
-  const [evaluando, setEvaluando] = useState(false);
+  const [showImportExcel, setShowImportExcel] = useState(false);
+  const [showConsolidacion, setShowConsolidacion] = useState(false);
+  const [showHeaderTools, setShowHeaderTools] = useState(false);
 
-  const handleEjecutarEvaluacionMasiva = async () => {
-    if (!idProyecto || !idPlantillaFiltro) return;
+  const [preguntasPlantilla, setPreguntasPlantilla] = useState([]);
+  const [seccionesPlantilla, setSeccionesPlantilla] = useState([]);
+  const [formulaActiva, setFormulaActiva] = useState(null);
+  const [plantillaNombre, setPlantillaNombre] = useState("");
 
-    const result = await Swal.fire({
-      title: 'Evaluación de Fórmulas',
-      text: `¿Desea ejecutar la evaluación de la fórmula "${formulaActiva?.nombre}" (Versión ${formulaActiva?.version}) sobre todos los informes de este proyecto?`,
-      icon: 'info',
-      showCancelButton: true,
-      confirmButtonText: 'Sí, Ejecutar Ahora',
-      cancelButtonText: 'Cancelar',
-      confirmButtonColor: '#0d6efd'
-    });
+  const [showWordConfig, setShowWordConfig] = useState(false);
+  const [reopenWordConfigAfterSwalCancel, setReopenWordConfigAfterSwalCancel] = useState(false);
 
-    if (!result.isConfirmed) return;
+  const [wordConfig, setWordConfig] = useState({
+    modo: "normal",
+    incluirFotos: true,
+    fotosEnTabla: false,
+    maxFotos: 2,
+    page: 1,
+    limit: 10,
+    preguntas: [],
+    secciones: [],
+    orderBy: "fecha",
+    orderDir: "asc",
+    orderPreguntaId: "",
+  });
 
-    try {
-      setEvaluando(true);
-      const res = await fetch(`${API_URL}/diagnostico/evaluar-plantilla`, {
-        method: 'POST',
-        headers: {
-          ...authHeaders(),
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-          id_proyecto: idProyecto, 
-          id_plantilla: idPlantillaFiltro 
+  const [wordRange, setWordRange] = useState({
+    from: 1,
+    to: 1,
+  });
+
+  useEffect(() => {
+    if (idPlantillaFiltro) {
+      fetch(`${API_URL}/informes/plantillas/${idPlantillaFiltro}`, { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((d) => {
+          setPlantillaNombre(String(d?.nombre || d?.titulo || d?.nombre_plantilla || "").trim());
+          const secciones = Array.isArray(d.secciones) ? d.secciones : [];
+          const seccionesConPreguntas = secciones.filter(
+            (s) => Array.isArray(s.preguntas) && s.preguntas.length > 0
+          );
+          const allPreguntas = seccionesConPreguntas.flatMap((s) => s.preguntas || []);
+
+          setSeccionesPlantilla(seccionesConPreguntas);
+          setPreguntasPlantilla(allPreguntas);
+
+          setWordConfig((prev) => ({
+            ...prev,
+            preguntas: [],
+            secciones: [],
+            page: 1,
+            limit: 10,
+            orderPreguntaId: "",
+          }));
         })
-      });
+        .catch((err) => {
+          console.error("Error cargando preguntas de plantilla:", err);
+          setSeccionesPlantilla([]);
+          setPreguntasPlantilla([]);
+          setPlantillaNombre("");
+        });
 
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Error al procesar");
-
-      const { stats } = json;
-      Swal.fire({
-        icon: 'success',
-        title: 'Evaluación Completada',
-        html: `
-          <div class="text-start small">
-            <p>Se procesaron <b>${stats.procesados}</b> registros.</p>
-            <ul>
-              <li class="text-primary">Con cambios: ${stats.con_cambios}</li>
-              <li class="text-muted">Sin cambios: ${stats.sin_cambios}</li>
-              <li class="text-warning">Ignorados (Override): ${stats.ignorados_override}</li>
-              ${stats.errores > 0 ? `<li class="text-danger">Errores: ${stats.errores}</li>` : ''}
-            </ul>
-          </div>
-        `
-      });
-
-      cargarInformes(); // Recargar tabla
-    } catch (err) {
-      Swal.fire('Error', err.message, 'error');
-    } finally {
-      setEvaluando(false);
+      fetch(`${API_URL}/diagnostico/plantilla/${idPlantillaFiltro}`, { headers: authHeaders() })
+        .then((r) => r.json())
+        .then((res) => {
+          setFormulaActiva(res?.ok && res?.formula ? res.formula : null);
+        })
+        .catch((err) => {
+          console.error("Error cargando fórmula activa:", err);
+          setFormulaActiva(null);
+        });
+    } else {
+      setPreguntasPlantilla([]);
+      setSeccionesPlantilla([]);
+      setFormulaActiva(null);
+      setPlantillaNombre("");
+      setWordConfig((prev) => ({
+        ...prev,
+        preguntas: [],
+        secciones: [],
+        page: 1,
+        limit: 10,
+        orderPreguntaId: "",
+      }));
     }
-  };
+  }, [idPlantillaFiltro]);
 
   useEffect(() => {
     if (!idProyecto) return;
@@ -269,16 +360,176 @@ const InformesProyecto = () => {
     kmzPickGlobalRef.current = Number.isFinite(n) && n > 0 ? n : null;
   }, [idProyecto, idPlantillaFiltro]);
 
-  // ✅ PERMISOS REALES
+  useEffect(() => {
+    setListPage(1);
+  }, [idPlantillaFiltro]);
+
+  const abrirDiagnostico = useCallback(
+    (informe) => {
+      if (!idProyecto) return;
+
+      const baseUrl = `/proyectos/${idProyecto}/diagnostico`;
+      const plantillaDesdeFila = Number(informe?.id_plantilla);
+      const plantillaValida =
+        Number.isFinite(idPlantillaFiltro) && idPlantillaFiltro > 0
+          ? idPlantillaFiltro
+          : Number.isFinite(plantillaDesdeFila) && plantillaDesdeFila > 0
+            ? plantillaDesdeFila
+            : null;
+
+      if (plantillaValida) {
+        navigate(`${baseUrl}?plantilla=${plantillaValida}`);
+        return;
+      }
+
+      navigate(baseUrl);
+    },
+    [idProyecto, idPlantillaFiltro, navigate]
+  );
+
   const puedeEditar = useMemo(() => hasPerm(auth, "informes.update"), [auth?.user]);
   const puedeEliminar = useMemo(() => hasPerm(auth, "informes.delete"), [auth?.user]);
   const esAdmin = useMemo(() => isAdminUser(auth), [auth?.user]);
-
-  // 👇 ya NO depende de admin
-  const puedeEliminarAdmin = useMemo(() => puedeEliminar, [puedeEliminar]);
-
-  // KMZ
+  const puedeEliminarAdmin = useMemo(() => puedeEliminar || esAdmin, [puedeEliminar, esAdmin]);
   const puedeDescargarKmz = useMemo(() => hasPerm(auth, "informes.export"), [auth?.user]);
+  const tieneFormulaDiagnostico = useMemo(
+    () =>
+      formulaActiva &&
+      Number.isFinite(Number(formulaActiva.id_formula)) &&
+      Number(formulaActiva.id_formula) > 0,
+    [formulaActiva]
+  );
+
+  const puedeAbrirDiagnostico = useMemo(
+    () =>
+      hasPerm(auth, "informes.diagnostico.read") &&
+      Number.isFinite(Number(idPlantillaFiltro)) &&
+      Number(idPlantillaFiltro) > 0 &&
+      tieneFormulaDiagnostico,
+    [auth?.user, idPlantillaFiltro, tieneFormulaDiagnostico]
+  );
+
+  const tituloPlantillaActiva = useMemo(() => {
+    const nombre = String(plantillaNombre || "").trim();
+    if (nombre) return nombre;
+    if (Number.isFinite(Number(idPlantillaFiltro)) && Number(idPlantillaFiltro) > 0) {
+      return `Plantilla #${idPlantillaFiltro}`;
+    }
+    return "Plantilla";
+  }, [plantillaNombre, idPlantillaFiltro]);
+
+  const contextoHeader = useMemo(() => {
+    const totalSeleccionados = Number(selectedIds.length || 0);
+    const partes = [
+      `Proyecto #${idProyecto}`,
+      idPlantillaFiltro ? `Plantilla #${idPlantillaFiltro}` : "Sin plantilla",
+      `${totalRegistrosExport} informe${totalRegistrosExport === 1 ? "" : "s"}`,
+      `${totalSeleccionados} seleccionado${totalSeleccionados === 1 ? "" : "s"}`,
+    ];
+
+    return partes.join(" · ");
+  }, [idProyecto, idPlantillaFiltro, totalRegistrosExport, selectedIds.length]);
+
+  const informesAdaptados = useMemo(() => {
+    return (informes || []).map((informe) => {
+      const respuestasClave =
+        informe &&
+        informe.respuestas_clave &&
+        typeof informe.respuestas_clave === "object" &&
+        !Array.isArray(informe.respuestas_clave)
+          ? informe.respuestas_clave
+          : {};
+      const fallbackTitulo = informe?.titulo || `Informe #${informe?.id_informe ?? "-"}`;
+      const respuestasNormalizadas =
+        Object.keys(respuestasClave).length > 0
+          ? respuestasClave
+          : {
+              titulo: fallbackTitulo,
+            };
+
+      return {
+        ...informe,
+        nombre_plantilla: informe?.nombre_plantilla || informe?.id_plantilla || "-",
+        fecha_creado: informe?.fecha_creado || informe?.fecha || informe?.created_at || null,
+        creado_por: informe?.creado_por || "-",
+        respuestas_clave: respuestasNormalizadas,
+      };
+    });
+  }, [informes]);
+
+  const onToggleSelection = useCallback((idInforme) => {
+    const id = Number(idInforme);
+    if (!Number.isFinite(id) || id <= 0) return;
+
+    setSelectedIds((prev) => {
+      const set = new Set(prev.map(Number));
+      if (set.has(id)) set.delete(id);
+      else set.add(id);
+      return Array.from(set);
+    });
+  }, []);
+
+  const handleSortChange = useCallback((sortBy) => {
+    if (!sortBy) return;
+    setListSort((prev) => {
+      const nextOrder = prev.sortBy === sortBy && prev.sortOrder === "asc" ? "desc" : "asc";
+      return { sortBy, sortOrder: nextOrder };
+    });
+    setListPage(1);
+  }, []);
+
+  const cargarInformes = useCallback(async () => {
+    if (!idProyecto) return;
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const params = new URLSearchParams();
+      params.set("id_proyecto", String(idProyecto));
+      if (idPlantillaFiltro) params.set("id_plantilla", String(idPlantillaFiltro));
+
+      const search = String(searchText || "").trim();
+      if (search) params.set("search", search);
+
+      params.set("page", String(Math.max(1, Number(listPage || 1))));
+      params.set("limit", "20");
+      params.set("sort_by", String(listSort.sortBy || "fecha"));
+      params.set("sort_order", String(listSort.sortOrder || "desc"));
+
+      const resp = await fetch(`${API_URL}/informes/query?${params.toString()}`, {
+        headers: authHeaders(),
+      });
+
+      if (!resp.ok) throw new Error(`Error ${resp.status}`);
+
+      const data = await resp.json();
+      setInformes(Array.isArray(data.informes) ? data.informes : Array.isArray(data.data) ? data.data : []);
+      setListMeta(
+        data?.meta && typeof data.meta === "object"
+          ? {
+              total: Number(data.meta.total) || 0,
+              page: Number(data.meta.page) || 1,
+              limit: Number(data.meta.limit) || 20,
+              total_pages: Number(data.meta.total_pages) || 1,
+            }
+          : { total: 0, page: 1, limit: 20, total_pages: 1 }
+      );
+    } catch (err) {
+      console.error("Error cargando informes:", err);
+      setError("No se pudieron cargar los informes.");
+      Toast.fire({ icon: "error", title: err?.message || "No se pudieron cargar los informes." });
+    } finally {
+      setLoading(false);
+    }
+  }, [idProyecto, idPlantillaFiltro, searchText, listPage, listSort.sortBy, listSort.sortOrder]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      cargarInformes();
+    }, 350);
+    return () => clearTimeout(timeoutId);
+  }, [cargarInformes]);
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allIds = useMemo(
@@ -286,6 +537,9 @@ const InformesProyecto = () => {
     [informes]
   );
   const allSelected = allIds.length > 0 && allIds.every((id) => selectedSet.has(id));
+  const onSelectAll = useCallback(() => {
+    setSelectedIds(allSelected ? [] : allIds);
+  }, [allSelected, allIds]);
   const headerCheckboxRef = useRef(null);
 
   useEffect(() => {
@@ -308,12 +562,272 @@ const InformesProyecto = () => {
     return d.toLocaleString("es-PY");
   };
 
-  const getClasificacionColor = (clasificacion) => {
-    const c = String(clasificacion || "").toLowerCase();
-    if (c.includes("alto") || c.includes("vulnerable") || c.includes("crítico") || c.includes("critico")) return "danger";
-    if (c.includes("medio") || c.includes("alerta")) return "warning";
-    if (c.includes("bajo") || c.includes("seguro") || c.includes("bajo")) return "success";
-    return "secondary";
+  const totalPaginasListado = useMemo(
+    () => Math.max(1, Number(listMeta.total_pages || 1)),
+    [listMeta.total_pages]
+  );
+
+  useEffect(() => {
+    setListPage((prev) => {
+      const next = Math.min(Math.max(1, Number(prev || 1)), totalPaginasListado);
+      return next === prev ? prev : next;
+    });
+  }, [totalPaginasListado]);
+
+  const limitOptions = useMemo(() => {
+    return wordConfig.incluirFotos ? [10, 20] : [10, 20, 50, 100];
+  }, [wordConfig.incluirFotos]);
+
+  const totalPaginasWord = useMemo(() => {
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return Math.max(1, Math.ceil(totalRegistrosExport / lim));
+  }, [totalRegistrosExport, wordConfig.limit]);
+
+  const rangoDesdeWord = useMemo(() => {
+    if (totalRegistrosExport <= 0) return 0;
+    const page = Math.max(1, Number(wordConfig.page || 1));
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return (page - 1) * lim + 1;
+  }, [totalRegistrosExport, wordConfig.page, wordConfig.limit]);
+
+  const rangoHastaWord = useMemo(() => {
+    if (totalRegistrosExport <= 0) return 0;
+    const page = Math.max(1, Number(wordConfig.page || 1));
+    const lim = Math.max(1, Number(wordConfig.limit || 10));
+    return Math.min(page * lim, totalRegistrosExport);
+  }, [totalRegistrosExport, wordConfig.page, wordConfig.limit]);
+
+  useEffect(() => {
+    setWordConfig((prev) => {
+      let newLimit = Number(prev.limit || 10);
+
+      if (!limitOptions.includes(newLimit)) {
+        newLimit = limitOptions[0];
+      }
+
+      const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / newLimit));
+      let newPage = Number(prev.page || 1);
+
+      if (newPage > totalPages) newPage = totalPages;
+      if (newPage < 1) newPage = 1;
+
+      if (newLimit === prev.limit && newPage === prev.page) return prev;
+
+      return {
+        ...prev,
+        limit: newLimit,
+        page: newPage,
+      };
+    });
+  }, [limitOptions, totalRegistrosExport]);
+
+  useEffect(() => {
+    setWordRange((prev) => {
+      let from = Number(prev.from || 1);
+      let to = Number(prev.to || 1);
+
+      if (from < 1) from = 1;
+      if (to < 1) to = 1;
+      if (from > totalPaginasWord) from = totalPaginasWord;
+      if (to > totalPaginasWord) to = totalPaginasWord;
+      if (to < from) to = from;
+
+      if (from === prev.from && to === prev.to) return prev;
+      return { from, to };
+    });
+  }, [totalPaginasWord]);
+
+  const seccionesDisponibles = useMemo(() => {
+    return (seccionesPlantilla || []).filter((sec) => Array.isArray(sec.preguntas) && sec.preguntas.length > 0);
+  }, [seccionesPlantilla]);
+
+  const preguntasDisponibles = useMemo(() => {
+    return (preguntasPlantilla || []).filter(Boolean);
+  }, [preguntasPlantilla]);
+
+  const selectedSeccionesSet = useMemo(
+    () => new Set((wordConfig.secciones || []).map(Number)),
+    [wordConfig.secciones]
+  );
+
+  const preguntasFiltradasPorSeccion = useMemo(() => {
+    if (!Array.isArray(preguntasDisponibles) || preguntasDisponibles.length === 0) return [];
+
+    if (!wordConfig.secciones || wordConfig.secciones.length === 0) {
+      return preguntasDisponibles;
+    }
+
+    return preguntasDisponibles.filter((preg) =>
+      selectedSeccionesSet.has(Number(preg.id_seccion))
+    );
+  }, [preguntasDisponibles, selectedSeccionesSet, wordConfig.secciones]);
+
+  useEffect(() => {
+    const idsPreguntasValidas = new Set(preguntasFiltradasPorSeccion.map((p) => Number(p.id_pregunta)));
+    const idsSeccionesValidas = new Set(seccionesDisponibles.map((s) => Number(s.id_seccion)));
+
+    setWordConfig((prev) => {
+      const preguntasPrev = Array.isArray(prev.preguntas) ? prev.preguntas : [];
+      const seccionesPrev = Array.isArray(prev.secciones) ? prev.secciones : [];
+      const orderPreguntaActual = Number(prev.orderPreguntaId || 0);
+
+      const nuevasPreguntas = preguntasPrev.filter((id) => idsPreguntasValidas.has(Number(id)));
+      const nuevasSecciones = seccionesPrev.filter((id) => idsSeccionesValidas.has(Number(id)));
+
+      const orderPreguntaSigueValida =
+        !orderPreguntaActual || idsPreguntasValidas.has(orderPreguntaActual);
+
+      if (
+        nuevasPreguntas.length === preguntasPrev.length &&
+        nuevasSecciones.length === seccionesPrev.length &&
+        orderPreguntaSigueValida
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        preguntas: nuevasPreguntas,
+        secciones: nuevasSecciones,
+        orderPreguntaId: orderPreguntaSigueValida ? prev.orderPreguntaId : "",
+      };
+    });
+  }, [preguntasFiltradasPorSeccion, seccionesDisponibles]);
+
+  const handleWordLimitChange = (value) => {
+    const nuevoLimit = Number(value || 10);
+    const limitSeguro = limitOptions.includes(nuevoLimit) ? nuevoLimit : limitOptions[0];
+    const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / limitSeguro));
+
+    setWordConfig((prev) => ({
+      ...prev,
+      limit: limitSeguro,
+      page: Math.min(Math.max(1, Number(prev.page || 1)), totalPages),
+    }));
+
+    setWordRange((prev) => {
+      let from = Math.min(Math.max(1, Number(prev.from || 1)), totalPages);
+      let to = Math.min(Math.max(1, Number(prev.to || 1)), totalPages);
+      if (to < from) to = from;
+      return { from, to };
+    });
+  };
+
+  const handleWordPageChange = (value) => {
+    const nuevaPagina = Number(value || 1);
+    setWordConfig((prev) => ({
+      ...prev,
+      page: Math.min(Math.max(1, nuevaPagina), totalPaginasWord),
+    }));
+  };
+
+  const handleRangeFromChange = (value) => {
+    const from = Math.min(Math.max(1, Number(value || 1)), totalPaginasWord);
+    setWordRange((prev) => {
+      let to = Number(prev.to || from);
+      if (to < from) to = from;
+      if (to > totalPaginasWord) to = totalPaginasWord;
+      return { from, to };
+    });
+  };
+
+  const handleRangeToChange = (value) => {
+    const toInput = Math.min(Math.max(1, Number(value || 1)), totalPaginasWord);
+    setWordRange((prev) => {
+      const from = Math.min(Math.max(1, Number(prev.from || 1)), totalPaginasWord);
+      const to = Math.max(from, toInput);
+      return { from, to };
+    });
+  };
+
+  const goFirstPageWord = () => setWordConfig((prev) => ({ ...prev, page: 1 }));
+  const goPrevPageWord = () => {
+    setWordConfig((prev) => ({ ...prev, page: Math.max(1, Number(prev.page || 1) - 1) }));
+  };
+  const goNextPageWord = () => {
+    setWordConfig((prev) => ({
+      ...prev,
+      page: Math.min(totalPaginasWord, Number(prev.page || 1) + 1),
+    }));
+  };
+  const goLastPageWord = () => setWordConfig((prev) => ({ ...prev, page: totalPaginasWord }));
+
+  const toggleIncluirFotos = (checked) => {
+    const opciones = checked ? [10, 20] : [10, 20, 50, 100];
+    setWordConfig((prev) => {
+      let newLimit = Number(prev.limit || 10);
+      if (!opciones.includes(newLimit)) {
+        newLimit = 10;
+      }
+
+      const totalPages = Math.max(1, Math.ceil(totalRegistrosExport / newLimit));
+      return {
+        ...prev,
+        incluirFotos: checked,
+        fotosEnTabla: checked ? prev.fotosEnTabla : false,
+        limit: newLimit,
+        page: Math.min(Math.max(1, Number(prev.page || 1)), totalPages),
+      };
+    });
+
+    const totalPages = Math.max(
+      1,
+      Math.ceil(totalRegistrosExport / (checked ? 10 : Math.max(1, Number(wordConfig.limit || 10))))
+    );
+    setWordRange((prev) => {
+      let from = Math.min(Math.max(1, Number(prev.from || 1)), totalPages);
+      let to = Math.min(Math.max(1, Number(prev.to || 1)), totalPages);
+      if (to < from) to = from;
+      return { from, to };
+    });
+  };
+
+  const buildWordParams = (modoFinal, page = null) => {
+    const params = new URLSearchParams();
+
+    if (idPlantillaFiltro) params.set("plantilla", String(idPlantillaFiltro));
+    params.set("modo", modoFinal);
+
+    if (Array.isArray(wordConfig.preguntas) && wordConfig.preguntas.length > 0) {
+      params.set("preguntas", wordConfig.preguntas.join(","));
+    }
+
+    if (Array.isArray(wordConfig.secciones) && wordConfig.secciones.length > 0) {
+      params.set("secciones", wordConfig.secciones.join(","));
+    }
+
+    params.set("incluirFotos", wordConfig.incluirFotos ? "1" : "0");
+    params.set("fotosEnTabla", wordConfig.fotosEnTabla ? "1" : "0");
+    params.set("maxFotos", String(Math.max(0, Number(wordConfig.maxFotos || 0))));
+    params.set("limit", String(Math.max(1, Number(wordConfig.limit || 10))));
+    params.set("orderBy", String(wordConfig.orderBy || "fecha"));
+    params.set("orderDir", String(wordConfig.orderDir || "asc"));
+
+    if (wordConfig.orderBy === "pregunta" && wordConfig.orderPreguntaId) {
+      params.set("orderPreguntaId", String(wordConfig.orderPreguntaId));
+    }
+
+    if (page != null) {
+      params.set("page", String(page));
+    }
+
+    return params;
+  };
+
+  const askDownloadConfirmOutsideModal = async (options) => {
+    setReopenWordConfigAfterSwalCancel(true);
+    setShowWordConfig(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    const result = await fireSwalTop(options);
+
+    if (!result.isConfirmed) {
+      setShowWordConfig(true);
+    }
+
+    setReopenWordConfigAfterSwalCancel(false);
+    return result;
   };
 
   const descargarPdfInforme = async (idInforme) => {
@@ -392,30 +906,207 @@ const InformesProyecto = () => {
     }
   };
 
-  const descargarProyectoDocx = async (modo) => {
-    const key = modo === "tabla" ? "docxTabla" : "docx";
+  const descargarProyectoDocx = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTabla" : "docx";
+
     try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
       setDownloading((s) => ({ ...s, [key]: true }));
 
-      const params = new URLSearchParams();
-      if (idPlantillaFiltro) params.set("plantilla", String(idPlantillaFiltro));
-      if (modo === "tabla") params.set("modo", "tabla");
+      const params = buildWordParams(modoFinal, Math.max(1, Number(wordConfig.page || 1)));
       const qs = params.toString() ? `?${params.toString()}` : "";
-
       const url = `${API_URL}/informes/proyecto/${idProyecto}/docx${qs}`;
 
       const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
-      const suffixModo = modo === "tabla" ? `_TABLA` : `_NORMAL`;
-      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}${suffixModo}.docx`;
+      const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+      const suffixLote = `_Lote_${Math.max(1, Number(wordConfig.page || 1))}`;
+      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}${suffixLote}${suffixModo}.docx`;
 
       await downloadWithAuth(url, filename);
+
       Toast.fire({
         icon: "success",
-        title: modo === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado."
+        title: modoFinal === "tabla" ? "WORD (TABLA) descargado." : "WORD (NORMAL) descargado.",
       });
+
+      setShowWordConfig(false);
     } catch (err) {
       console.error("Error descargando docx:", err);
-      Toast.fire({ icon: "error", title: "No se pudo descargar el WORD." });
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo descargar el WORD." });
+    } finally {
+      setDownloading((s) => ({ ...s, [key]: false }));
+    }
+  };
+
+  const descargarRangoLotesWord = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTablaRange" : "docxRange";
+
+    try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
+      if (!totalRegistrosExport || totalPaginasWord <= 0) {
+        Toast.fire({ icon: "error", title: "No hay registros para exportar." });
+        return;
+      }
+
+      const from = Math.min(Math.max(1, Number(wordRange.from || 1)), totalPaginasWord);
+      const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
+      const totalLotes = to - from + 1;
+
+      const labelOrden =
+        wordConfig.orderBy === "pregunta"
+          ? `pregunta #${wordConfig.orderPreguntaId} / ${wordConfig.orderDir}`
+          : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
+
+      const confirm = await askDownloadConfirmOutsideModal({
+        icon: "question",
+        title: "¿Descargar rango de lotes en varios archivos?",
+        html: `
+          <div style="text-align:left">
+            <div><b>Total registros:</b> ${totalRegistrosExport}</div>
+            <div><b>Registros por lote:</b> ${wordConfig.limit}</div>
+            <div><b>Total páginas:</b> ${totalPaginasWord}</div>
+            <div><b>Rango elegido:</b> ${from} a ${to}</div>
+            <div><b>Cantidad de lotes:</b> ${totalLotes}</div>
+            <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+            <div><b>Orden:</b> ${labelOrden}</div>
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: "Sí, descargar",
+        cancelButtonText: "Cancelar",
+      });
+
+      if (!confirm.isConfirmed) return;
+
+      setDownloading((s) => ({ ...s, [key]: true }));
+
+      for (let page = from; page <= to; page++) {
+        const params = buildWordParams(modoFinal, page);
+        const qs = params.toString() ? `?${params.toString()}` : "";
+        const url = `${API_URL}/informes/proyecto/${idProyecto}/docx${qs}`;
+
+        const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
+        const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+        const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}_Lote_${page}_de_${totalPaginasWord}${suffixModo}.docx`;
+
+        await downloadWithAuth(url, filename);
+
+        Toast.fire({
+          icon: "success",
+          title: `Lote ${page} descargado`,
+        });
+
+        await sleep(900);
+      }
+
+      await fireSwalTop({
+        icon: "success",
+        title: "Descarga finalizada",
+        text: `Se descargaron los lotes ${from} al ${to}.`,
+      });
+    } catch (err) {
+      console.error("Error descargando rango de lotes:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo descargar el rango de lotes.",
+      });
+    } finally {
+      setDownloading((s) => ({ ...s, [key]: false }));
+    }
+  };
+
+  const descargarRangoUnSoloWord = async (modoManual = null) => {
+    const modoFinal = modoManual || wordConfig.modo || "normal";
+    const key = modoFinal === "tabla" ? "docxTablaSingleRange" : "docxSingleRange";
+
+    try {
+      if (wordConfig.orderBy === "pregunta" && !wordConfig.orderPreguntaId) {
+        Toast.fire({ icon: "error", title: "Elegí la pregunta para ordenar." });
+        return;
+      }
+
+      if (!totalRegistrosExport || totalPaginasWord <= 0) {
+        Toast.fire({ icon: "error", title: "No hay registros para exportar." });
+        return;
+      }
+
+      const from = Math.min(Math.max(1, Number(wordRange.from || 1)), totalPaginasWord);
+      const to = Math.min(Math.max(from, Number(wordRange.to || from)), totalPaginasWord);
+      const totalLotes = to - from + 1;
+
+      const maxLotesUnSoloWord = wordConfig.incluirFotos ? 20 : 80;
+      if (totalLotes > maxLotesUnSoloWord) {
+        Toast.fire({
+          icon: "error",
+          title: wordConfig.incluirFotos
+            ? `Con fotos, el máximo para un solo Word es ${maxLotesUnSoloWord} lotes. Usá "Rango en varios Word".`
+            : `El máximo para un solo Word es ${maxLotesUnSoloWord} lotes. Reduce el rango o usá "Rango en varios Word".`,
+        });
+        return;
+      }
+
+      const labelOrden =
+        wordConfig.orderBy === "pregunta"
+          ? `pregunta #${wordConfig.orderPreguntaId} / ${wordConfig.orderDir}`
+          : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
+
+      const confirm = await askDownloadConfirmOutsideModal({
+        icon: "question",
+        title: "¿Descargar rango en un solo Word?",
+        html: `
+          <div style="text-align:left">
+            <div><b>Total registros:</b> ${totalRegistrosExport}</div>
+            <div><b>Registros por lote:</b> ${wordConfig.limit}</div>
+            <div><b>Total páginas:</b> ${totalPaginasWord}</div>
+            <div><b>Rango elegido:</b> ${from} a ${to}</div>
+            <div><b>Cantidad de lotes unidos:</b> ${totalLotes}</div>
+            <div><b>Modo:</b> ${modoFinal === "tabla" ? "TABLA" : "NORMAL"}</div>
+            <div><b>Orden:</b> ${labelOrden}</div>
+            <div><b>Límite permitido:</b> ${maxLotesUnSoloWord} lotes</div>
+          </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: "Sí, descargar",
+        cancelButtonText: "Cancelar",
+      });
+
+      if (!confirm.isConfirmed) return;
+
+      setDownloading((s) => ({ ...s, [key]: true }));
+
+      const params = buildWordParams(modoFinal, null);
+      params.set("fromPage", String(from));
+      params.set("toPage", String(to));
+
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const url = `${API_URL}/informes/proyecto/${idProyecto}/docx-rango-unico${qs}`;
+
+      const suffixPlantilla = idPlantillaFiltro ? `_Plantilla_${idPlantillaFiltro}` : "";
+      const suffixModo = modoFinal === "tabla" ? `_TABLA` : `_NORMAL`;
+      const filename = `Informes_Proyecto_${idProyecto}${suffixPlantilla}_Lotes_${from}_a_${to}${suffixModo}.docx`;
+
+      await downloadWithAuth(url, filename);
+
+      Toast.fire({
+        icon: "success",
+        title: "Word único descargado.",
+      });
+    } catch (err) {
+      console.error("Error descargando un solo Word:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo descargar el Word único del rango.",
+      });
     } finally {
       setDownloading((s) => ({ ...s, [key]: false }));
     }
@@ -578,7 +1269,7 @@ const InformesProyecto = () => {
       return;
     }
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: `¿Eliminar informe #${idInforme}?`,
       text: "Esta acción no se puede deshacer.",
@@ -605,7 +1296,7 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "success", title: "Informe eliminado correctamente." });
     } catch (err) {
       console.error("Error eliminando informe:", err);
-      Toast.fire({ icon: "error", title: "No se pudo eliminar el informe." });
+      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar el informe." });
     }
   };
 
@@ -614,13 +1305,15 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
       return;
     }
+
     if (!idPlantillaFiltro) {
       Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
       return;
     }
+
     if (selectedIds.length === 0) return;
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: `¿Eliminar ${selectedIds.length} informes?`,
       text: `Plantilla #${idPlantillaFiltro}. Esta acción no se puede deshacer.`,
@@ -634,11 +1327,15 @@ const InformesProyecto = () => {
 
     try {
       setBulkDeleting(true);
+
       const resp = await fetch(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
         {
           method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ ids: selectedIds }),
         }
       );
@@ -650,10 +1347,17 @@ const InformesProyecto = () => {
 
       setSelectedIds([]);
       await cargarInformes();
-      Toast.fire({ icon: "success", title: "Informes eliminados correctamente." });
+
+      Toast.fire({
+        icon: "success",
+        title: "Informes eliminados correctamente.",
+      });
     } catch (err) {
       console.error("Error eliminando informes en masa:", err);
-      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo eliminar los informes.",
+      });
     } finally {
       setBulkDeleting(false);
     }
@@ -664,6 +1368,7 @@ const InformesProyecto = () => {
       Toast.fire({ icon: "error", title: "No tiene permisos para eliminar informes." });
       return;
     }
+
     if (!idPlantillaFiltro) {
       Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar en masa." });
       return;
@@ -671,10 +1376,12 @@ const InformesProyecto = () => {
 
     const total = informes?.length || 0;
 
-    const result = await Swal.fire({
+    const result = await fireSwalTop({
       icon: "warning",
       title: "¿Eliminar TODOS los informes de la plantilla?",
-      text: `Plantilla #${idPlantillaFiltro}. Esta acción es irreversible${total ? ` y eliminará al menos ${total} registros cargados.` : "."}`,
+      text: `Plantilla #${idPlantillaFiltro}. Esta acción es irreversible${
+        total ? ` y eliminará al menos ${total} registros cargados.` : "."
+      }`,
       showCancelButton: true,
       confirmButtonText: "Sí, eliminar todo",
       cancelButtonText: "Cancelar",
@@ -685,36 +1392,125 @@ const InformesProyecto = () => {
 
     try {
       setBulkDeleting(true);
+
       const resp = await fetch(
         `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete`,
         {
           method: "POST",
-          headers: { ...authHeaders(), "Content-Type": "application/json" },
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
           body: JSON.stringify({ all: true }),
         }
       );
 
       const data = await resp.json().catch(() => ({}));
+
       if (!resp.ok) {
         throw new Error(data.error || `Error ${resp.status}`);
       }
 
       setSelectedIds([]);
       await cargarInformes();
+
       Toast.fire({
         icon: "success",
         title: `Informes eliminados correctamente (${data.deleted_count || 0}).`,
       });
     } catch (err) {
       console.error("Error eliminando todos los informes:", err);
-      Toast.fire({ icon: "error", title: err?.message || "No se pudo eliminar los informes." });
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudo eliminar los informes.",
+      });
     } finally {
       setBulkDeleting(false);
     }
   };
 
+  const eliminarTodasLasFotosPlantilla = async () => {
+    if (!puedeEliminarAdmin) {
+      Toast.fire({ icon: "error", title: "No tiene permisos para eliminar fotos." });
+      return;
+    }
+
+    if (!idPlantillaFiltro) {
+      Toast.fire({ icon: "error", title: "Debe filtrar por plantilla para borrar fotos en masa." });
+      return;
+    }
+
+    const total = informes?.length || 0;
+
+    const result = await fireSwalTop({
+      icon: "warning",
+      title: "¿Eliminar TODAS las fotos de la plantilla?",
+      html: `
+        <div style="text-align:left">
+          <div><b>Proyecto:</b> #${idProyecto}</div>
+          <div><b>Plantilla:</b> #${idPlantillaFiltro}</div>
+          <div><b>Informes visibles:</b> ${total}</div>
+          <br/>
+          <div>Se eliminarán solamente las imágenes/fotos asociadas a los informes de esta plantilla.</div>
+          <div>Los informes y sus respuestas seguirán existiendo.</div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Sí, eliminar fotos",
+      cancelButtonText: "Cancelar",
+      confirmButtonColor: "#d33",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setBulkDeletingFotos(true);
+
+      const resp = await fetch(
+        `${API_URL}/informes/proyecto/${idProyecto}/plantilla/${idPlantillaFiltro}/bulk-delete-fotos`,
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders(),
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok) {
+        throw new Error(data.error || `Error ${resp.status}`);
+      }
+
+      setSelectedIds([]);
+      await cargarInformes();
+
+      Toast.fire({
+        icon: "success",
+        title: `Fotos eliminadas correctamente (${data.deleted_count || 0}).`,
+      });
+    } catch (err) {
+      console.error("Error eliminando fotos en masa:", err);
+      Toast.fire({
+        icon: "error",
+        title: err?.message || "No se pudieron eliminar las fotos.",
+      });
+    } finally {
+      setBulkDeletingFotos(false);
+    }
+  };
+
   const anyDownloading =
-    downloading.pdf || downloading.docx || downloading.docxTabla || downloading.xlsx || downloading.kmz;
+    downloading.pdf ||
+    downloading.docx ||
+    downloading.docxTabla ||
+    downloading.xlsx ||
+    downloading.kmz ||
+    downloading.docxRange ||
+    downloading.docxTablaRange ||
+    downloading.docxSingleRange ||
+    downloading.docxTablaSingleRange;
 
   const choiceCandidates = useMemo(() => {
     const c = kmzChoiceInfo?.candidates || [];
@@ -750,164 +1546,301 @@ const InformesProyecto = () => {
     );
   }, [kmzChoiceScope]);
 
+  const selectedPreguntasSet = useMemo(
+    () => new Set((wordConfig.preguntas || []).map(Number)),
+    [wordConfig.preguntas]
+  );
+
+  const isDownloadingRange = downloading[wordConfig.modo === "tabla" ? "docxTablaRange" : "docxRange"];
+  const isDownloadingSingleRange =
+    downloading[wordConfig.modo === "tabla" ? "docxTablaSingleRange" : "docxSingleRange"];
+
+  const labelOrdenActual =
+    wordConfig.orderBy === "pregunta"
+      ? `pregunta #${wordConfig.orderPreguntaId || "-"} / ${wordConfig.orderDir}`
+      : `${wordConfig.orderBy} / ${wordConfig.orderDir}`;
+
   return (
     <div className="container mt-3">
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <div>
-          <h4 className="mb-0">Informes dinámicos del proyecto #{idProyecto}</h4>
-          <small className="text-muted">Listado de informes generados a partir de plantillas.</small>
-
-          {authLoading && (
-            <div className="mt-2">
-              <Badge bg="secondary">Cargando permisos…</Badge>
+      <div className="border rounded-3 bg-white shadow-sm p-3 p-lg-4 mb-3">
+        <div className="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3">
+          <div className="flex-grow-1">
+            <div className="d-flex flex-wrap align-items-center gap-2 mb-2">
+              <h4 className="mb-0">{tituloPlantillaActiva}</h4>
+              {authLoading && <Badge bg="secondary">Cargando permisos…</Badge>}
             </div>
-          )}
-
-          {idPlantillaFiltro ? (
-            <div className="mt-2">
-              <Badge bg="info">Filtro: Plantilla #{idPlantillaFiltro}</Badge>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="d-flex gap-2 flex-wrap justify-content-end">
-          {puedeEliminarAdmin ? (
-            <div className="d-flex align-items-center gap-2">
-              <Badge bg={selectedIds.length ? "danger" : "secondary"}>
-                Seleccionados: {selectedIds.length}
-              </Badge>
-              <Button
-                variant="danger"
-                disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting}
-                onClick={eliminarSeleccionados}
-                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar seleccionados"}
-              >
-                {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
-              </Button>
-              <Button
-                variant="outline-danger"
-                disabled={!idPlantillaFiltro || bulkDeleting}
-                onClick={eliminarTodosPlantilla}
-                title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
-              >
-                {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
-              </Button>
-            </div>
-          ) : null}
-
-          <Button variant="secondary" onClick={() => navigate(-1)}>
-            Volver
-          </Button>
-
-          <Button
-            variant="outline-primary"
-            onClick={() => {
-              const qp = new URLSearchParams();
-              if (idProyecto) qp.set("id_proyecto", String(idProyecto));
-              if (idPlantillaFiltro) qp.set("id_plantilla", String(idPlantillaFiltro));
-              navigate(`/dashboardinformes?${qp.toString()}`);
-            }}
-          >
-            Dashboard V2
-          </Button>
-
-          <div className="btn-group">
-            <Button variant="outline-danger" onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>
-              {downloading.pdf ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📄 PDF</>
-              )}
-            </Button>
-
-            <Button variant="outline-primary" onClick={() => descargarProyectoDocx("normal")} disabled={anyDownloading}>
-              {downloading.docx ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📝 Word</>
-              )}
-            </Button>
-
-            <Button variant="outline-primary" onClick={() => descargarProyectoDocx("tabla")} disabled={anyDownloading}>
-              {downloading.docxTabla ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>🧾 Word Tabla</>
-              )}
-            </Button>
-
-            <Button variant="outline-success" onClick={() => descargarProyecto("xlsx")} disabled={anyDownloading}>
-              {downloading.xlsx ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />...
-                </>
-              ) : (
-                <>📊 Excel</>
-              )}
-            </Button>
-
-            {puedeDescargarKmz && (
-              <Button variant="outline-dark" onClick={descargarProyectoKmz} disabled={anyDownloading}>
-                {downloading.kmz ? (
-                  <>
-                    <Spinner animation="border" size="sm" className="me-2" />...
-                  </>
-                ) : (
-                  <>🗺️ KMZ</>
-                )}
-              </Button>
-            )}
+            <small className="text-muted d-block">{contextoHeader}</small>
           </div>
 
-          {puedeDescargarKmz && (
-            <Button variant="outline-secondary" onClick={copiarLinkKmzProyecto} disabled={anyDownloading}>
-              🔗 Link KMZ
-            </Button>
-          )}
-
           <Button
-            variant="outline-success"
-            disabled={!idPlantillaFiltro || anyDownloading}
-            onClick={() => setShowImportZip(true)}
-            title={!idPlantillaFiltro ? "Debés filtrar por plantilla" : "Importación masiva de fotos via ZIP"}
+            variant="outline-secondary"
+            onClick={() => setShowHeaderTools((prev) => !prev)}
+            aria-expanded={showHeaderTools}
+            aria-controls="informes-header-tools"
           >
-            📦 Importar Fotos (ZIP)
-          </Button>
-
-          {formulaActiva && (
-            <Button
-              variant="outline-primary"
-              onClick={() => navigate(`/proyectos/${idProyecto}/diagnostico?plantilla=${idPlantillaFiltro}`)}
-              title="Abrir panel de Autodiagnóstico"
-            >
-              <i className="bi bi-clipboard2-data"></i> Diagnóstico
-            </Button>
-          )}
-
-          <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
-            ➕ Nuevo informe
+            {showHeaderTools ? "Cerrar opciones" : "Más opciones / Buscar"}
           </Button>
         </div>
-      </div>
 
-      <div className="mb-3 d-flex gap-3 align-items-center">
-        <Form.Control
-          type="text"
-          placeholder="Buscar por cualquier campo..."
-          value={search}
-          onChange={(e) => {
-             setSearch(e.target.value);
-             setPage(1); // Reset page on new search
-          }}
-          disabled={loading && !informes.length}
-          style={{ maxWidth: '400px' }}
-        />
+        <Collapse in={showHeaderTools}>
+          <div id="informes-header-tools" className="pt-3 mt-3 border-top">
+            <div className="mb-3 d-flex flex-wrap gap-3 align-items-end">
+              <Form.Group className="flex-grow-1" style={{ minWidth: 280 }}>
+                <Form.Label className="small text-muted mb-1">Buscar por respuestas o por ID numérico</Form.Label>
+                <Form.Control
+                  type="search"
+                  value={searchText}
+                  placeholder="Escribí texto de respuesta o un ID de informe..."
+                  onChange={(e) => {
+                    setSearchText(e.target.value);
+                    setListPage(1);
+                  }}
+                />
+              </Form.Group>
+
+              <div className="d-flex gap-2 flex-wrap">
+                <Button
+                  variant="outline-secondary"
+                  onClick={() => {
+                    setSearchText("");
+                    setListPage(1);
+                  }}
+                  disabled={!searchText && listPage === 1}
+                >
+                  Limpiar
+                </Button>
+
+                <Button variant="outline-secondary" onClick={() => cargarInformes()} disabled={loading}>
+                  Recargar
+                </Button>
+              </div>
+            </div>
+
+            <div className="d-flex flex-wrap gap-2">
+              <Button
+                variant="outline-success"
+                disabled={!idPlantillaFiltro || anyDownloading}
+                onClick={() => setShowImportZip(true)}
+                title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Importación masiva de fotos via ZIP"}
+              >
+                📦 Importar Fotos (ZIP)
+              </Button>
+
+              <Button
+                variant="outline-primary"
+                disabled={!idPlantillaFiltro || anyDownloading}
+                onClick={() => setShowImportExcel(true)}
+                title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Importación Excel inteligente"}
+              >
+                📊 Importar Excel
+              </Button>
+
+              <Button
+                variant="outline-secondary"
+                disabled={!idPlantillaFiltro || anyDownloading || preguntasPlantilla.length === 0}
+                onClick={() => setShowConsolidacion(true)}
+                title={
+                  !idPlantillaFiltro
+                    ? "Debes filtrar por plantilla"
+                    : preguntasPlantilla.length === 0
+                      ? "La plantilla no tiene preguntas cargadas"
+                      : "Consolidación masiva de campos"
+                }
+              >
+                🔁 Consolidar campos
+              </Button>
+            </div>
+
+            <div className="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
+              <Button variant="secondary" onClick={() => navigate(-1)}>
+                Volver
+              </Button>
+
+              <Button
+                variant="outline-primary"
+                onClick={() => {
+                  const qp = new URLSearchParams();
+                  if (idProyecto) qp.set("id_proyecto", String(idProyecto));
+                  if (idPlantillaFiltro) qp.set("id_plantilla", String(idPlantillaFiltro));
+                  navigate(`/dashboardinformes?${qp.toString()}`);
+                }}
+              >
+                Dashboard V2
+              </Button>
+
+              {puedeAbrirDiagnostico && (
+                <Button variant="outline-info" onClick={abrirDiagnostico}>
+                  <i className="bi bi-clipboard2-data me-1"></i>
+                  Diagnóstico
+                </Button>
+              )}
+
+              <Button variant="primary" onClick={() => navigate(`/proyectos/${idProyecto}/informes/nuevo`)}>
+                ➕ Nuevo informe
+              </Button>
+            </div>
+
+            <div className="d-flex flex-column flex-lg-row justify-content-between align-items-start gap-3 mt-3 pt-3 border-top">
+              <div className="d-flex align-items-center gap-2 flex-wrap">
+                <Badge bg={selectedIds.length ? "danger" : "secondary"}>{selectedIds.length} seleccionados</Badge>
+                <span className="text-muted small">Acciones masivas</span>
+              </div>
+
+              {puedeEliminarAdmin ? (
+                <div className="d-flex align-items-center gap-2 flex-wrap">
+                  <Button
+                    variant="danger"
+                    disabled={!idPlantillaFiltro || selectedIds.length === 0 || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarSeleccionados}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar seleccionados"}
+                  >
+                    {bulkDeleting ? "Eliminando..." : "Eliminar seleccionados"}
+                  </Button>
+
+                  <Button
+                    variant="outline-danger"
+                    disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarTodosPlantilla}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar todos los informes de la plantilla"}
+                  >
+                    {bulkDeleting ? "Eliminando..." : "Eliminar TODOS (plantilla)"}
+                  </Button>
+
+                  <Button
+                    variant="outline-warning"
+                    disabled={!idPlantillaFiltro || bulkDeleting || bulkDeletingFotos}
+                    onClick={eliminarTodasLasFotosPlantilla}
+                    title={!idPlantillaFiltro ? "Debes filtrar por plantilla" : "Eliminar todas las imágenes de la plantilla"}
+                  >
+                    {bulkDeletingFotos ? "Eliminando fotos..." : "Eliminar fotos (plantilla)"}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="d-flex flex-wrap gap-2 mt-3 pt-3 border-top">
+              <Dropdown as={ButtonGroup}>
+                <Button variant="outline-success" disabled={anyDownloading}>
+                  Exportar
+                </Button>
+                <Dropdown.Toggle split variant="outline-success" disabled={anyDownloading} id="dropdown-exportar-informes" />
+                <Dropdown.Menu align="end">
+                  <Dropdown.Item onClick={() => descargarProyecto("pdf")} disabled={anyDownloading}>
+                    {downloading.pdf ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>PDF</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item
+                    onClick={() => {
+                      setWordConfig((prev) => ({ ...prev, modo: "normal" }));
+                      setShowWordConfig(true);
+                    }}
+                    disabled={anyDownloading}
+                  >
+                    {downloading.docx ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Word</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item
+                    onClick={() => {
+                      setWordConfig((prev) => ({ ...prev, modo: "tabla" }));
+                      setShowWordConfig(true);
+                    }}
+                    disabled={anyDownloading}
+                  >
+                    {downloading.docxTabla ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Word Tabla</>
+                    )}
+                  </Dropdown.Item>
+
+                  <Dropdown.Item onClick={() => descargarProyecto("xlsx")} disabled={anyDownloading}>
+                    {downloading.xlsx ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />...
+                      </>
+                    ) : (
+                      <>Excel</>
+                    )}
+                  </Dropdown.Item>
+
+                  {puedeDescargarKmz && (
+                    <>
+                      <Dropdown.Divider />
+                      <Dropdown.Item onClick={descargarProyectoKmz} disabled={anyDownloading}>
+                        {downloading.kmz ? (
+                          <>
+                            <Spinner animation="border" size="sm" className="me-2" />...
+                          </>
+                        ) : (
+                          <>KMZ</>
+                        )}
+                      </Dropdown.Item>
+
+                      <Dropdown.Item onClick={copiarLinkKmzProyecto} disabled={anyDownloading}>
+                        Link KMZ
+                      </Dropdown.Item>
+                    </>
+                  )}
+                </Dropdown.Menu>
+              </Dropdown>
+            </div>
+          </div>
+        </Collapse>
+      </div>
+      <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+        <div className="text-muted small">
+          {loading
+            ? "Cargando listado..."
+            : `${totalRegistrosExport} informe${totalRegistrosExport === 1 ? "" : "s"} encontrados`}
+          {searchText.trim() ? ` · búsqueda: "${searchText.trim()}"` : ""}
+          {idPlantillaFiltro ? ` · plantilla #${idPlantillaFiltro}` : ""}
+        </div>
+
+        <div className="d-flex align-items-center gap-2">
+          <Badge bg="secondary">
+            Página {Math.min(listPage, totalPaginasListado)} de {totalPaginasListado}
+          </Badge>
+          <div className="btn-group btn-group-sm">
+            <Button variant="outline-secondary" onClick={() => setListPage(1)} disabled={listPage <= 1 || loading}>
+              «
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage((prev) => Math.max(1, Number(prev || 1) - 1))}
+              disabled={listPage <= 1 || loading}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage((prev) => Math.min(totalPaginasListado, Number(prev || 1) + 1))}
+              disabled={listPage >= totalPaginasListado || loading}
+            >
+              Siguiente
+            </Button>
+            <Button
+              variant="outline-secondary"
+              onClick={() => setListPage(totalPaginasListado)}
+              disabled={listPage >= totalPaginasListado || loading}
+            >
+              »
+            </Button>
+          </div>
+        </div>
       </div>
 
       {loading && (
@@ -918,46 +1851,136 @@ const InformesProyecto = () => {
 
       {error && <div className="alert alert-danger py-2">{error}</div>}
 
-      {!loading && !error && informes.length === 0 && search && (
-        <Alert variant="info" className="text-center py-3 mt-3">
-          Sin resultados para la búsqueda "{search}"
+      {!loading && !error && informes.length === 0 && (
+        <Alert variant="info" className="py-2">
+          No se encontraron informes con los criterios actuales.
         </Alert>
       )}
 
-      {!loading && !error && informes.length === 0 && !search && (
-        <Alert variant="light" className="text-center text-muted border py-3 mt-3">
-          No hay informes para mostrar en esta vista.
-        </Alert>
+      {!loading && !error && informes.length > 0 && USE_OPERATIVE_TABLE && (
+        <InformesTableOperativo
+          informes={informesAdaptados}
+          preguntasPlantilla={preguntasPlantilla}
+          abrirVer={abrirVer}
+          abrirEditar={abrirEditar}
+          eliminarInforme={eliminarInforme}
+          descargarPdfInforme={descargarPdfInforme}
+          descargarKmzInforme={descargarKmzInforme}
+          puedeEditar={puedeEditar}
+          puedeEliminarAdmin={puedeEliminarAdmin}
+          puedeDescargarKmz={puedeDescargarKmz}
+          downloadingKmzByInforme={downloadingKmzByInforme}
+          anyDownloading={anyDownloading}
+          selectedIds={selectedIds}
+          onToggleSelection={onToggleSelection}
+          onSelectAll={onSelectAll}
+          allSelected={allSelected}
+          headerCheckboxRef={headerCheckboxRef}
+          sortBy={listSort.sortBy}
+          sortOrder={listSort.sortOrder}
+          onSortChange={handleSortChange}
+        />
       )}
 
-      {!error && informes.length > 0 && (
-        <>
-          <InformesTableOperativo
-            informes={informes}
-            preguntasPlantilla={preguntasPlantilla}
-            abrirVer={abrirVer}
-            abrirEditar={abrirEditar}
-            eliminarInforme={eliminarInforme}
-            descargarPdfInforme={descargarPdfInforme}
-            descargarKmzInforme={descargarKmzInforme}
-            puedeEditar={puedeEditar}
-            puedeEliminarAdmin={puedeEliminarAdmin}
-            puedeDescargarKmz={puedeDescargarKmz}
-            downloadingKmzByInforme={downloadingKmzByInforme}
-            anyDownloading={anyDownloading}
-          />
-          <Pagination 
-            page={meta?.page || 1} 
-            totalPages={meta?.total_pages || 1} 
-            limit={limit}
-            onLimitChange={(l) => {
-                setLimit(l);
-                setPage(1);
-            }}
-            totalItems={meta?.total || 0}
-            onPageChange={setPage} 
-          />
-        </>
+      {!loading && !error && informes.length > 0 && !USE_OPERATIVE_TABLE && (
+        <Table striped bordered hover size="sm" responsive>
+          <thead className="table-light">
+            <tr>
+              <th style={{ width: 48, textAlign: "center" }}>
+                <Form.Check
+                  type="checkbox"
+                  ref={headerCheckboxRef}
+                  checked={allSelected}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedIds(allIds);
+                    } else {
+                      setSelectedIds([]);
+                    }
+                  }}
+                />
+              </th>
+              <th style={{ width: 80 }}>ID</th>
+              <th>Plantilla</th>
+              <th>Título</th>
+              <th style={{ width: 180 }}>Fecha creado</th>
+              <th style={{ width: 120 }}>Creado por</th>
+              <th style={{ width: 340 }}>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {informes.map((inf) => {
+              const kmzLoading = !!downloadingKmzByInforme[inf.id_informe];
+
+              return (
+                <tr key={inf.id_informe}>
+                  <td style={{ textAlign: "center" }}>
+                    <Form.Check
+                      type="checkbox"
+                      checked={selectedSet.has(Number(inf.id_informe))}
+                      onChange={(e) => {
+                        const id = Number(inf.id_informe);
+                        if (!id) return;
+                        setSelectedIds((prev) => {
+                          const set = new Set(prev);
+                          if (e.target.checked) set.add(id);
+                          else set.delete(id);
+                          return Array.from(set);
+                        });
+                      }}
+                    />
+                  </td>
+                  <td>
+                    <Badge bg="secondary">{inf.id_informe}</Badge>
+                  </td>
+                  <td>{inf.nombre_plantilla || inf.id_plantilla}</td>
+                  <td>{inf.titulo || "-"}</td>
+                  <td>{formatearFecha(inf.fecha_creado)}</td>
+                  <td>{inf.creado_por || "-"}</td>
+                  <td>
+                    <div className="btn-group btn-group-sm">
+                      <Button variant="primary" onClick={() => abrirVer(inf.id_informe)}>
+                        Ver
+                      </Button>
+
+                      <Button variant="outline-secondary" onClick={() => descargarPdfInforme(inf.id_informe)}>
+                        PDF
+                      </Button>
+
+                      {puedeDescargarKmz && (
+                        <Button
+                          variant="outline-dark"
+                          onClick={() => descargarKmzInforme(inf.id_informe)}
+                          disabled={kmzLoading || anyDownloading}
+                        >
+                          {kmzLoading ? (
+                            <>
+                              <Spinner animation="border" size="sm" className="me-2" />...
+                            </>
+                          ) : (
+                            <>KMZ</>
+                          )}
+                        </Button>
+                      )}
+
+                      {puedeEditar && (
+                        <Button variant="warning" onClick={() => abrirEditar(inf.id_informe)}>
+                          Editar
+                        </Button>
+                      )}
+
+                      {puedeEliminarAdmin && (
+                        <Button variant="danger" onClick={() => eliminarInforme(inf.id_informe)}>
+                          Eliminar
+                        </Button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
       )}
 
       <InformeModal
@@ -975,24 +1998,6 @@ const InformesProyecto = () => {
         onSaved={() => cargarInformes()}
       />
 
-      <Modal 
-        show={showScoringModal} 
-        onHide={() => setShowScoringModal(false)}
-        size="lg"
-        centered
-        scrollable
-      >
-        <Modal.Header closeButton>
-          <Modal.Title>Diagnóstico Detallado</Modal.Title>
-        </Modal.Header>
-        <Modal.Body className="bg-light">
-          {idRegistroSel && <ScoringResultPanel idRegistro={idRegistroSel} canEditOverride={puedeEditar} />}
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowScoringModal(false)}>Cerrar</Button>
-        </Modal.Footer>
-      </Modal>
-
       <Modal
         show={kmzChoiceOpen}
         onHide={() => {
@@ -1004,6 +2009,8 @@ const InformesProyecto = () => {
         }}
         centered
         size="lg"
+        enforceFocus={false}
+        restoreFocus={false}
       >
         <Modal.Header closeButton>
           <Modal.Title>{modalTitle}</Modal.Title>
@@ -1069,6 +2076,424 @@ const InformesProyecto = () => {
         </Modal.Footer>
       </Modal>
 
+      <Modal
+        show={showWordConfig}
+        onHide={() => {
+          if (!reopenWordConfigAfterSwalCancel) setShowWordConfig(false);
+        }}
+        centered
+        size="lg"
+        enforceFocus={false}
+        restoreFocus={false}
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>
+            Exportar Word {wordConfig.modo === "tabla" ? "(Tabla)" : "(Normal)"}
+          </Modal.Title>
+        </Modal.Header>
+
+        <Modal.Body>
+          <div className="row g-3">
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Registros por lote</Form.Label>
+                <Form.Select
+                  value={wordConfig.limit}
+                  onChange={(e) => handleWordLimitChange(e.target.value)}
+                >
+                  {limitOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n} por página
+                    </option>
+                  ))}
+                </Form.Select>
+                <div className="form-text">
+                  {wordConfig.incluirFotos
+                    ? "Modo seguro con fotos: máximo 20 por lote."
+                    : "Sin fotos podés usar lotes más grandes."}
+                </div>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Lote / Página</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordConfig.page}
+                  onChange={(e) => handleWordPageChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4 d-flex align-items-end">
+              <div className="w-100 d-flex gap-2">
+                <Button
+                  variant="outline-secondary"
+                  className="w-100"
+                  onClick={goPrevPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ← Anterior
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  className="w-100"
+                  onClick={goNextPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Siguiente →
+                </Button>
+              </div>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Check
+                type="switch"
+                id="word_incluir_fotos"
+                label="Incluir fotos"
+                checked={wordConfig.incluirFotos}
+                onChange={(e) => toggleIncluirFotos(e.target.checked)}
+              />
+            </div>
+
+            <div className="col-md-4">
+              <Form.Check
+                type="switch"
+                id="word_fotos_tabla"
+                label="Fotos dentro de tabla"
+                checked={wordConfig.fotosEnTabla}
+                disabled={!wordConfig.incluirFotos || wordConfig.modo !== "tabla"}
+                onChange={(e) =>
+                  setWordConfig((prev) => ({
+                    ...prev,
+                    fotosEnTabla: e.target.checked,
+                  }))
+                }
+              />
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Máx. fotos por pregunta</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={0}
+                  value={wordConfig.maxFotos}
+                  disabled={!wordConfig.incluirFotos}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      maxFotos: Number(e.target.value || 0),
+                    }))
+                  }
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Ordenar por</Form.Label>
+                <Form.Select
+                  value={wordConfig.orderBy}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      orderBy: e.target.value,
+                      orderPreguntaId: e.target.value === "pregunta" ? prev.orderPreguntaId : "",
+                    }))
+                  }
+                >
+                  <option value="fecha">Fecha de creación</option>
+                  <option value="id">ID informe</option>
+                  <option value="pregunta">Respuesta de una pregunta</option>
+                </Form.Select>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4">
+              <Form.Group>
+                <Form.Label>Dirección</Form.Label>
+                <Form.Select
+                  value={wordConfig.orderDir}
+                  onChange={(e) =>
+                    setWordConfig((prev) => ({
+                      ...prev,
+                      orderDir: e.target.value,
+                    }))
+                  }
+                >
+                  <option value="asc">Ascendente</option>
+                  <option value="desc">Descendente</option>
+                </Form.Select>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-4">
+              {wordConfig.orderBy === "pregunta" && (
+                <Form.Group>
+                  <Form.Label>Pregunta para ordenar</Form.Label>
+                  <Form.Select
+                    value={wordConfig.orderPreguntaId || ""}
+                    onChange={(e) =>
+                      setWordConfig((prev) => ({
+                        ...prev,
+                        orderPreguntaId: e.target.value,
+                      }))
+                    }
+                  >
+                    <option value="">Seleccione una pregunta</option>
+                    {preguntasFiltradasPorSeccion.map((preg) => (
+                      <option key={preg.id_pregunta} value={preg.id_pregunta}>
+                        {preg.etiqueta || `Pregunta ${preg.id_pregunta}`}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Form.Group>
+              )}
+            </div>
+
+            <div className="col-12">
+              <Alert variant="info" className="mb-0">
+                <div><strong>Total registros:</strong> {totalRegistrosExport}</div>
+                <div><strong>Total páginas:</strong> {totalPaginasWord}</div>
+                <div><strong>Rango actual:</strong> {rangoDesdeWord} - {rangoHastaWord}</div>
+                <div><strong>Página actual:</strong> {wordConfig.page} de {totalPaginasWord}</div>
+                <div><strong>Orden:</strong> {labelOrdenActual}</div>
+              </Alert>
+            </div>
+
+            <div className="col-12">
+              <div className="d-flex gap-2 flex-wrap">
+                <Button
+                  variant="outline-secondary"
+                  onClick={goFirstPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ⏮ Primera
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goPrevPageWord}
+                  disabled={wordConfig.page <= 1}
+                >
+                  ◀ Anterior
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goNextPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Siguiente ▶
+                </Button>
+                <Button
+                  variant="outline-secondary"
+                  onClick={goLastPageWord}
+                  disabled={wordConfig.page >= totalPaginasWord}
+                >
+                  Última ⏭
+                </Button>
+              </div>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Desde lote</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordRange.from}
+                  onChange={(e) => handleRangeFromChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Hasta lote</Form.Label>
+                <Form.Control
+                  type="number"
+                  min={1}
+                  max={totalPaginasWord}
+                  value={wordRange.to}
+                  onChange={(e) => handleRangeToChange(e.target.value)}
+                />
+              </Form.Group>
+            </div>
+
+            <div className="col-12">
+              <Alert variant="warning" className="mb-0">
+                <div><strong>Rango de descarga:</strong> {wordRange.from} a {wordRange.to}</div>
+                <div><strong>Cantidad de lotes:</strong> {Math.max(0, Number(wordRange.to) - Number(wordRange.from) + 1)}</div>
+                <div><strong>Límite para un solo Word:</strong> {wordConfig.incluirFotos ? 20 : 80} lotes</div>
+              </Alert>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Filtrar por secciones</Form.Label>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    border: "1px solid #dee2e6",
+                    borderRadius: 6,
+                    padding: 10,
+                  }}
+                >
+                  {seccionesDisponibles.length === 0 ? (
+                    <div className="text-muted small">No hay secciones disponibles.</div>
+                  ) : (
+                    seccionesDisponibles.map((sec) => (
+                      <Form.Check
+                        key={sec.id_seccion}
+                        type="checkbox"
+                        label={sec.titulo || `Sección ${sec.id_seccion}`}
+                        checked={wordConfig.secciones.includes(Number(sec.id_seccion))}
+                        onChange={(e) => {
+                          const id = Number(sec.id_seccion);
+                          setWordConfig((prev) => {
+                            const nuevasSecciones = e.target.checked
+                              ? [...prev.secciones, id]
+                              : prev.secciones.filter((x) => x !== id);
+
+                            const preguntasValidas = preguntasDisponibles
+                              .filter((p) => {
+                                if (nuevasSecciones.length === 0) return true;
+                                return nuevasSecciones.includes(Number(p.id_seccion));
+                              })
+                              .map((p) => Number(p.id_pregunta));
+
+                            const nuevaOrderPreguntaId =
+                              prev.orderBy === "pregunta" &&
+                              prev.orderPreguntaId &&
+                              !preguntasValidas.includes(Number(prev.orderPreguntaId))
+                                ? ""
+                                : prev.orderPreguntaId;
+
+                            return {
+                              ...prev,
+                              secciones: nuevasSecciones,
+                              preguntas: prev.preguntas.filter((x) => preguntasValidas.includes(Number(x))),
+                              orderPreguntaId: nuevaOrderPreguntaId,
+                            };
+                          });
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </Form.Group>
+            </div>
+
+            <div className="col-md-6">
+              <Form.Group>
+                <Form.Label>Filtrar por preguntas</Form.Label>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: "auto",
+                    border: "1px solid #dee2e6",
+                    borderRadius: 6,
+                    padding: 10,
+                  }}
+                >
+                  {preguntasFiltradasPorSeccion.length === 0 ? (
+                    <div className="text-muted small">No hay preguntas disponibles.</div>
+                  ) : (
+                    preguntasFiltradasPorSeccion.map((preg) => (
+                      <Form.Check
+                        key={preg.id_pregunta}
+                        type="checkbox"
+                        label={preg.etiqueta || `Pregunta ${preg.id_pregunta}`}
+                        checked={selectedPreguntasSet.has(Number(preg.id_pregunta))}
+                        onChange={(e) => {
+                          const id = Number(preg.id_pregunta);
+                          setWordConfig((prev) => {
+                            const nuevasPreguntas = e.target.checked
+                              ? [...prev.preguntas, id]
+                              : prev.preguntas.filter((x) => x !== id);
+
+                            const nuevaOrderPreguntaId =
+                              prev.orderBy === "pregunta" &&
+                              prev.orderPreguntaId &&
+                              Number(prev.orderPreguntaId) === id &&
+                              !e.target.checked
+                                ? ""
+                                : prev.orderPreguntaId;
+
+                            return {
+                              ...prev,
+                              preguntas: nuevasPreguntas,
+                              orderPreguntaId: nuevaOrderPreguntaId,
+                            };
+                          });
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </Form.Group>
+            </div>
+          </div>
+
+          <Alert variant="secondary" className="mt-3 mb-0">
+            Esta exportación usa lote, secciones, preguntas y control de fotos. Para evitar saturación,
+            con fotos el sistema limita automáticamente el tamaño del lote.
+          </Alert>
+        </Modal.Body>
+
+        <Modal.Footer className="d-flex justify-content-between">
+          <div className="text-muted small">
+            Exportando {rangoDesdeWord} - {rangoHastaWord} de {totalRegistrosExport}
+          </div>
+          <div className="d-flex gap-2 flex-wrap justify-content-end">
+            <Button variant="secondary" onClick={() => setShowWordConfig(false)}>
+              Cancelar
+            </Button>
+
+            <Button
+              variant="outline-primary"
+              onClick={() => descargarRangoLotesWord(wordConfig.modo)}
+              disabled={isDownloadingRange || anyDownloading}
+            >
+              {isDownloadingRange ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>Rango en varios Word</>
+              )}
+            </Button>
+
+            <Button
+              variant="outline-success"
+              onClick={() => descargarRangoUnSoloWord(wordConfig.modo)}
+              disabled={isDownloadingSingleRange || anyDownloading}
+            >
+              {isDownloadingSingleRange ? (
+                <>
+                  <Spinner animation="border" size="sm" className="me-2" />...
+                </>
+              ) : (
+                <>Rango en un solo Word</>
+              )}
+            </Button>
+
+            <Button
+              variant="primary"
+              onClick={() => descargarProyectoDocx(wordConfig.modo)}
+              disabled={anyDownloading}
+            >
+              Descargar Word
+            </Button>
+          </div>
+        </Modal.Footer>
+      </Modal>
+
       <ImportarFotosZipModal
         show={showImportZip}
         onHide={() => {
@@ -1078,6 +2503,35 @@ const InformesProyecto = () => {
         idProyecto={idProyecto}
         idPlantilla={idPlantillaFiltro}
         preguntas={preguntasPlantilla}
+      />
+
+      <ImportarExcelActualizarModal
+        show={showImportExcel}
+        onHide={() => {
+          setShowImportExcel(false);
+          cargarInformes();
+        }}
+        idProyecto={idProyecto}
+        idPlantilla={idPlantillaFiltro}
+        preguntas={preguntasPlantilla}
+        secciones={seccionesPlantilla}
+        API_URL={API_URL}
+        authHeaders={authHeaders}
+      />
+
+      <ConsolidacionMasivaModal
+        show={showConsolidacion}
+        onHide={() => {
+          setShowConsolidacion(false);
+        }}
+        idProyecto={idProyecto}
+        idPlantilla={idPlantillaFiltro}
+        preguntas={preguntasPlantilla}
+        API_URL={API_URL}
+        authHeaders={authHeaders}
+        onApplied={() => {
+          cargarInformes();
+        }}
       />
     </div>
   );

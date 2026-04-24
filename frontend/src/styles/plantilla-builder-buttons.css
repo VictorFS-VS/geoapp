@@ -1,0 +1,195 @@
+/* ============================================
+   Plantilla Builder - Mejoras de Visibilidad
+   para Botones de Acción
+   ============================================ */
+
+/* ============================================
+   LABELS HÍBRIDOS - Responsivo
+   ============================================ */
+
+/* Botón de acción con label híbrido */
+.action-button-hybrid {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+  transition: all 0.2s ease-in-out;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Label: oculto en pantallas pequeñas/medianas */
+.action-button-label {
+  display: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+/* Label: visible en pantallas grandes (lg+) */
+@media (min-width: 992px) {
+  .action-button-label {
+    display: inline;
+  }
+}
+
+/* Label: visible en hover (efecto "expand") en pantallas pequeñas */
+.action-button-hybrid:not(:disabled):hover .action-button-label {
+  display: inline;
+}
+
+/* Efecto visual de expansión suave en hover (móviles) */
+@media (max-width: 991.98px) {
+  .action-button-hybrid {
+    width: auto;
+  }
+
+  .action-button-hybrid:not(:disabled):hover {
+    background-color: rgba(13, 110, 253, 0.1);
+  }
+}
+
+/* ============================================
+   Base: Botones outline con mejor contraste
+   ============================================ */
+.custom-builder-table .btn-outline-secondary {
+  border-color: #6c757d;
+  color: #495057;
+  font-weight: 500;
+  transition: all 0.2s ease-in-out;
+}
+
+.custom-builder-table .btn-outline-secondary:hover:not(:disabled) {
+  background-color: #6c757d;
+  border-color: #5a6268;
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 6px rgba(108, 117, 125, 0.25);
+}
+
+.custom-builder-table .btn-outline-secondary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(108, 117, 125, 0.25);
+}
+
+/* Botones primarios (editar) */
+.custom-builder-table .btn-outline-primary {
+  border-color: #0d6efd;
+  color: #0d6efd;
+  font-weight: 500;
+  transition: all 0.2s ease-in-out;
+}
+
+.custom-builder-table .btn-outline-primary:hover:not(:disabled) {
+  background-color: #0d6efd;
+  border-color: #0b5ed7;
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 6px rgba(13, 110, 253, 0.3);
+}
+
+.custom-builder-table .btn-outline-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(13, 110, 253, 0.3);
+}
+
+/* Botones peligrosos (eliminar) */
+.custom-builder-table .btn-outline-danger {
+  border-color: #dc3545;
+  color: #dc3545;
+  font-weight: 500;
+  transition: all 0.2s ease-in-out;
+}
+
+.custom-builder-table .btn-outline-danger:hover:not(:disabled) {
+  background-color: #dc3545;
+  border-color: #bb2d3b;
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
+}
+
+.custom-builder-table .btn-outline-danger:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(220, 53, 69, 0.3);
+}
+
+/* Estados deshabilitados */
+.custom-builder-table .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Iconos dentro de botones */
+.custom-builder-table .btn i {
+  font-weight: 500;
+}
+
+/* Iconos en buttons hybrid - siempre visible */
+.action-button-hybrid i {
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* Icono cuando label está oculto (pantallas pequeñas sin hover) */
+.action-button-hybrid:not(:hover) .action-button-label {
+  /* Ya está hidden por defecto en md- */
+}
+
+/* Fila con hover - resaltar toda la fila */
+.custom-builder-table tbody tr:hover {
+  background-color: rgba(13, 110, 253, 0.05);
+}
+
+/* Celda de acciones con mejor alineación */
+.custom-builder-table td:last-child {
+  vertical-align: middle;
+  min-width: 280px;
+  padding: 0.75rem !important;
+}
+
+/* Contenedor de botones con gap mejorado */
+.custom-builder-table .d-flex.gap-2 {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Focus visible para accesibilidad */
+.custom-builder-table .btn:focus-visible {
+  outline: 2px solid #0d6efd;
+  outline-offset: 2px;
+}
+
+/* Media query para pantallas pequeñas */
+@media (max-width: 768px) {
+  .custom-builder-table td:last-child {
+    min-width: auto;
+  }
+  
+  .custom-builder-table .btn {
+    font-size: 0.875rem;
+  }
+  
+  .custom-builder-table .d-flex.gap-2 {
+    flex-direction: column;
+    align-items: flex-end;
+  }
+}
+
+/* Soporte para tema oscuro (opcional) */
+@media (prefers-color-scheme: dark) {
+  .custom-builder-table .btn-outline-secondary {
+    border-color: #adb5bd;
+    color: #e2e3e5;
+  }
+  
+  .custom-builder-table .btn-outline-secondary:hover:not(:disabled) {
+    background-color: #adb5bd;
+    color: #212529;
+  }
+  
+  .custom-builder-table tbody tr:hover {
+    background-color: rgba(13, 110, 253, 0.15);
+  }
+}

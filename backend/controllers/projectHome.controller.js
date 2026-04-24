@@ -1,6 +1,7 @@
 "use strict";
 
 const projectHomeInformes = require("../services/projectHome/projectHomeInformes.service");
+const projectHomeExecutive = require("../services/projectHome/projectHomeExecutive.service");
 const { getItemById } = require("../services/projectHome/projectHomeItem.service");
 
 function toInt(v, fallback = null) {
@@ -64,4 +65,23 @@ async function getResumen(req, res) {
   }
 }
 
-module.exports = { getResumen };
+async function getExecutiveResumen(req, res) {
+  try {
+    const id_proyecto = toInt(req.query.id_proyecto, null);
+    if (!id_proyecto || id_proyecto <= 0) {
+      return res.status(400).json({ ok: false, error: "id_proyecto requerido" });
+    }
+
+    const payload = await projectHomeExecutive.getProjectHomeExecutiveResumen({
+      req,
+      id_proyecto
+    });
+
+    return res.json(payload);
+  } catch (err) {
+    console.error("projectHome.getExecutiveResumen:", err);
+    return res.status(500).json({ ok: false, error: err?.message || "Error interno" });
+  }
+}
+
+module.exports = { getResumen, getExecutiveResumen };

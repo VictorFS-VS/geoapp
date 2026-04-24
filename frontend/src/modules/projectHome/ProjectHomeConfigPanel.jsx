@@ -42,6 +42,7 @@ export default function ProjectHomeConfigPanel({
   projectId,
   plantillaId,
   onSaved,
+  onClose,
   fieldSummaries,
   temporalSources = [],
   plantillas = [],
@@ -54,37 +55,44 @@ export default function ProjectHomeConfigPanel({
   const [grouping, setGrouping] = useState("week");
   const [message, setMessage] = useState(null);
   const [selectedPlantilla, setSelectedPlantilla] = useState(plantillaId ?? null);
-  const [localFieldSummaries, setLocalFieldSummaries] = useState(fieldSummaries);
-  const [localTemporalSources, setLocalTemporalSources] = useState(temporalSources);
+  const [localFieldSummaries, setLocalFieldSummaries] = useState(fieldSummaries || []);
+  const [localTemporalSources, setLocalTemporalSources] = useState(temporalSources || []);
+  const [incomingConfig, setIncomingConfig] = useState(null);
 
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState("");
   const [itemsMessage, setItemsMessage] = useState(null);
   const [items, setItems] = useState([]);
-
-  const [editorMode, setEditorMode] = useState("create"); // create | edit
+  const [editorMode, setEditorMode] = useState("create");
   const [selectedItemId, setSelectedItemId] = useState(null);
   const [itemSaving, setItemSaving] = useState(false);
-
-  const emptyDraft = useMemo(
-    () => ({
-      id_home_item: null,
-      id_plantilla: "",
-      label: "",
-      kpi_primary_field_id: "",
-      kpi_secondary_field_ids: [],
-      preferred_date_field_id: "__created_at",
-      preferred_time_grouping: "week",
-      is_default: false,
-    }),
-    []
-  );
-
-  const [itemDraft, setItemDraft] = useState(emptyDraft);
   const [itemMetaLoading, setItemMetaLoading] = useState(false);
   const [itemMetaError, setItemMetaError] = useState("");
   const [itemFieldSummaries, setItemFieldSummaries] = useState([]);
   const [itemTemporalSources, setItemTemporalSources] = useState([]);
+
+  const emptyDraft = useMemo(() => ({
+    id_home_item: null,
+    id_plantilla: "",
+    label: "",
+    kpi_primary_field_id: "",
+    kpi_secondary_field_ids: [],
+    preferred_date_field_id: "__created_at",
+    preferred_time_grouping: "week",
+    is_default: false,
+  }), []);
+
+  const [itemDraft, setItemDraft] = useState(emptyDraft);
+
+  const options = useMemo(() => KPI_OPTIONS(localFieldSummaries), [localFieldSummaries]);
+  const itemKpiOptions = useMemo(() => KPI_OPTIONS(itemFieldSummaries), [itemFieldSummaries]);
+  const temporalOptions = useMemo(() => buildTemporalOptions(localTemporalSources), [localTemporalSources]);
+  const itemTemporalOptions = useMemo(() => buildTemporalOptions(itemTemporalSources), [itemTemporalSources]);
+
+  const validGeneralKpiIds = useMemo(() => 
+    new Set(options.map(opt => Number(opt.id)).filter(n => Number.isFinite(n) && n > 0)),
+    [options]
+  );
 
   const notifyHomeRefresh = (options = {}) => {
     if (typeof onSaved === "function") onSaved(options);
@@ -95,24 +103,25 @@ export default function ProjectHomeConfigPanel({
     if (!projectId) return;
     setLoading(true);
     projectHomeApi
-      .getProjectHomeConfig({ id_proyecto: projectId, id_plantilla: plantillaId })
+      .getProjectHomeConfig({ id_proyecto: projectId, id_plantilla: selectedPlantilla })
       .then((payload) => {
         if (!active) return;
         const persistedConfig = payload?.config ?? null;
         const effectiveConfig = payload?.effective_config ?? persistedConfig ?? null;
 
         setConfig(persistedConfig);
-        setPrimary(effectiveConfig?.kpi_primary_field_id ?? "");
-        setSecondaries(effectiveConfig?.kpi_secondary_field_ids || []);
-        setPreferredDateField(effectiveConfig?.preferred_date_field_id || "__created_at");
-        setGrouping(effectiveConfig?.preferred_time_grouping || "week");
-        setSelectedPlantilla(effectiveConfig?.id_plantilla ?? plantillaId ?? null);
+        setIncomingConfig(effectiveConfig);
+
+        const configPlantillaId = effectiveConfig?.id_plantilla ? Number(effectiveConfig.id_plantilla) : null;
+        if (configPlantillaId !== (selectedPlantilla ? Number(selectedPlantilla) : null)) {
+           setSelectedPlantilla(configPlantillaId);
+        }
       })
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [projectId, plantillaId]);
+  }, [projectId, selectedPlantilla]);
 
   useEffect(() => {
     let active = true;
@@ -127,7 +136,6 @@ export default function ProjectHomeConfigPanel({
     }
 
     const loadMetadata = async () => {
-      // Avoid showing stale KPI/temporal options from another plantilla while loading.
       setLocalFieldSummaries([]);
       setLocalTemporalSources([]);
       try {
@@ -149,19 +157,40 @@ export default function ProjectHomeConfigPanel({
     };
   }, [projectId, selectedPlantilla]);
 
-  const options = useMemo(() => KPI_OPTIONS(localFieldSummaries), [localFieldSummaries]);
-  const itemKpiOptions = useMemo(() => KPI_OPTIONS(itemFieldSummaries), [itemFieldSummaries]);
-  const temporalOptions = useMemo(() => buildTemporalOptions(localTemporalSources), [localTemporalSources]);
-  const itemTemporalOptions = useMemo(() => buildTemporalOptions(itemTemporalSources), [itemTemporalSources]);
-  const validGeneralKpiIds = useMemo(
-    () =>
-      new Set(
-        (Array.isArray(options) ? options : [])
-          .map((opt) => Number(opt?.id))
-          .filter((n) => Number.isFinite(n) && n > 0)
-      ),
-    [options]
-  );
+  useEffect(() => {
+    if (!incomingConfig || !options || options.length === 0) return;
+
+    if (incomingConfig.kpi_primary_field_id) {
+      const match = options.find(opt => Number(opt.id) === Number(incomingConfig.kpi_primary_field_id));
+      if (match) setPrimary(Number(match.id));
+      else setPrimary("");
+    } else {
+      setPrimary("");
+    }
+
+    let secIds = incomingConfig.kpi_secondary_field_ids || [];
+    if (typeof secIds === "string") {
+      try { secIds = JSON.parse(secIds); } catch { secIds = []; }
+    }
+    const validSecs = (Array.isArray(secIds) ? secIds : [])
+      .map(Number)
+      .filter(id => options.some(opt => Number(opt.id) === id));
+    setSecondaries(validSecs);
+
+    if (incomingConfig.preferred_date_field_id) {
+      const match = temporalOptions.find(opt => String(opt.id) === String(incomingConfig.preferred_date_field_id));
+      if (match) setPreferredDateField(String(match.id));
+      else setPreferredDateField("__created_at");
+    }
+
+    if (incomingConfig.preferred_time_grouping) {
+      const match = TIME_GROUPING_OPTIONS.find(opt => String(opt.id) === String(incomingConfig.preferred_time_grouping));
+      if (match) setGrouping(String(match.id));
+      else setGrouping("week");
+    }
+
+    setIncomingConfig(null);
+  }, [incomingConfig, options, temporalOptions]);
 
   const plantillaOptions = useMemo(() => {
     const list = Array.isArray(plantillas) ? plantillas : [];
@@ -207,13 +236,9 @@ export default function ProjectHomeConfigPanel({
     const value = event.target.value;
     const nextPlantilla = value ? Number(value) : null;
     setSelectedPlantilla(nextPlantilla);
-    setPrimary("");
-    setSecondaries([]);
-    setPreferredDateField("__created_at");
   };
 
   useEffect(() => {
-    // If config was loaded with stale/invalid KPI ids, clear them once we have metadata for the selected plantilla.
     if (!selectedPlantilla) return;
     if (!Array.isArray(options) || options.length === 0) {
       setPrimary("");
@@ -269,7 +294,6 @@ export default function ProjectHomeConfigPanel({
   useEffect(() => {
     if (!projectId) return;
     reloadItems();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   const startCreateItem = () => {
@@ -519,397 +543,359 @@ export default function ProjectHomeConfigPanel({
   };
 
   return (
-    <div className="ph-config-panel">
-      <h3>Configuración del panel</h3>
-      {loading && <div className="ph-status">Cargando...</div>}
-      {message && (
-        <div className={`ph-status ${message.type === "error" ? "ph-status-error" : ""}`}>
-          {message.text}
+    <div className="pc-modal-overlay">
+      <div className="pc-modal-container" style={{ maxWidth: "1000px" }}>
+        <div className="pc-modal-header">
+          <h5>Personalizar Indicadores del Proyecto</h5>
+          <button className="pc-modal-close" onClick={onClose} title="Cerrar">
+             ×
+          </button>
         </div>
-      )}
-
-      {/* =========================================================
-          Bloque A: Configuración general del Home (existente)
-      ========================================================= */}
-      <div
-        className="ph-card"
-        style={{
-          padding: "0.85rem",
-          borderRadius: "0.9rem",
-          border: "1px solid #e5e7eb",
-        }}
-      >
-        <div className="ph-card-title" style={{ marginBottom: "0.6rem" }}>
-          Configuración general del Home
-        </div>
-
-        <div className="ph-form-row">
-          <label>Plantilla principal</label>
-          <select
-            value={selectedPlantilla != null ? String(selectedPlantilla) : ""}
-            onChange={handlePlantillaChange}
-          >
-            <option value="">Automática</option>
-            {plantillaOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.nombre}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="ph-form-row">
-          <label>KPI principal</label>
-          <select value={primary} onChange={(e) => setPrimary(Number(e.target.value) || "")}>
-            <option value="">(sin selección)</option>
-            {options.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="ph-form-row">
-          <label>KPI secundarios (máx 2)</label>
-          <div className="ph-checkbox-grid">
-            {options.map((opt) => (
-              <label key={opt.id} className="ph-checkbox">
-                <input
-                  type="checkbox"
-                  checked={secondaries.includes(opt.id)}
-                  onChange={() => toggleSecondary(opt.id)}
-                  disabled={secondaries.length >= 2 && !secondaries.includes(opt.id)}
-                />
-                {opt.label}
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="ph-form-row">
-          <label>Campo temporal</label>
-          <select value={preferredDateField} onChange={(e) => setPreferredDateField(e.target.value)}>
-            {temporalOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="ph-form-row">
-          <label>Agrupación</label>
-          <select value={grouping} onChange={(e) => setGrouping(e.target.value)}>
-            {TIME_GROUPING_OPTIONS.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button className="pc-btn pc-btn-green" disabled={loading} onClick={saveGeneralConfig}>
-          {loading ? "Guardando..." : "Guardar configuración"}
-        </button>
-      </div>
-
-      {/* =========================================================
-          Bloques B/C: Informes (Home items) - master/detail
-      ========================================================= */}
-      <div className="ph-informes-context-row" style={{ marginTop: "1rem" }}>
-        {/* Bloque B: listado */}
-        <div className="ph-right">
-          <div
-            className="ph-card"
-            style={{
-              padding: "0.85rem",
-              borderRadius: "0.9rem",
-              border: "1px solid #e5e7eb",
-            }}
-          >
-            <div className="d-flex align-items-center justify-content-between" style={{ gap: "0.75rem" }}>
-              <div className="ph-card-title">Informes (children)</div>
-              <button className="pc-btn pc-btn-outline pc-btn-small" onClick={startCreateItem} disabled={itemSaving}>
-                Nuevo
-              </button>
-            </div>
-
-            {itemsLoading && <div className="ph-status">Cargando informes...</div>}
-            {itemsError && <div className="ph-status ph-status-error">{itemsError}</div>}
-
-            {!itemsLoading && !itemsError && items.length === 0 && (
-              <div className="ph-kpi-empty">
-                No hay informes configurados. Cree uno para habilitar la colección de Informes en el Home.
+        <div className="pc-modal-body">
+          <div className="ph-config-panel">
+            {loading && <div className="ph-status">Cargando...</div>}
+            {message && (
+              <div className={`ph-status ${message.type === "error" ? "ph-status-error" : ""}`}>
+                {message.text}
               </div>
             )}
 
-            {!itemsLoading && !itemsError && items.length > 0 && (
-              <ul className="ph-kpi-items">
-                {items.map((it, idx) => {
-                  const plantillaNombre =
-                    it?.id_plantilla != null
-                      ? plantillaNameById.get(String(it.id_plantilla)) || `Plantilla ${it.id_plantilla}`
-                      : "Sin plantilla";
-                  const title = (it?.label || "").trim() || plantillaNombre;
-                  const isSelected = Number(selectedItemId) === Number(it.id_home_item);
-
-                  return (
-                    <li key={it.id_home_item} style={{ gap: "0.5rem", alignItems: "flex-start" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", gap: "0.35rem", alignItems: "center", flexWrap: "wrap" }}>
-                          <button
-                            type="button"
-                            onClick={() => startEditItem(it)}
-                            className="pc-btn pc-btn-light pc-btn-small"
-                            style={{ textAlign: "left" }}
-                            disabled={itemSaving}
-                          >
-                            {title}
-                          </button>
-                          {it.is_default === true && <span className="ph-chip">Default</span>}
-                        </div>
-                        <div className="ph-kpi-meta">
-                          Plantilla: {plantillaNombre} {" · "} Orden: {it.sort_order ?? idx + 1}
-                        </div>
-                        {isSelected && <div className="ph-kpi-meta">Editando...</div>}
-                      </div>
-
-                      <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                        <button
-                          className="pc-btn pc-btn-outline pc-btn-small"
-                          onClick={() => startEditItem(it)}
-                          disabled={itemSaving}
-                          title="Editar"
-                        >
-                          Editar
-                        </button>
-                        <button
-                          className="pc-btn pc-btn-outline pc-btn-small"
-                          onClick={() => moveItem(it.id_home_item, "up")}
-                          disabled={itemSaving || idx === 0}
-                          title="Subir"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          className="pc-btn pc-btn-outline pc-btn-small"
-                          onClick={() => moveItem(it.id_home_item, "down")}
-                          disabled={itemSaving || idx === items.length - 1}
-                          title="Bajar"
-                        >
-                          ↓
-                        </button>
-                        {!it.is_default && (
-                          <button
-                            className="pc-btn pc-btn-outline pc-btn-small"
-                            onClick={() => setDefaultForItem(it.id_home_item)}
-                            disabled={itemSaving}
-                            title="Marcar default"
-                          >
-                            Default
-                          </button>
-                        )}
-                        <button
-                          className="pc-btn pc-btn-outline pc-btn-small"
-                          onClick={() => disableHomeItem(it.id_home_item)}
-                          disabled={itemSaving}
-                          title="Desactivar"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
-
-        {/* Bloque C: editor */}
-        <div className="ph-left">
-          <div
-            className="ph-card"
-            style={{
-              padding: "0.85rem",
-              borderRadius: "0.9rem",
-              border: "1px solid #e5e7eb",
-            }}
-          >
-            <div className="d-flex align-items-center justify-content-between" style={{ gap: "0.75rem" }}>
-              <div className="ph-card-title">
-                {editorMode === "create" ? "Nuevo informe (Home)" : "Editar informe (Home)"}
+            {/* =========================================================
+                Bloque A: Configuración general del Home (existente)
+            ========================================================= */}
+            <div
+              className="ph-card"
+              style={{
+                padding: "0.85rem",
+                borderRadius: "0.9rem",
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              <div className="ph-card-title" style={{ marginBottom: "0.6rem" }}>
+                Configuración general del Home
               </div>
-              {editorMode === "edit" && (
-                <button className="pc-btn pc-btn-outline pc-btn-small" onClick={startCreateItem} disabled={itemSaving}>
-                  Nuevo informe
-                </button>
-              )}
-            </div>
 
-            {itemsMessage && (
-              <div className={`ph-status ${itemsMessage.type === "error" ? "ph-status-error" : ""}`}>
-                {itemsMessage.text}
+              <div className="ph-form-row">
+                <label>Plantilla principal</label>
+                <select
+                  value={selectedPlantilla != null ? String(selectedPlantilla) : ""}
+                  onChange={handlePlantillaChange}
+                >
+                  <option value="">Automática</option>
+                  {plantillaOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.nombre}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
 
-            {itemMetaError && <div className="ph-status ph-status-error">{itemMetaError}</div>}
-            {itemMetaLoading && <div className="ph-status">Cargando metadata...</div>}
+              <div className="ph-form-row">
+                <label>KPI principal</label>
+                <select value={primary} onChange={(e) => setPrimary(Number(e.target.value) || "")}>
+                  <option value="">(sin selección)</option>
+                  {options.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="ph-form-row">
-              <label>Plantilla</label>
-              <select
-                value={itemDraft.id_plantilla}
-                onChange={(e) => setItemDraft((prev) => ({ ...prev, id_plantilla: e.target.value }))}
-                disabled={editorMode !== "create" || itemSaving}
-              >
-                <option value="">
-                  {editorMode === "create" ? "(seleccione una plantilla)" : "(sin plantilla)"}
-                </option>
-                {(editorMode === "create" ? availablePlantillaOptionsForCreate : plantillaOptions).map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.nombre}
-                  </option>
-                ))}
-              </select>
-              {editorMode === "create" && availablePlantillaOptionsForCreate.length === 0 && (
-                <div className="ph-kpi-meta">No hay plantillas disponibles (todas ya tienen un informe activo).</div>
-              )}
-            </div>
-
-            <div className="ph-form-row">
-              <label>Label</label>
-              <input
-                value={itemDraft.label}
-                onChange={(e) => setItemDraft((prev) => ({ ...prev, label: e.target.value }))}
-                disabled={itemSaving}
-                placeholder="Opcional (si vacío, se usará el nombre de la plantilla)"
-                style={{
-                  padding: "0.6rem",
-                  borderRadius: "0.75rem",
-                  border: "1px solid #d1d5db",
-                  background: "#fff",
-                }}
-              />
-            </div>
-
-            <div className="ph-form-row">
-              <label>KPI principal</label>
-              <select
-                value={itemDraft.kpi_primary_field_id}
-                onChange={(e) => handleItemPrimaryChange(e.target.value)}
-                disabled={itemSaving}
-              >
-                <option value="">(sin selección)</option>
-                {itemKpiOptions.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="ph-form-row">
-              <label>KPI secundarios (máx 2)</label>
-              <div className="ph-checkbox-grid">
-                {itemKpiOptions.map((opt) => {
-                  const id = Number(opt.id);
-                  const selected =
-                    Array.isArray(itemDraft.kpi_secondary_field_ids) && itemDraft.kpi_secondary_field_ids.includes(id);
-                  const disableBecauseMax =
-                    Array.isArray(itemDraft.kpi_secondary_field_ids) &&
-                    itemDraft.kpi_secondary_field_ids.length >= 2 &&
-                    !selected;
-                  const disableBecausePrimary = Number(itemDraft.kpi_primary_field_id) === id;
-
-                  return (
+              <div className="ph-form-row">
+                <label>KPI secundarios (máx 2)</label>
+                <div className="ph-checkbox-grid">
+                  {options.map((opt) => (
                     <label key={opt.id} className="ph-checkbox">
                       <input
                         type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleItemSecondary(id)}
-                        disabled={itemSaving || disableBecauseMax || disableBecausePrimary}
+                        checked={secondaries.includes(opt.id)}
+                        onChange={() => toggleSecondary(opt.id)}
+                        disabled={secondaries.length >= 2 && !secondaries.includes(opt.id)}
                       />
                       {opt.label}
                     </label>
-                  );
-                })}
+                  ))}
+                </div>
+              </div>
+
+              <div className="ph-form-row">
+                <label>Campo temporal</label>
+                <select value={preferredDateField} onChange={(e) => setPreferredDateField(e.target.value)}>
+                  {temporalOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="ph-form-row">
+                <label>Agrupación</label>
+                <select value={grouping} onChange={(e) => setGrouping(e.target.value)}>
+                  {TIME_GROUPING_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="d-flex" style={{ gap: "0.5rem", marginTop: "1rem" }}>
+                <button className="pc-btn pc-btn-green" disabled={loading} onClick={saveGeneralConfig}>
+                  {loading ? "Guardando..." : "Guardar configuración inicial"}
+                </button>
               </div>
             </div>
 
-            <div className="ph-form-row">
-              <label>Campo temporal</label>
-              <select
-                value={itemDraft.preferred_date_field_id}
-                onChange={(e) => setItemDraft((prev) => ({ ...prev, preferred_date_field_id: e.target.value }))}
-                disabled={itemSaving}
-              >
-                {itemTemporalOptions.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="ph-form-row">
-              <label>Agrupación</label>
-              <select
-                value={itemDraft.preferred_time_grouping}
-                onChange={(e) => setItemDraft((prev) => ({ ...prev, preferred_time_grouping: e.target.value }))}
-                disabled={itemSaving}
-              >
-                {TIME_GROUPING_OPTIONS.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="ph-form-row">
-              <label>Default</label>
-              {editorMode === "create" ? (
-                <label className="ph-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={itemDraft.is_default === true}
-                    onChange={(e) => setItemDraft((prev) => ({ ...prev, is_default: e.target.checked }))}
-                    disabled={itemSaving}
-                  />
-                  Marcar como default
-                </label>
-              ) : (
-                <div className="ph-chip-row">
-                  {itemDraft.is_default ? (
-                    <span className="ph-chip">Default</span>
-                  ) : (
-                    <button
-                      className="pc-btn pc-btn-outline pc-btn-small"
-                      onClick={() => setDefaultForItem(itemDraft.id_home_item)}
-                      disabled={itemSaving}
-                    >
-                      Marcar como default
+            {/* =========================================================
+                Bloques B/C: Informes (Home items) - master/detail
+            ========================================================= */}
+            <div className="ph-informes-context-row" style={{ marginTop: "1.5rem" }}>
+              {/* Bloque B: listado */}
+              <div className="ph-right">
+                <div
+                  className="ph-card"
+                  style={{
+                    padding: "0.85rem",
+                    borderRadius: "0.9rem",
+                    border: "1px solid #e5e7eb",
+                  }}
+                >
+                  <div className="d-flex align-items-center justify-content-between" style={{ gap: "0.75rem" }}>
+                    <div className="ph-card-title">Informes de Sección</div>
+                    <button className="pc-btn pc-btn-outline pc-btn-small" onClick={startCreateItem} disabled={itemSaving}>
+                      Nuevo
                     </button>
+                  </div>
+
+                  {itemsLoading && <div className="ph-status">Cargando informes...</div>}
+                  {itemsError && <div className="ph-status ph-status-error">{itemsError}</div>}
+
+                  {!itemsLoading && !itemsError && items.length === 0 && (
+                    <div className="ph-kpi-empty">
+                      No hay informes configurados.
+                    </div>
+                  )}
+
+                  {!itemsLoading && !itemsError && items.length > 0 && (
+                    <ul className="ph-kpi-items">
+                      {items.map((it, idx) => {
+                        const plantillaNombre =
+                          it?.id_plantilla != null
+                            ? plantillaNameById.get(String(it.id_plantilla)) || `Plantilla ${it.id_plantilla}`
+                            : "Sin plantilla";
+                        const title = (it?.label || "").trim() || plantillaNombre;
+                        const isSelected = Number(selectedItemId) === Number(it.id_home_item);
+
+                        return (
+                          <li key={it.id_home_item} style={{ gap: "0.5rem", alignItems: "flex-start" }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", gap: "0.35rem", alignItems: "center", flexWrap: "wrap" }}>
+                                <button
+                                  type="button"
+                                  onClick={() => startEditItem(it)}
+                                  className="pc-btn pc-btn-light pc-btn-small"
+                                  style={{ textAlign: "left" }}
+                                  disabled={itemSaving}
+                                >
+                                  {title}
+                                </button>
+                                {it.is_default === true && <span className="ph-chip">Default</span>}
+                              </div>
+                              <div className="ph-kpi-meta">
+                                Plantilla: {plantillaNombre} {" · "} Orden: {it.sort_order ?? idx + 1}
+                              </div>
+                            </div>
+
+                            <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                              <button
+                                className="pc-btn pc-btn-outline pc-btn-small"
+                                onClick={() => moveItem(it.id_home_item, "up")}
+                                disabled={itemSaving || idx === 0}
+                                title="Subir"
+                              >
+                                ↑
+                              </button>
+                              <button
+                                className="pc-btn pc-btn-outline pc-btn-small"
+                                onClick={() => moveItem(it.id_home_item, "down")}
+                                disabled={itemSaving || idx === items.length - 1}
+                                title="Bajar"
+                              >
+                                ↓
+                              </button>
+                              <button
+                                className="pc-btn pc-btn-outline pc-btn-small"
+                                onClick={() => disableHomeItem(it.id_home_item)}
+                                disabled={itemSaving}
+                                title="Desactivar"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
                   )}
                 </div>
-              )}
-            </div>
+              </div>
 
-            <div className="d-flex" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-              <button className="pc-btn pc-btn-green" disabled={itemSaving} onClick={saveItemDraft}>
-                {itemSaving ? "Guardando..." : editorMode === "create" ? "Crear informe" : "Guardar cambios"}
-              </button>
-              {editorMode === "edit" && (
-                <button
-                  className="pc-btn pc-btn-outline"
-                  disabled={itemSaving}
-                  onClick={() => disableHomeItem(itemDraft.id_home_item)}
+              {/* Bloque C: editor */}
+              <div className="ph-left">
+                <div
+                  className="ph-card"
+                  style={{
+                    padding: "0.85rem",
+                    borderRadius: "0.9rem",
+                    border: "1px solid #e5e7eb",
+                  }}
                 >
-                  Desactivar
-                </button>
-              )}
+                  <div className="ph-card-title">
+                    {editorMode === "create" ? "Nuevo informe" : "Editar informe"}
+                  </div>
+
+                  {itemsMessage && (
+                    <div className={`ph-status ${itemsMessage.type === "error" ? "ph-status-error" : ""}`}>
+                      {itemsMessage.text}
+                    </div>
+                  )}
+
+                  {itemMetaError && <div className="ph-status ph-status-error">{itemMetaError}</div>}
+                  {itemMetaLoading && <div className="ph-status">Cargando metadata...</div>}
+
+                  <div className="ph-form-row">
+                    <label>Plantilla</label>
+                    <select
+                      value={itemDraft.id_plantilla}
+                      onChange={(e) => setItemDraft((prev) => ({ ...prev, id_plantilla: e.target.value }))}
+                      disabled={editorMode !== "create" || itemSaving}
+                    >
+                      <option value="">
+                        {editorMode === "create" ? "(seleccionar)" : "(sin plantilla)"}
+                      </option>
+                      {(editorMode === "create" ? availablePlantillaOptionsForCreate : plantillaOptions).map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="ph-form-row">
+                    <label>Etiqueta personalizada</label>
+                    <input
+                      type="text"
+                      value={itemDraft.label}
+                      onChange={(e) => setItemDraft((prev) => ({ ...prev, label: e.target.value }))}
+                      placeholder="Ej: Censo de Viviendas"
+                      disabled={itemSaving}
+                    />
+                  </div>
+
+                  <div className="ph-form-row">
+                    <label>KPI Principal</label>
+                    <select
+                      value={itemDraft.kpi_primary_field_id}
+                      onChange={(e) => handleItemPrimaryChange(e.target.value)}
+                      disabled={itemSaving || itemMetaLoading}
+                    >
+                      <option value="">(sin selección)</option>
+                      {itemKpiOptions.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="ph-form-row">
+                    <label>KPIs Secundarios (máx 2)</label>
+                    <div className="ph-checkbox-grid">
+                      {itemKpiOptions.map((opt) => (
+                        <label key={opt.id} className="ph-checkbox">
+                          <input
+                            type="checkbox"
+                            checked={(itemDraft.kpi_secondary_field_ids || []).includes(Number(opt.id))}
+                            onChange={() => toggleItemSecondary(opt.id)}
+                            disabled={
+                              itemSaving ||
+                              itemMetaLoading ||
+                              ((itemDraft.kpi_secondary_field_ids || []).length >= 2 &&
+                                !(itemDraft.kpi_secondary_field_ids || []).includes(Number(opt.id))) ||
+                              Number(itemDraft.kpi_primary_field_id) === Number(opt.id)
+                            }
+                          />
+                          {opt.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="ph-form-row">
+                    <label>Campo temporal</label>
+                    <select
+                      value={itemDraft.preferred_date_field_id}
+                      onChange={(e) => setItemDraft((prev) => ({ ...prev, preferred_date_field_id: e.target.value }))}
+                      disabled={itemSaving || itemMetaLoading}
+                    >
+                      {itemTemporalOptions.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="ph-form-row">
+                    <label>Agrupación</label>
+                    <select
+                      value={itemDraft.preferred_time_grouping}
+                      onChange={(e) => setItemDraft((prev) => ({ ...prev, preferred_time_grouping: e.target.value }))}
+                      disabled={itemSaving || itemMetaLoading}
+                    >
+                      {TIME_GROUPING_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {editorMode === "create" && (
+                     <div className="ph-form-row">
+                      <label className="ph-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={itemDraft.is_default === true}
+                          onChange={(e) => setItemDraft((prev) => ({ ...prev, is_default: e.target.checked }))}
+                          disabled={itemSaving}
+                        />
+                        Marcar como default
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="d-flex" style={{ gap: "0.5rem", flexWrap: "wrap", marginTop: "1rem" }}>
+                    <button className="pc-btn pc-btn-green" disabled={itemSaving} onClick={saveItemDraft}>
+                      {itemSaving ? "Guardando..." : editorMode === "create" ? "Crear informe" : "Guardar cambios"}
+                    </button>
+                    {editorMode === "edit" && !itemDraft.is_default && (
+                      <button
+                        className="pc-btn pc-btn-outline"
+                        disabled={itemSaving}
+                        onClick={() => setDefaultForItem(itemDraft.id_home_item)}
+                      >
+                        Hacer default
+                      </button>
+                    )}
+                    <button className="pc-btn pc-btn-outline" onClick={onClose} disabled={itemSaving} style={{ marginLeft: "auto" }}>
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

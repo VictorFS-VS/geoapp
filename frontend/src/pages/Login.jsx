@@ -47,8 +47,13 @@ export default function Login({ onLogin }) {
   };
 
   function pickLanding(user) {
-    // ✅ CLIENTE: directo a visor-full/:id_proyecto
-    if (isCliente(user)) return { mode: "clienteVisorFull" };
+    // ✅ CLIENTE: identificamos si es Vial o General
+    if (isCliente(user)) {
+      return { 
+        mode: "clienteRedirect", 
+        isVial: Number(user?.tipo_usuario) === 10 
+      };
+    }
 
     // ✅ lógica normal (no cliente)
     if (canFromUser(user, "visor.tramos.read")) return { path: "/visor-tramo", mode: "visorTramo" };
@@ -97,12 +102,15 @@ export default function Login({ onLogin }) {
 
       const landing = pickLanding(user);
 
-      // ✅ CLIENTE → /visor-full/:id_proyecto
-      if (landing.mode === "clienteVisorFull") {
+      // ✅ CLIENTE → /project-home (Vial) o /visor-full (General)
+      if (landing.mode === "clienteRedirect") {
         const idProyecto = await fetchPrimerProyectoPorProponente(token, user?.id_cliente);
 
         if (idProyecto) {
-          const path = `/visor-full/${idProyecto}`;
+          const path = landing.isVial 
+            ? `/project-home/${idProyecto}`
+            : `/visor-full/${idProyecto}`;
+            
           navigate(path, { replace: true });
 
           // fallback por si el SPA no cambia
@@ -110,7 +118,8 @@ export default function Login({ onLogin }) {
             if (!location.pathname.includes(path)) window.location.replace(path);
           }, 60);
         } else {
-          setError("No se encontró un proyecto asociado a su cuenta.");
+          // Fallback a listado si no tiene proyectos asignados
+          navigate("/proyectos", { replace: true });
         }
         return;
       }

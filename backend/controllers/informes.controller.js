@@ -6,6 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const puppeteer = require("puppeteer");
 const ExcelJS = require("exceljs");
+const XLSX = require("xlsx");
 const pool = require("../db");
 const scoringEngine = require("../src/modules/scoring/scoring.engine");
 
@@ -33,6 +34,123 @@ function asPositiveInt(v, fallback = 1) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 1) return fallback;
   return Math.trunc(n);
+}
+
+function sanitizeExcelText(value) {
+  if (value === null || value === undefined) return "";
+
+  if (value instanceof Date) return value;
+
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+
+  if (typeof value === "number") return Number.isFinite(value) ? value : "";
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeExcelText(item)).filter(Boolean).join(", ");
+  }
+
+  if (typeof value === "object") {
+    const labelLike =
+      value.label ?? value.nombre ?? value.name ?? value.titulo ?? value.text ?? value.value ?? value.valor ?? null;
+    if (labelLike !== null && labelLike !== undefined && String(labelLike).trim() !== "") {
+      return sanitizeExcelText(labelLike);
+    }
+
+    const nested =
+      Array.isArray(value.items) ? value.items :
+      Array.isArray(value.values) ? value.values :
+      Array.isArray(value.options) ? value.options :
+      null;
+    if (nested) {
+      const nestedText = nested.map((item) => sanitizeExcelText(item)).filter(Boolean).join(", ");
+      if (nestedText) return nestedText;
+    }
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+
+  const text = String(value).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFE\uFFFF]/g, "");
+  return text.trim();
+}
+
+function resolveExcelResponseValue(row = {}, question = {}) {
+  const tipo = String(question?.tipo || "").trim().toLowerCase();
+
+  const resolveJsonLike = (raw) => {
+    if (raw === null || raw === undefined) return "";
+
+    if (typeof raw === "boolean") return raw ? "Sí" : "No";
+    if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+    if (Array.isArray(raw)) return raw.map((item) => resolveJsonLike(item)).filter(Boolean).join(", ");
+
+    if (typeof raw === "object") {
+      if (tipo === "semaforo") {
+        const nombre = raw.nombre ?? raw.label ?? raw.text ?? raw.name ?? raw.titulo ?? null;
+        if (nombre !== null && nombre !== undefined && String(nombre).trim() !== "") {
+          return sanitizeExcelText(nombre);
+        }
+      }
+
+      const labelLike =
+        raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.value ?? raw.valor ?? null;
+      if (labelLike !== null && labelLike !== undefined && String(labelLike).trim() !== "") {
+        return sanitizeExcelText(labelLike);
+      }
+
+      const nested =
+        Array.isArray(raw.items) ? raw.items :
+        Array.isArray(raw.values) ? raw.values :
+        Array.isArray(raw.options) ? raw.options :
+        null;
+      if (nested) {
+        const nestedText = nested.map((item) => resolveJsonLike(item)).filter(Boolean).join(", ");
+        if (nestedText) return nestedText;
+      }
+
+      try {
+        return sanitizeExcelText(JSON.stringify(raw));
+      } catch {
+        return "";
+      }
+    }
+
+    if (typeof raw === "string") {
+      const s = sanitizeExcelText(raw);
+      if (!s) return "";
+
+      const parsed = parseJsonMaybe(s);
+      if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+        return resolveJsonLike(parsed);
+      }
+      if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+      if (typeof parsed === "number") return String(parsed);
+      if (typeof parsed === "string") return sanitizeExcelText(parsed);
+
+      return s;
+    }
+
+    return sanitizeExcelText(raw);
+  };
+
+  if (row?.valor_bool !== null && row?.valor_bool !== undefined) {
+    return row.valor_bool ? "Sí" : "No";
+  }
+
+  if (row?.valor_texto !== null && row?.valor_texto !== undefined) {
+    const text = sanitizeExcelText(row.valor_texto);
+    if (text !== "") return text;
+  }
+
+  if (row?.valor_json !== null && row?.valor_json !== undefined) {
+    const resolved = resolveJsonLike(row.valor_json);
+    if (resolved !== "") return resolved;
+  }
+
+  return "";
 }
 
 /**
@@ -79,6 +197,17 @@ function resolveAbsolutePath(raw) {
   }
 
   return path.resolve(path.join(BASE_UPLOAD_PATH, rel.replace(/\//g, path.sep)));
+}
+
+function cleanDocxText(text) {
+  if (text === null || text === undefined) return "";
+
+  return String(text)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ") // 🔥 clave
+    .replace(/\u0000/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .slice(0, 5000); // evita textos gigantes
 }
 
 async function cleanupInformeFiles(fileRows = []) {
@@ -3422,6 +3551,1505 @@ async function deletePregunta(req, res) {
     }
   }
 
+function firstNonEmpty(values = []) {
+  for (const v of values) {
+    if (v !== null && v !== undefined && String(v).trim() !== "") {
+      return v;
+    }
+  }
+  return "";
+}
+
+const CONSOLIDACION_DESTINO_TEXTUAL_TIPOS = new Set([
+  "texto",
+  "textarea",
+  "text",
+  "string",
+  "short_text",
+  "shorttext",
+  "select",
+  "radio",
+  "select_single",
+]);
+
+const CONSOLIDACION_ORIGEN_BLOQUEADOS = new Set([
+  "imagen",
+  "image",
+  "foto",
+  "galeria",
+  "gallery",
+  "photoupload",
+  "vphoto",
+  "archivo_imagen",
+]);
+
+const CONSOLIDACION_CHOICES_TIPOS = new Set([
+  "select",
+  "radio",
+  "select_single",
+  "semaforo",
+  "multiselect",
+  "checkbox",
+  "select_multiple",
+]);
+
+function normalizeConsolidacionTipo(tipo) {
+  return String(tipo || "").trim().toLowerCase();
+}
+
+function isBlankConsolidacionText(value) {
+  return value === null || value === undefined || String(value).trim() === "";
+}
+
+function parseJsonMaybe(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+
+  const s = value.trim();
+  if (!s) return null;
+
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeConsolidacionOptions(opcionesJson) {
+  const parsed = parseJsonMaybe(opcionesJson);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .map((opt) => {
+      if (typeof opt === "string") {
+        const s = opt.trim();
+        return s ? { value: s, label: s } : null;
+      }
+
+      if (!opt || typeof opt !== "object") return null;
+
+      const value = String(
+        opt.value ?? opt.valor ?? opt.id ?? opt.codigo ?? opt.label ?? opt.nombre ?? opt.titulo ?? ""
+      ).trim();
+      const label = String(
+        opt.label ?? opt.nombre ?? opt.titulo ?? opt.text ?? opt.value ?? opt.valor ?? opt.id ?? ""
+      ).trim();
+
+      if (!value && !label) return null;
+
+      return {
+        value: value || label,
+        label: label || value,
+      };
+    })
+    .filter(Boolean)
+    .filter((opt) => !isBlankConsolidacionText(opt.value));
+}
+
+function normalizeConsolidacionTextoLibre(raw) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw === "boolean") return raw ? "Sí" : "No";
+  if (typeof raw === "number") return Number.isFinite(raw) ? String(raw) : "";
+
+  if (Array.isArray(raw)) {
+    return raw.map((x) => normalizeConsolidacionTextoLibre(x)).filter(Boolean).join(", ");
+  }
+
+  if (typeof raw === "object") {
+    if ("lat" in raw || "lng" in raw || "latitude" in raw || "longitude" in raw) {
+      const lat = raw.lat ?? raw.latitude ?? null;
+      const lng = raw.lng ?? raw.longitude ?? null;
+      const latTxt = normalizeConsolidacionTextoLibre(lat);
+      const lngTxt = normalizeConsolidacionTextoLibre(lng);
+      const out = [latTxt, lngTxt].filter(Boolean).join(", ");
+      return out || "";
+    }
+
+    const labelLike =
+      raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.valor ?? null;
+    if (!isBlankConsolidacionText(labelLike)) {
+      return String(labelLike).trim();
+    }
+
+    const nested =
+      Array.isArray(raw.items) ? raw.items :
+      Array.isArray(raw.values) ? raw.values :
+      Array.isArray(raw.options) ? raw.options :
+      null;
+
+    if (nested) {
+      const txt = nested.map((x) => normalizeConsolidacionTextoLibre(x)).filter(Boolean).join(", ");
+      if (txt) return txt;
+    }
+
+    try {
+      const jsonTxt = JSON.stringify(raw);
+      return jsonTxt === "{}" ? "" : jsonTxt;
+    } catch {
+      return "";
+    }
+  }
+
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s) return "";
+
+    const parsed = parseJsonMaybe(s);
+    if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+      return normalizeConsolidacionTextoLibre(parsed);
+    }
+
+    if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+    if (typeof parsed === "number") return String(parsed);
+    if (typeof parsed === "string") return parsed.trim();
+
+    return s;
+  }
+
+  return String(raw).trim();
+}
+
+function normalizeConsolidacionRespuesta(question, row) {
+  const opts = normalizeConsolidacionOptions(question?.opciones_json);
+  const tipo = normalizeConsolidacionTipo(question?.tipo);
+  const isChoiceType = CONSOLIDACION_CHOICES_TIPOS.has(tipo);
+
+  const resolveAgainstOptions = (raw) => {
+    const s = normalizeConsolidacionTextoLibre(raw);
+    if (!s) return "";
+
+    const sLower = s.toLowerCase();
+
+    for (const opt of opts) {
+      if (String(opt.value || "").trim().toLowerCase() === sLower) {
+        return String(opt.label || opt.value || "").trim();
+      }
+      if (String(opt.label || "").trim().toLowerCase() === sLower) {
+        return String(opt.label || opt.value || "").trim();
+      }
+    }
+
+    return s;
+  };
+
+  const resolveRaw = (raw) => {
+    if (raw === null || raw === undefined) return "";
+    if (typeof raw === "boolean") return raw ? "Sí" : "No";
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw)) return "";
+      return isChoiceType ? resolveAgainstOptions(String(raw)) : String(raw);
+    }
+
+    if (Array.isArray(raw)) {
+      return raw.map((item) => resolveRaw(item)).filter(Boolean).join(", ");
+    }
+
+    if (typeof raw === "object") {
+      if (tipo === "semaforo") {
+        const nombre = raw.nombre ?? raw.label ?? raw.color_name ?? raw.name ?? raw.titulo ?? null;
+        if (!isBlankConsolidacionText(nombre)) return String(nombre).trim();
+      }
+
+      const labelLike =
+        raw.label ?? raw.nombre ?? raw.name ?? raw.titulo ?? raw.text ?? raw.value ?? raw.valor ?? null;
+      if (!isBlankConsolidacionText(labelLike)) {
+        const resolved = resolveAgainstOptions(labelLike);
+        if (resolved) return resolved;
+        if (!isChoiceType) {
+          return String(labelLike).trim();
+        }
+      }
+
+      if (Array.isArray(raw.items) || Array.isArray(raw.values) || Array.isArray(raw.options)) {
+        const arr = raw.items || raw.values || raw.options || [];
+        const txt = arr.map((item) => resolveRaw(item)).filter(Boolean).join(", ");
+        if (txt) return txt;
+      }
+
+      const valueLike = raw.value ?? raw.id ?? raw.codigo ?? raw.valor ?? null;
+      if (!isBlankConsolidacionText(valueLike)) {
+        const resolved = resolveAgainstOptions(valueLike);
+        if (resolved) return resolved;
+        if (!isChoiceType) {
+          return String(valueLike).trim();
+        }
+      }
+
+      return normalizeConsolidacionTextoLibre(raw);
+    }
+
+    if (typeof raw === "string") {
+      const s = raw.trim();
+      if (!s) return "";
+
+      const parsed = parseJsonMaybe(s);
+      if (Array.isArray(parsed) || (parsed && typeof parsed === "object")) {
+        return resolveRaw(parsed);
+      }
+
+    if (typeof parsed === "boolean") return parsed ? "Sí" : "No";
+    if (typeof parsed === "number") {
+      if (isChoiceType) return resolveAgainstOptions(s);
+      return String(parsed);
+    }
+    if (typeof parsed === "string") {
+      if (isChoiceType) return resolveAgainstOptions(s);
+      return parsed.trim();
+    }
+
+      return resolveAgainstOptions(s);
+    }
+
+    return normalizeConsolidacionTextoLibre(raw);
+  };
+
+  const candidates = [];
+  if (row?.valor_bool !== null && row?.valor_bool !== undefined) candidates.push(row.valor_bool);
+  if (row?.valor_json !== null && row?.valor_json !== undefined) candidates.push(row.valor_json);
+  if (row?.valor_texto !== null && row?.valor_texto !== undefined) candidates.push(row.valor_texto);
+
+  for (const candidate of candidates) {
+    const resolved = resolveRaw(candidate);
+    if (!isBlankConsolidacionText(resolved)) return String(resolved).trim();
+  }
+
+  return "";
+}
+
+function isConsolidacionDestinoTextual(question) {
+  return CONSOLIDACION_DESTINO_TEXTUAL_TIPOS.has(normalizeConsolidacionTipo(question?.tipo));
+}
+
+function isConsolidacionOrigenBloqueado(question) {
+  return CONSOLIDACION_ORIGEN_BLOQUEADOS.has(normalizeConsolidacionTipo(question?.tipo));
+}
+
+async function buildConsolidacionPlan({
+  db,
+  req,
+  idProyecto,
+  idPlantilla,
+  sourceFieldIds,
+  targetFieldId,
+  strategy,
+  overwriteMode,
+  exampleLimit = 10,
+}) {
+  const errors = [];
+
+  const projectId = Number(idProyecto);
+  const plantillaId = Number(idPlantilla);
+  const targetId = Number(targetFieldId);
+
+  let sourceInput = sourceFieldIds;
+  if (typeof sourceInput === "string") {
+    const parsed = parseJsonMaybe(sourceInput);
+    if (Array.isArray(parsed)) {
+      sourceInput = parsed;
+    } else {
+      sourceInput = sourceInput
+        .split(/[,;]+/g)
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+  }
+
+  const sourceIds = [];
+  for (const rawId of Array.isArray(sourceInput) ? sourceInput : []) {
+    const n = Number(rawId);
+    if (Number.isFinite(n) && n > 0 && !sourceIds.includes(n)) sourceIds.push(n);
+  }
+
+  const strategyNorm = String(strategy || "").trim().toLowerCase();
+  const overwriteNorm = String(overwriteMode || "").trim().toLowerCase();
+
+  if (!Number.isFinite(projectId) || projectId <= 0) {
+    errors.push({ code: "invalid_project", message: "idProyecto inválido" });
+  }
+
+  if (!Number.isFinite(plantillaId) || plantillaId <= 0) {
+    errors.push({ code: "invalid_plantilla", message: "idPlantilla inválido" });
+  }
+
+  if (!Number.isFinite(targetId) || targetId <= 0) {
+    errors.push({ code: "invalid_target", message: "target_field_id inválido" });
+  }
+
+  if (!sourceIds.length) {
+    errors.push({ code: "invalid_sources", message: "Debe indicar al menos un campo origen" });
+  }
+
+  if (!["first_non_empty", "concat_with_comma"].includes(strategyNorm)) {
+    errors.push({ code: "invalid_strategy", message: "Estrategia inválida" });
+  }
+
+  if (!["empty_only", "force"].includes(overwriteNorm)) {
+    errors.push({ code: "invalid_overwrite_mode", message: "overwrite_mode inválido" });
+  }
+
+  const allIds = Array.from(new Set([...sourceIds, targetId].filter((n) => Number.isFinite(n) && n > 0)));
+
+  const { buildInformeVisibleScope } = require("../helpers/informesDashboardScope");
+  const userId = req.user?.id ?? null;
+  const isAdmin =
+    Number(req.user?.tipo_usuario) === 1 || Number(req.user?.group_id) === 1;
+  const scope = buildInformeVisibleScope({
+    userId,
+    isAdmin,
+    startIndex: 3,
+  });
+
+  const qParams = [plantillaId, allIds];
+  const { rows: questions } = await db.query(
+    `
+    SELECT
+      q.*,
+      s.id_plantilla
+    FROM ema.informe_pregunta q
+    JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+    WHERE s.id_plantilla = $1
+      AND q.id_pregunta = ANY($2::int[])
+    ORDER BY q.orden, q.id_pregunta
+    `,
+    qParams
+  );
+
+  const questionsById = new Map(questions.map((q) => [Number(q.id_pregunta), q]));
+  const targetQuestion = questionsById.get(targetId) || null;
+  const sourceQuestions = sourceIds.map((id) => questionsById.get(id)).filter(Boolean);
+
+  const missingIds = allIds.filter((id) => !questionsById.has(id));
+  if (missingIds.length) {
+    errors.push({
+      code: "fields_not_in_template",
+      message: "Algunos campos no pertenecen a la plantilla activa",
+      field_ids: missingIds,
+    });
+  }
+
+  if (!targetQuestion) {
+    errors.push({
+      code: "target_not_found",
+      message: "El campo destino no pertenece a la plantilla activa",
+      field_id: targetId,
+    });
+  } else {
+    if (!isConsolidacionDestinoTextual(targetQuestion)) {
+      errors.push({
+        code: "target_not_textual",
+        message: "El campo destino debe ser textual",
+        field_id: targetId,
+        tipo: targetQuestion.tipo,
+      });
+    }
+
+    if (!!targetQuestion.es_unico) {
+      errors.push({
+        code: "target_unique",
+        message: "El campo destino es único y no se puede usar en esta iteración",
+        field_id: targetId,
+      });
+    }
+  }
+
+  const sourceMap = new Map(sourceQuestions.map((q) => [Number(q.id_pregunta), q]));
+  const blockedSources = sourceQuestions.filter((q) => isConsolidacionOrigenBloqueado(q));
+  if (blockedSources.length) {
+    errors.push({
+      code: "source_not_resolvable",
+      message: "Uno o más campos origen no pueden resolverse a texto visible",
+      field_ids: blockedSources.map((q) => Number(q.id_pregunta)),
+    });
+  }
+
+  if (sourceMap.has(targetId)) {
+    errors.push({
+      code: "target_in_sources",
+      message: "El campo destino no puede estar incluido entre los campos origen",
+      field_id: targetId,
+    });
+  }
+
+  if (errors.length) {
+    return {
+      valid: false,
+      errors,
+      summary: {
+        total_informes: 0,
+        eligible: 0,
+        with_changes: 0,
+        skipped_no_source: 0,
+        skipped_target_has_value: 0,
+        conflicts: errors.length,
+      },
+      examples: [],
+      rowsToWrite: [],
+      targetQuestion,
+      sourceQuestions,
+    };
+  }
+
+  const visibleSql = `
+    SELECT
+      i.id_informe
+    FROM ema.informe i
+    JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+    LEFT JOIN ema.informe_plantilla_usuario pu
+      ON pu.id_plantilla = p.id_plantilla
+     AND pu.id_usuario = $${scope.userParamIndex}
+    WHERE i.id_proyecto = $1
+      AND i.id_plantilla = $2
+      ${scope.whereSql}
+    ORDER BY i.id_informe ASC
+  `;
+
+  const { rows: informeRows } = await db.query(visibleSql, [projectId, plantillaId, ...scope.params]);
+  const informeIds = informeRows.map((r) => Number(r.id_informe)).filter((n) => Number.isFinite(n) && n > 0);
+
+  if (!informeIds.length) {
+    return {
+      valid: true,
+      errors: [],
+      summary: {
+        total_informes: 0,
+        eligible: 0,
+        with_changes: 0,
+        skipped_no_source: 0,
+        skipped_target_has_value: 0,
+        conflicts: 0,
+      },
+      examples: [],
+      rowsToWrite: [],
+      targetQuestion,
+      sourceQuestions,
+    };
+  }
+
+  const responseFieldIds = Array.from(new Set([...sourceIds, targetId]));
+  const { rows: responseRows } = await db.query(
+    `
+    SELECT
+      r.id_informe,
+      r.id_pregunta,
+      r.valor_texto,
+      r.valor_bool,
+      r.valor_json
+    FROM ema.informe_respuesta r
+    WHERE r.id_informe = ANY($1::int[])
+      AND r.id_pregunta = ANY($2::int[])
+    ORDER BY r.id_informe ASC, r.id_pregunta ASC
+    `,
+    [informeIds, responseFieldIds]
+  );
+
+  const responseByInforme = new Map();
+  for (const idInf of informeIds) {
+    responseByInforme.set(idInf, new Map());
+  }
+
+  for (const row of responseRows) {
+    const idInf = Number(row.id_informe);
+    const idPreg = Number(row.id_pregunta);
+    if (!responseByInforme.has(idInf)) responseByInforme.set(idInf, new Map());
+    responseByInforme.get(idInf).set(idPreg, row);
+  }
+
+  const summary = {
+    total_informes: informeIds.length,
+    eligible: 0,
+    with_changes: 0,
+    skipped_no_source: 0,
+    skipped_target_has_value: 0,
+    conflicts: 0,
+  };
+
+  const examples = [];
+  const rowsToWrite = [];
+
+  for (const idInforme of informeIds) {
+    const rowMap = responseByInforme.get(idInforme) || new Map();
+    const targetRow = rowMap.get(targetId) || null;
+    const targetCurrentValue = normalizeConsolidacionRespuesta(targetQuestion, targetRow);
+
+    const resolvedSources = sourceIds
+      .map((idPregunta) => {
+        const question = sourceMap.get(idPregunta);
+        const row = rowMap.get(idPregunta) || null;
+        const resolved = normalizeConsolidacionRespuesta(question, row);
+        return {
+          id_pregunta: idPregunta,
+          label: question?.etiqueta || `Pregunta #${idPregunta}`,
+          resolved,
+        };
+      })
+      .filter((x) => !isBlankConsolidacionText(x.resolved));
+
+    if (!resolvedSources.length) {
+      summary.skipped_no_source += 1;
+      continue;
+    }
+
+    summary.eligible += 1;
+
+    if (overwriteNorm === "empty_only" && !isBlankConsolidacionText(targetCurrentValue)) {
+      summary.skipped_target_has_value += 1;
+      continue;
+    }
+
+    const resolvedValue =
+      strategyNorm === "concat_with_comma"
+        ? resolvedSources.map((x) => x.resolved).join(", ")
+        : resolvedSources[0].resolved;
+
+    if (isBlankConsolidacionText(resolvedValue)) {
+      summary.skipped_no_source += 1;
+      summary.eligible -= 1;
+      continue;
+    }
+
+    summary.with_changes += 1;
+
+    const item = {
+      id_informe: idInforme,
+      target_current_value: targetCurrentValue,
+      resolved_value: resolvedValue,
+      sources_used: resolvedSources.map(({ id_pregunta, label }) => ({ id_pregunta, label })),
+      target_question_id: targetId,
+    };
+
+    rowsToWrite.push(item);
+
+    if (examples.length < Number(exampleLimit || 10)) {
+      examples.push({
+        id_informe: idInforme,
+        target_current_value: targetCurrentValue,
+        resolved_value: resolvedValue,
+        sources_used: resolvedSources.map(({ id_pregunta, label }) => ({ id_pregunta, label })),
+      });
+    }
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    summary,
+    examples,
+    rowsToWrite,
+    targetQuestion,
+    sourceQuestions,
+  };
+}
+
+function normalizeExcelHeader(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+}
+
+function valueFromCell(cell) {
+  if (!cell) return null;
+
+  const v = cell.value;
+
+  if (v === null || v === undefined) return null;
+
+  if (typeof v === "object") {
+    if (v.text != null) return v.text;
+    if (v.result != null) return v.result;
+    if (v.richText && Array.isArray(v.richText)) {
+      return v.richText.map((x) => x.text || "").join("");
+    }
+    if (v.hyperlink != null) return v.text || v.hyperlink;
+  }
+
+  return v;
+}
+
+// POST /api/informes/proyecto/:idProyecto/plantilla/:idPlantilla/import-excel-update
+async function importExcelUpdateRespuestas(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+
+  if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+    return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+  }
+
+  if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+    return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
+  }
+
+  // ✅ express-fileupload
+  const excelFile = req.files?.file;
+
+  if (!excelFile) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe adjuntar un archivo Excel",
+    });
+  }
+
+  // ✅ soporta useTempFiles: true y false
+  let fileBuffer = null;
+
+  try {
+    if (excelFile.data && excelFile.data.length) {
+      fileBuffer = excelFile.data;
+    } else if (excelFile.tempFilePath) {
+      fileBuffer = fs.readFileSync(excelFile.tempFilePath);
+    }
+  } catch (e) {
+    console.error("❌ No se pudo leer archivo temporal:", e);
+  }
+
+  if (!fileBuffer || !fileBuffer.length) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe adjuntar un archivo Excel válido",
+    });
+  }
+
+  const nombreArchivo = String(excelFile.name || "").toLowerCase().trim();
+
+  if (!nombreArchivo.endsWith(".xlsx") && !nombreArchivo.endsWith(".xls")) {
+    return res.status(400).json({
+      ok: false,
+      error: "Solo se permiten archivos .xlsx o .xls",
+    });
+  }
+
+  const matchMode = String(req.body?.match_mode || "id_informe").trim().toLowerCase();
+  const excelMatchColumn = String(req.body?.excel_match_column || "").trim();
+  const destinationMode = String(req.body?.destination_mode || "pregunta_existente")
+    .trim()
+    .toLowerCase();
+
+  const idPreguntaReferencia = Number(req.body?.id_pregunta_referencia || 0);
+  const idPreguntaDestinoBody = Number(req.body?.id_pregunta_destino || 0);
+
+  const idSeccionDestino = Number(req.body?.id_seccion_destino || 0);
+  const etiquetaNuevaPregunta = String(req.body?.etiqueta_nueva_pregunta || "").trim();
+  const tipoNuevaPregunta = String(req.body?.tipo_nueva_pregunta || "texto").trim();
+
+  const overwriteEmptyOnly =
+    String(req.body?.overwrite_empty_only || "0").trim() === "1";
+
+  let orderNuevaPregunta = Number(req.body?.order_nueva_pregunta || 0);
+
+  let excelColumnsSource = req.body?.excel_columns_source;
+
+  if (typeof excelColumnsSource === "string") {
+    try {
+      const parsed = JSON.parse(excelColumnsSource);
+      if (Array.isArray(parsed)) {
+        excelColumnsSource = parsed;
+      } else {
+        excelColumnsSource = excelColumnsSource
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+    } catch {
+      excelColumnsSource = excelColumnsSource
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+  }
+
+  if (!Array.isArray(excelColumnsSource) || excelColumnsSource.length === 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar al menos una columna origen del Excel",
+    });
+  }
+
+  if (!excelMatchColumn) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar la columna del Excel para el cruce",
+    });
+  }
+
+  if (!["id_informe", "pregunta_referencia"].includes(matchMode)) {
+    return res.status(400).json({
+      ok: false,
+      error: "match_mode inválido. Use 'id_informe' o 'pregunta_referencia'",
+    });
+  }
+
+  if (!["pregunta_existente", "nueva_pregunta"].includes(destinationMode)) {
+    return res.status(400).json({
+      ok: false,
+      error: "destination_mode inválido. Use 'pregunta_existente' o 'nueva_pregunta'",
+    });
+  }
+
+  if (
+    matchMode === "pregunta_referencia" &&
+    (!Number.isFinite(idPreguntaReferencia) || idPreguntaReferencia <= 0)
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar id_pregunta_referencia",
+    });
+  }
+
+  if (
+    destinationMode === "pregunta_existente" &&
+    (!Number.isFinite(idPreguntaDestinoBody) || idPreguntaDestinoBody <= 0)
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "Debe indicar id_pregunta_destino",
+    });
+  }
+
+  if (destinationMode === "nueva_pregunta") {
+    if (!Number.isFinite(idSeccionDestino) || idSeccionDestino <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debe indicar id_seccion_destino",
+      });
+    }
+
+    if (!etiquetaNuevaPregunta) {
+      return res.status(400).json({
+        ok: false,
+        error: "Debe indicar etiqueta_nueva_pregunta",
+      });
+    }
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // 1) cargar secciones y preguntas de la plantilla
+    const { rows: secciones } = await client.query(
+      `
+      SELECT id_seccion, titulo, orden
+      FROM ema.informe_seccion
+      WHERE id_plantilla = $1
+      ORDER BY orden
+      `,
+      [idPlantilla]
+    );
+
+    const idSecciones = secciones.map((s) => Number(s.id_seccion)).filter(Boolean);
+    const seccionesSet = new Set(idSecciones);
+
+    const { rows: preguntas } = await client.query(
+      `
+      SELECT *
+      FROM ema.informe_pregunta
+      WHERE id_seccion = ANY($1::int[])
+      ORDER BY id_seccion, orden, id_pregunta
+      `,
+      [idSecciones.length ? idSecciones : [0]]
+    );
+
+    const preguntasById = new Map(
+      (preguntas || []).map((p) => [Number(p.id_pregunta), p])
+    );
+
+    const semaforoPaletteMap = buildSemaforoPaletteMap(preguntas || []);
+
+    if (matchMode === "pregunta_referencia" && !preguntasById.has(idPreguntaReferencia)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `La pregunta referencia ${idPreguntaReferencia} no pertenece a la plantilla`,
+      });
+    }
+
+    let idPreguntaDestino = idPreguntaDestinoBody;
+
+    if (destinationMode === "pregunta_existente") {
+      const qDestino = preguntasById.get(idPreguntaDestino);
+      if (!qDestino) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: `La pregunta destino ${idPreguntaDestino} no pertenece a la plantilla`,
+        });
+      }
+
+      const tipoDestino = String(qDestino.tipo || "").trim().toLowerCase();
+      if (["imagen", "foto", "galeria"].includes(tipoDestino)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "La pregunta destino no puede ser de tipo imagen/foto/galería",
+        });
+      }
+    } else {
+      if (!seccionesSet.has(idSeccionDestino)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: `La sección ${idSeccionDestino} no pertenece a la plantilla`,
+        });
+      }
+
+      if (!Number.isFinite(orderNuevaPregunta) || orderNuevaPregunta <= 0) {
+        const { rows: maxOrdRows } = await client.query(
+          `
+          SELECT COALESCE(MAX(orden), 0) AS max_orden
+          FROM ema.informe_pregunta
+          WHERE id_seccion = $1
+          `,
+          [idSeccionDestino]
+        );
+        orderNuevaPregunta = Number(maxOrdRows?.[0]?.max_orden || 0) + 1;
+      }
+
+      const insertPregunta = await client.query(
+        `
+        INSERT INTO ema.informe_pregunta
+          (id_seccion, etiqueta, tipo, obligatorio, orden, permite_foto, activo)
+        VALUES
+          ($1, $2, $3, false, $4, false, true)
+        RETURNING id_pregunta
+        `,
+        [idSeccionDestino, etiquetaNuevaPregunta, tipoNuevaPregunta, orderNuevaPregunta]
+      );
+
+      idPreguntaDestino = Number(insertPregunta.rows?.[0]?.id_pregunta || 0);
+
+      if (!idPreguntaDestino) {
+        await client.query("ROLLBACK");
+        return res.status(500).json({
+          ok: false,
+          error: "No se pudo crear la nueva pregunta destino",
+        });
+      }
+
+      preguntasById.set(idPreguntaDestino, {
+        id_pregunta: idPreguntaDestino,
+        id_seccion: idSeccionDestino,
+        etiqueta: etiquetaNuevaPregunta,
+        tipo: tipoNuevaPregunta,
+      });
+    }
+
+    const preguntaDestino = preguntasById.get(idPreguntaDestino);
+
+    // 2) cargar todos los informes de la plantilla
+    const { rows: informesRows } = await client.query(
+      `
+      SELECT i.id_informe
+      FROM ema.informe i
+      WHERE i.id_proyecto = $1
+        AND i.id_plantilla = $2
+      ORDER BY i.id_informe
+      `,
+      [idProyecto, idPlantilla]
+    );
+
+    const idsInformesPlantilla = informesRows.map((r) => Number(r.id_informe)).filter(Boolean);
+
+    if (!idsInformesPlantilla.length) {
+      await client.query("COMMIT");
+      return res.json({
+        ok: true,
+        error: null,
+        message: "No hay informes para la plantilla",
+        total_informes_plantilla: 0,
+        total_filas_excel: 0,
+        total_match: 0,
+        total_actualizados: 0,
+        id_pregunta_destino: idPreguntaDestino,
+      });
+    }
+
+    // 3) si el match es por pregunta referencia, construir mapa valor -> id_informe
+    const referenciaMap = new Map();
+
+    if (matchMode === "pregunta_referencia") {
+      const { rows: respRefRows } = await client.query(
+        `
+        SELECT
+          r.id_informe,
+          r.valor_texto,
+          r.valor_bool,
+          r.valor_json
+        FROM ema.informe_respuesta r
+        WHERE r.id_informe = ANY($1::int[])
+          AND r.id_pregunta = $2
+        `,
+        [idsInformesPlantilla, idPreguntaReferencia]
+      );
+
+      for (const row of respRefRows) {
+        let raw = null;
+
+        if (row.valor_bool !== null && row.valor_bool !== undefined) {
+          raw = row.valor_bool;
+        } else if (row.valor_json !== null && row.valor_json !== undefined) {
+          raw = row.valor_json;
+        } else {
+          raw = row.valor_texto;
+        }
+
+        const key = String(raw ?? "").trim().toLowerCase();
+        if (!key) continue;
+
+        if (!referenciaMap.has(key)) {
+          referenciaMap.set(key, Number(row.id_informe));
+        }
+      }
+    }
+
+    // 4) leer Excel universal (.xlsx / .xls)
+    let headerMap = new Map();
+    let filasExcel = [];
+
+    if (nombreArchivo.endsWith(".xlsx")) {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(fileBuffer);
+
+      const worksheet = workbook.worksheets[0];
+      if (!worksheet) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel no contiene hojas",
+        });
+      }
+
+      const headerRow = worksheet.getRow(1);
+      headerRow.eachCell((cell, colNumber) => {
+        const raw = valueFromCell(cell);
+        const norm = normalizeExcelHeader(raw);
+        if (norm) {
+          headerMap.set(norm, colNumber);
+        }
+      });
+
+      for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+        const row = worksheet.getRow(rowNumber);
+        filasExcel.push({
+          rowNumber,
+          rawValues: Array.isArray(row.values) ? row.values.slice(1) : [],
+          getCellValue: (colIndex) => valueFromCell(row.getCell(colIndex)),
+        });
+      }
+    } else {
+      const workbook = XLSX.read(fileBuffer, { type: "buffer" });
+      const sheetName = workbook.SheetNames?.[0];
+
+      if (!sheetName) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel no contiene hojas",
+        });
+      }
+
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+      });
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          ok: false,
+          error: "El archivo Excel está vacío",
+        });
+      }
+
+      const headerRow = rows[0] || [];
+      headerRow.forEach((value, idx) => {
+        const norm = normalizeExcelHeader(value);
+        if (norm) {
+          headerMap.set(norm, idx + 1);
+        }
+      });
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i] || [];
+        filasExcel.push({
+          rowNumber: i + 1,
+          rawValues: row,
+          getCellValue: (colIndex) => row[colIndex - 1] ?? "",
+        });
+      }
+    }
+
+    const matchColumnKey = normalizeExcelHeader(excelMatchColumn);
+    const matchColIndex = headerMap.get(matchColumnKey);
+
+    if (!matchColIndex) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `No se encontró la columna de cruce '${excelMatchColumn}' en el Excel`,
+      });
+    }
+
+    const sourceColumnsNorm = excelColumnsSource.map((c) => normalizeExcelHeader(c));
+    const sourceColumnsResolved = sourceColumnsNorm.map((norm, idx) => ({
+      original: excelColumnsSource[idx],
+      normalized: norm,
+      colIndex: headerMap.get(norm) || null,
+    }));
+
+    const missingSources = sourceColumnsResolved.filter((x) => !x.colIndex);
+    if (missingSources.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: `No se encontraron columnas origen en Excel: ${missingSources
+          .map((x) => x.original)
+          .join(", ")}`,
+      });
+    }
+
+    // 5) si overwriteEmptyOnly, traer respuestas actuales destino
+    const respuestasDestinoActuales = new Map();
+
+    if (overwriteEmptyOnly) {
+      const { rows: existingRows } = await client.query(
+        `
+        SELECT
+          r.id_informe,
+          r.valor_texto,
+          r.valor_bool,
+          r.valor_json
+        FROM ema.informe_respuesta r
+        WHERE r.id_informe = ANY($1::int[])
+          AND r.id_pregunta = $2
+        `,
+        [idsInformesPlantilla, idPreguntaDestino]
+      );
+
+      for (const row of existingRows) {
+        let currentValue = null;
+
+        if (row.valor_bool !== null && row.valor_bool !== undefined) {
+          currentValue = row.valor_bool;
+        } else if (row.valor_json !== null && row.valor_json !== undefined) {
+          currentValue = row.valor_json;
+        } else {
+          currentValue = row.valor_texto;
+        }
+
+        respuestasDestinoActuales.set(Number(row.id_informe), currentValue);
+      }
+    }
+
+    // 6) recorrer filas y actualizar
+    let totalFilasExcel = 0;
+    let totalMatch = 0;
+    let totalActualizados = 0;
+    const noEncontrados = [];
+    const omitidosPorDestinoNoVacio = [];
+
+    for (const fila of filasExcel) {
+      const { rowNumber, rawValues, getCellValue } = fila;
+
+      const rowHasValues = Array.isArray(rawValues)
+        ? rawValues.some(
+            (v) => v !== null && v !== undefined && String(v).trim() !== ""
+          )
+        : false;
+
+      if (!rowHasValues) continue;
+
+      totalFilasExcel++;
+
+      const matchRaw = getCellValue(matchColIndex);
+      const matchValue = String(matchRaw ?? "").trim();
+
+      if (!matchValue) {
+        noEncontrados.push({
+          row: rowNumber,
+          reason: "match vacío",
+        });
+        continue;
+      }
+
+      let idInformeMatch = null;
+
+      if (matchMode === "id_informe") {
+        const n = Number(matchValue);
+        if (Number.isFinite(n) && idsInformesPlantilla.includes(n)) {
+          idInformeMatch = n;
+        }
+      } else {
+        const refKey = matchValue.toLowerCase();
+        idInformeMatch = referenciaMap.get(refKey) || null;
+      }
+
+      if (!idInformeMatch) {
+        noEncontrados.push({
+          row: rowNumber,
+          match: matchValue,
+          reason: "sin informe asociado",
+        });
+        continue;
+      }
+
+      totalMatch++;
+
+      if (overwriteEmptyOnly) {
+        const current = respuestasDestinoActuales.get(Number(idInformeMatch));
+        const currentIsEmpty =
+          current === null ||
+          current === undefined ||
+          String(
+            typeof current === "object" ? JSON.stringify(current) : current
+          ).trim() === "";
+
+        if (!currentIsEmpty) {
+          omitidosPorDestinoNoVacio.push({
+            row: rowNumber,
+            id_informe: idInformeMatch,
+          });
+          continue;
+        }
+      }
+
+      const sourceValues = sourceColumnsResolved.map((src) =>
+        getCellValue(src.colIndex)
+      );
+
+      const valorCombinado = firstNonEmpty(sourceValues);
+
+      const tipoDestino = String(preguntaDestino?.tipo || "").trim().toLowerCase();
+      const valorNormalizado = normalizeAnswerForSaveByTipo(
+        preguntaDestino?.tipo,
+        valorCombinado
+      );
+
+      let valorTexto = null;
+      let valorBool = null;
+      let valorJson = null;
+
+      if (tipoDestino === "semaforo") {
+        const obj = semaforoToObj(valorNormalizado, semaforoPaletteMap);
+        if (obj && obj.hex) {
+          valorTexto = obj.nombre || null;
+          valorJson = obj;
+        } else {
+          const t = toJsonbOrText(valorNormalizado);
+          valorTexto = t.valor_texto;
+          valorBool = t.valor_bool;
+          valorJson = t.valor_json;
+        }
+      } else {
+        const t = toJsonbOrText(valorNormalizado);
+        valorTexto = t.valor_texto;
+        valorBool = t.valor_bool;
+        valorJson = t.valor_json;
+      }
+
+      await client.query(
+        `
+        INSERT INTO ema.informe_respuesta
+          (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (id_informe, id_pregunta)
+        DO UPDATE SET
+          valor_texto = EXCLUDED.valor_texto,
+          valor_bool  = EXCLUDED.valor_bool,
+          valor_json  = EXCLUDED.valor_json
+        `,
+        [
+          idInformeMatch,
+          idPreguntaDestino,
+          valorTexto,
+          valorBool,
+          valorJson ? JSON.stringify(valorJson) : null,
+        ]
+      );
+
+      totalActualizados++;
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      match_mode: matchMode,
+      destination_mode: destinationMode,
+      total_informes_plantilla: idsInformesPlantilla.length,
+      total_filas_excel: totalFilasExcel,
+      total_match: totalMatch,
+      total_actualizados: totalActualizados,
+      total_no_encontrados: noEncontrados.length,
+      total_omitidos_destino_no_vacio: omitidosPorDestinoNoVacio.length,
+      id_pregunta_destino: idPreguntaDestino,
+      pregunta_destino: {
+        id_pregunta: idPreguntaDestino,
+        etiqueta: preguntaDestino?.etiqueta || etiquetaNuevaPregunta || null,
+        tipo: preguntaDestino?.tipo || tipoNuevaPregunta || null,
+      },
+      sample_no_encontrados: noEncontrados.slice(0, 20),
+      sample_omitidos_destino_no_vacio: omitidosPorDestinoNoVacio.slice(0, 20),
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("❌ importExcelUpdateRespuestas error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Error al importar Excel y actualizar respuestas",
+      details: err.message,
+    });
+  } finally {
+    client.release();
+  }
+}
+
+async function previewConsolidacionCampos(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+  const sourceFieldIds = Array.isArray(req.body?.source_field_ids)
+    ? req.body.source_field_ids
+    : [];
+  const targetFieldId = req.body?.target_field_id;
+  const strategy = String(req.body?.strategy || "").trim();
+  const overwriteMode = String(req.body?.overwrite_mode || "").trim();
+
+  try {
+    const plan = await buildConsolidacionPlan({
+      db: pool,
+      req,
+      idProyecto,
+      idPlantilla,
+      sourceFieldIds,
+      targetFieldId,
+      strategy,
+      overwriteMode,
+    });
+
+    if (!plan.valid) {
+      return res.status(400).json({
+        ok: false,
+        valid: false,
+        summary: plan.summary,
+        examples: [],
+        errors: plan.errors,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      valid: true,
+      summary: plan.summary,
+      examples: plan.examples,
+      errors: [],
+    });
+  } catch (err) {
+    console.error("previewConsolidacionCampos error:", err);
+    return res.status(500).json({
+      ok: false,
+      valid: false,
+      error: "Error al generar el preview de consolidación",
+      details: err.message,
+    });
+  }
+}
+
+async function applyConsolidacionCampos(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = Number(req.params.idPlantilla);
+  const sourceFieldIds = Array.isArray(req.body?.source_field_ids)
+    ? req.body.source_field_ids
+    : [];
+  const targetFieldId = req.body?.target_field_id;
+  const strategy = String(req.body?.strategy || "").trim();
+  const overwriteMode = String(req.body?.overwrite_mode || "").trim();
+  const applyStartedAtIso = new Date().toISOString();
+  const logPrefix = "[CONSOLIDACION_APPLY]";
+
+  console.log(
+    `${logPrefix} request_in ${applyStartedAtIso} params=${JSON.stringify({
+      idProyecto,
+      idPlantilla,
+    })} body=${JSON.stringify(req.body || {})}`
+  );
+  console.log(
+    `${logPrefix} payload_parseado ${JSON.stringify({
+      source_field_ids: sourceFieldIds,
+      target_field_id: targetFieldId,
+      strategy,
+      overwrite_mode: overwriteMode,
+    })}`
+  );
+
+  try {
+    console.log(`${logPrefix} planner_start`);
+    const plan = await buildConsolidacionPlan({
+      db: pool,
+      req,
+      idProyecto,
+      idPlantilla,
+      sourceFieldIds,
+      targetFieldId,
+      strategy,
+      overwriteMode,
+    });
+
+    console.log(
+      `${logPrefix} planner_result ${JSON.stringify({
+        valid: !!plan?.valid,
+        summary: plan?.summary || null,
+        rowsToWriteLength: Array.isArray(plan?.rowsToWrite) ? plan.rowsToWrite.length : 0,
+        examplesLength: Array.isArray(plan?.examples) ? plan.examples.length : 0,
+        rowsToWriteSample: Array.isArray(plan?.rowsToWrite)
+          ? plan.rowsToWrite.slice(0, 3).map((item) => ({
+              id_informe: item?.id_informe,
+              target_question_id: item?.target_question_id,
+              resolved_value: item?.resolved_value,
+            }))
+          : [],
+      })}`
+    );
+
+    if (!plan.valid) {
+      console.log(`${logPrefix} planner_invalid response=400`);
+      return res.status(400).json({
+        ok: false,
+        valid: false,
+        summary: plan.summary,
+        errors: plan.errors,
+      });
+    }
+
+    console.log(`${logPrefix} iniciando_persistencia rowsToWrite=${plan.rowsToWrite.length}`);
+
+    let updated = 0;
+    let errorsCount = 0;
+    const errorExamples = [];
+
+    // Iteramos sobre las filas a escribir de forma aislada
+    for (const item of plan.rowsToWrite || []) {
+      const itemLog = {
+        id_informe: item?.id_informe,
+        target_question_id: item?.target_question_id,
+        resolved_value: item?.resolved_value,
+      };
+      try {
+        console.log(`${logPrefix} persist_start ${JSON.stringify(itemLog)}`);
+        const idInforme = Number(item.id_informe);
+        const targetQId = Number(item.target_question_id);
+        let resolved = item.resolved_value;
+
+        // 1. Validaciones previas al guardado
+        if (!Number.isFinite(idInforme) || idInforme <= 0) {
+          throw new Error("id_informe_invalido");
+        }
+        if (!Number.isFinite(targetQId) || targetQId <= 0) {
+          throw new Error("target_field_id_invalido");
+        }
+
+        // El valor debe ser string y no ser un objeto complejo
+        if (typeof resolved !== "string" || resolved === null) {
+          throw new Error("valor_resuelto_tipo_invalido");
+        }
+
+        // 2. Saneamiento y Normalización
+        // Quitamos espacios extra y normalizamos whitespace interno
+        resolved = resolved.trim().replace(/\s+/g, " ");
+
+        // Si tras normalizar queda vacío, omitimos (buildConsolidacionPlan ya debería filtrar esto, pero aseguramos)
+        if (!resolved) {
+          continue; 
+        }
+
+        // 3. Persistencia aislada (sin transacción global)
+        // Destino textual -> solo valor_texto, limpiando bool y json
+        await pool.query(
+          `
+          INSERT INTO ema.informe_respuesta
+            (id_informe, id_pregunta, valor_texto, valor_bool, valor_json)
+          VALUES ($1, $2, $3, NULL, NULL)
+          ON CONFLICT (id_informe, id_pregunta)
+          DO UPDATE SET
+            valor_texto = EXCLUDED.valor_texto,
+            valor_bool = NULL,
+            valor_json = NULL
+          `,
+          [idInforme, targetQId, resolved]
+        );
+
+        updated++;
+        console.log(
+          `${logPrefix} persist_ok ${JSON.stringify({
+            id_informe: idInforme,
+            target_question_id: targetQId,
+            resolved_value: resolved,
+          })}`
+        );
+      } catch (err) {
+        errorsCount++;
+        if (errorExamples.length < 20) {
+          errorExamples.push({
+            id_informe: item.id_informe,
+            reason: err.message || "error_escritura",
+          });
+        }
+        console.error(
+          `${logPrefix} persist_error ${JSON.stringify({
+            id_informe: item?.id_informe,
+            target_question_id: item?.target_question_id,
+            resolved_value: item?.resolved_value,
+            error: err?.message || String(err),
+          })}`
+        );
+      }
+    }
+
+    const processed = Number(plan.summary?.eligible || 0);
+    // skipped son los que eran elegibles pero no se actualizaron ni dieron error
+    const skipped = Math.max(0, processed - updated - errorsCount);
+
+    console.log(
+      `${logPrefix} success ${JSON.stringify({
+        started_at: applyStartedAtIso,
+        finished_at: new Date().toISOString(),
+        summary: {
+          processed,
+          updated,
+          skipped,
+          errors: errorsCount,
+        },
+        target7775Included: Array.isArray(plan?.rowsToWrite)
+          ? plan.rowsToWrite.some((item) => Number(item?.id_informe) === 7775)
+          : false,
+      })}`
+    );
+
+    return res.json({
+      ok: true,
+      summary: {
+        processed,
+        updated,
+        skipped,
+        errors: errorsCount,
+      },
+      error_examples: errorExamples,
+    });
+  } catch (err) {
+    console.error(`${logPrefix} fatal_error`, err);
+    return res.status(500).json({
+      ok: false,
+      error: "Error fatal al aplicar la consolidación",
+      details: err.message,
+    });
+  }
+}
+
+
   /* 5) DELETE /api/informes/:id/fotos/:idFoto */
   async function deleteInformeFoto(req, res) {
     const idInforme = Number(req.params.id);
@@ -3669,6 +5297,110 @@ async function deletePregunta(req, res) {
       return res.status(500).json({
         ok: false,
         error: err?.detail || err?.message || "Error al eliminar informes",
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  /* ---------------------------------------------------------
+   POST /api/informes/proyecto/:idProyecto/plantilla/:idPlantilla/bulk-delete-fotos
+   Borra SOLO las fotos de todos los informes de esa plantilla/proyecto
+   (admin)
+  --------------------------------------------------------- */
+  async function bulkDeleteFotosByProyectoPlantilla(req, res) {
+    const idProyecto = Number(req.params.idProyecto);
+    const idPlantilla = Number(req.params.idPlantilla);
+
+    if (!Number.isFinite(idProyecto) || idProyecto <= 0) {
+      return res.status(400).json({ ok: false, error: "idProyecto inválido" });
+    }
+
+    if (!Number.isFinite(idPlantilla) || idPlantilla <= 0) {
+      return res.status(400).json({ ok: false, error: "idPlantilla inválido" });
+    }
+
+    const adminRoleId = Number(req.user?.tipo_usuario ?? req.user?.group_id);
+    if (adminRoleId !== 1) {
+      return res.status(403).json({ ok: false, error: "Solo admin puede borrar fotos en masa" });
+    }
+
+    const client = await pool.connect();
+    let fotosRows = [];
+
+    try {
+      await client.query("BEGIN");
+
+      const informesRes = await client.query(
+        `
+        SELECT id_informe
+        FROM ema.informe
+        WHERE id_proyecto = $1
+          AND id_plantilla = $2
+        FOR UPDATE
+        `,
+        [idProyecto, idPlantilla]
+      );
+
+      const idsInforme = informesRes.rows
+        .map((r) => Number(r.id_informe))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      if (!idsInforme.length) {
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          deleted_count: 0,
+          informes_count: 0,
+          cleanup: { total: 0, deleted: 0, skipped: 0, failed: 0 },
+        });
+      }
+
+      const fotosRes = await client.query(
+        `
+        SELECT id_foto, id_informe, id_pregunta, ruta_archivo
+        FROM ema.informe_foto
+        WHERE id_informe = ANY($1::bigint[])
+        ORDER BY id_informe, id_pregunta, orden, id_foto
+        `,
+        [idsInforme]
+      );
+
+      fotosRows = fotosRes.rows || [];
+
+      const delRes = await client.query(
+        `
+        DELETE FROM ema.informe_foto
+        WHERE id_informe = ANY($1::bigint[])
+        `,
+        [idsInforme]
+      );
+
+      await client.query("COMMIT");
+
+      const cleanup = await cleanupInformeFiles(fotosRows);
+
+      return res.json({
+        ok: true,
+        deleted_count: delRes.rowCount || 0,
+        informes_count: idsInforme.length,
+        cleanup: {
+          total: cleanup.total,
+          deleted: cleanup.deleted,
+          skipped: cleanup.skipped,
+          failed: cleanup.failed,
+        },
+      });
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+
+      console.error("bulkDeleteFotosByProyectoPlantilla error:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err?.detail || err?.message || "Error al borrar fotos en masa",
       });
     } finally {
       client.release();
@@ -4142,13 +5874,50 @@ async function publicSubmitShareForm(req, res) {
     const preguntas = qRes.rows || [];
     const preguntasById = new Map(preguntas.map((q) => [Number(q.id_pregunta), q]));
 
-    // 4) Resolver preguntas visibles
+    // 3b) Mapeo etiquetas -> IDs para compatibilidad con mobile legacy
+    const labelToId = {};
+    for (const q of preguntas) {
+      const key = String(q.etiqueta || "").trim().toLowerCase();
+      if (key) labelToId[key] = Number(q.id_pregunta);
+    }
+
+    const answersForRules = {};
+    const rawR = respuestasObj || {};
+    for (const [k, v] of Object.entries(rawR)) {
+      let idNum = Number(k);
+      if (!Number.isFinite(idNum) || idNum <= 0) {
+        const key = String(k || "").trim().toLowerCase();
+        idNum = labelToId[key] || NaN;
+      }
+      if (Number.isFinite(idNum) && idNum > 0) {
+        answersForRules[idNum] = v;
+      }
+    }
+
+    // Helpers locales (reutilizados de crearInforme)
+    const isPreguntaImagenLike = (q) => {
+      const t = String(q?.tipo || "").trim().toLowerCase();
+      const e = String(q?.etiqueta || "").trim().toLowerCase();
+      return t === "imagen" || t === "image" || e.includes("foto") || e.includes("imagen");
+    };
+
+    const isNonEmptyImageLink = (val) => {
+      if (val === null || val === undefined) return false;
+      if (Array.isArray(val)) return val.some(x => isNonEmptyImageLink(x));
+      if (typeof val === "object") {
+        return !!(val.url?.trim() || val.ruta?.trim() || val.path?.trim());
+      }
+      if (typeof val === "string") return !!val.trim();
+      return false;
+    };
+
+    // 4) Resolver preguntas visibles (usar answersForRules)
     const visibleSet = new Set();
 
     for (const q of preguntas) {
-      const secVisible = evalCond(q.sec_visible_if, respuestasObj);
-      const qVisible = evalCond(q.visible_if, respuestasObj);
-      const qHidden = q.hide_if ? evalCond(q.hide_if, respuestasObj) : false;
+      const secVisible = evalCond(q.sec_visible_if, answersForRules);
+      const qVisible = evalCond(q.visible_if, answersForRules);
+      const qHidden = q.hide_if ? evalCond(q.hide_if, answersForRules) : false;
 
       if (secVisible && qVisible && !qHidden) {
         visibleSet.add(Number(q.id_pregunta));
@@ -4162,24 +5931,20 @@ async function publicSubmitShareForm(req, res) {
       const idPregunta = Number(q.id_pregunta);
       if (!visibleSet.has(idPregunta)) continue;
 
-      const requiredNow =
-        !!q.obligatorio || (q.required_if ? evalCond(q.required_if, respuestasObj) : false);
+      const requiredByRule = q.required_if ? evalCond(q.required_if, answersForRules) : false;
+      const requiredNow = !!q.obligatorio || requiredByRule;
 
       if (!requiredNow) continue;
 
-      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      const raw = answersForRules[idPregunta];
       const val = normalizeAnswerForSaveByTipo(q.tipo, raw);
 
-      let fotosPregunta = req.files?.[`fotos_${idPregunta}`];
-      const fotosArr = Array.isArray(fotosPregunta)
-        ? fotosPregunta
-        : fotosPregunta
-        ? [fotosPregunta]
-        : [];
+      const field = `fotos_${idPregunta}`;
+      const hasFiles = !!(req.files?.[field]);
+      const hasLink = isNonEmptyImageLink(raw);
 
-      const esImagen = String(q.tipo || "").toLowerCase() === "imagen";
-      if (esImagen) {
-        if (!fotosArr.length) {
+      if (isPreguntaImagenLike(q)) {
+        if (!hasFiles && !hasLink) {
           faltantes.push({
             id_pregunta: idPregunta,
             etiqueta: q.etiqueta || `Pregunta ${idPregunta}`,
@@ -4234,7 +5999,7 @@ async function publicSubmitShareForm(req, res) {
       const idPregunta = Number(q.id_pregunta);
       if (!visibleSet.has(idPregunta)) continue;
 
-      const raw = _getAnswerValueFromObj(respuestasObj, idPregunta);
+      const raw = answersForRules[idPregunta];
       if (raw === undefined) continue;
 
       const valorNormalizado = normalizeAnswerForSaveByTipo(q.tipo, raw);
@@ -4415,26 +6180,13 @@ async function exportProyectoInformesExcel(req, res) {
       [informeIds]
     );
 
-    // respByInforme: Map(idInforme -> Map(idPregunta -> valorString))
-    const respByInforme = new Map();
+    // respByInformeRaw: Map(idInforme -> Map(idPregunta -> raw row))
+    const respByInformeRaw = new Map();
     for (const r of respAllQ.rows || []) {
       const idInf = Number(r.id_informe);
       const idPreg = Number(r.id_pregunta);
-      if (!respByInforme.has(idInf)) respByInforme.set(idInf, new Map());
-
-      let v = "";
-      if (r.valor_bool !== null && r.valor_bool !== undefined) v = r.valor_bool ? "SÃ­" : "No";
-      else if (r.valor_json !== null && r.valor_json !== undefined) {
-        try {
-          const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-          // âœ… si es objeto tipo {lat,lng} o similares -> stringify estable
-          v = Array.isArray(parsed) ? parsed.join(", ") : (typeof parsed === "object" ? JSON.stringify(parsed) : String(parsed));
-        } catch {
-          v = String(r.valor_json);
-        }
-      } else if (r.valor_texto != null) v = String(r.valor_texto);
-
-      respByInforme.get(idInf).set(idPreg, v);
+      if (!respByInformeRaw.has(idInf)) respByInformeRaw.set(idInf, new Map());
+      respByInformeRaw.get(idInf).set(idPreg, r);
     }
 
     // 3) Fotos (opcional) por informe+p pregunta
@@ -4479,6 +6231,11 @@ async function exportProyectoInformesExcel(req, res) {
         [pid]
       );
       preguntasAll.push(...(pq.rows || []));
+    }
+
+    const preguntasById = new Map();
+    for (const p of preguntasAll) {
+      preguntasById.set(Number(p.id_pregunta), p);
     }
 
     // helper: sanitizar header tipo Kobo
@@ -4566,7 +6323,7 @@ async function exportProyectoInformesExcel(req, res) {
     // 5) cargar filas (una por informe)
     for (const inf of informes) {
       const idInf = Number(inf.id_informe);
-      const respMap = respByInforme.get(idInf) || new Map();
+      const respMap = respByInformeRaw.get(idInf) || new Map();
       const fotosMap = fotosByInforme.get(idInf) || new Map();
 
       const row = {
@@ -4574,15 +6331,16 @@ async function exportProyectoInformesExcel(req, res) {
         fecha_creado: inf.fecha_creado ? new Date(inf.fecha_creado) : "",
         id_proyecto: Number(inf.id_proyecto) || idProyecto,
         id_plantilla: Number(inf.id_plantilla) || "",
-        plantilla: inf.nombre_plantilla || String(inf.id_plantilla || ""),
-        titulo: inf.titulo || "",
+        plantilla: sanitizeExcelText(inf.nombre_plantilla || String(inf.id_plantilla || "")),
+        titulo: sanitizeExcelText(inf.titulo || ""),
       };
 
       // completar respuestas por columna (solo las preguntas de esa plantilla tienen valor)
       for (const q of preguntaCols) {
-        const val = respMap.get(q.id_pregunta) || "";
-        row[q.colName] = val;
-        row[`Fotos:${q.colName}`] = fotosMap.get(q.id_pregunta) || "";
+        const rawResp = respMap.get(q.id_pregunta) || null;
+        const pregunta = preguntasById.get(q.id_pregunta) || q;
+        row[q.colName] = resolveExcelResponseValue(rawResp, pregunta);
+        row[`Fotos:${q.colName}`] = sanitizeExcelText(fotosMap.get(q.id_pregunta) || "");
       }
 
       const r = ws.addRow(row);
@@ -4606,15 +6364,15 @@ async function exportProyectoInformesExcel(req, res) {
         colName: q.colName,
         id_plantilla: q.id_plantilla,
         id_pregunta: q.id_pregunta,
-        seccion: q.seccion,
-        etiqueta: q.etiqueta,
-        tipo: q.tipo,
+        seccion: sanitizeExcelText(q.seccion),
+        etiqueta: sanitizeExcelText(q.etiqueta),
+        tipo: sanitizeExcelText(q.tipo),
       });
     }
 
     // âœ… hoja info
     const wsInfo = wb.addWorksheet("info");
-    wsInfo.addRow(["Proyecto", proyectoLabel]);
+    wsInfo.addRow(["Proyecto", sanitizeExcelText(proyectoLabel)]);
     wsInfo.addRow(["ID Proyecto", idProyecto]);
     wsInfo.addRow(["Filtro plantilla", idPlantilla ? String(idPlantilla) : "Todas"]);
     wsInfo.addRow(["Total informes", informes.length]);
@@ -4823,14 +6581,35 @@ async function generarPdfProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
 
-  if (!idProyecto) return res.status(400).send("idProyecto invÃ¡lido");
+  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
+  const orderDir = String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
+
+  const modo = String(req.query.modo || "normal").toLowerCase();
+  const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
+
+  const preguntasIds = String(req.query.preguntas || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const seccionesIds = String(req.query.secciones || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const incluirFotos = String(req.query.incluirFotos ?? "1") !== "0";
+  const maxFotos = Math.max(0, Number(req.query.maxFotos || 2));
+
+  if (!idProyecto) return res.status(400).send("idProyecto inválido");
 
   try {
-    // âœ… proyecto label (ema.proyectos PK = gid)
     const proyQ = await pool.query(
-      `SELECT gid, nombre, codigo
-       FROM ema.proyectos
-       WHERE gid = $1`,
+      `
+      SELECT gid, nombre, codigo
+      FROM ema.proyectos
+      WHERE gid = $1
+      `,
       [idProyecto]
     );
 
@@ -4839,91 +6618,309 @@ async function generarPdfProyecto(req, res) {
       ? `${proy.codigo ? proy.codigo + " - " : ""}${proy.nombre || ""}`.trim()
       : String(idProyecto);
 
-    const params = [idProyecto];
-    let whereExtra = "";
-    if (idPlantilla) {
-      params.push(idPlantilla);
-      whereExtra = ` AND i.id_plantilla = $${params.length} `;
+    let informes = [];
+
+    if (orderBy === "pregunta" && orderPreguntaId > 0) {
+      const baseParams = [idProyecto];
+      let baseWhere = "";
+
+      if (idPlantilla) {
+        baseParams.push(idPlantilla);
+        baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+      }
+
+      baseParams.push(orderPreguntaId);
+      const idxPregunta = baseParams.length;
+      const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+      const q = await pool.query(
+        `
+        SELECT
+          i.*,
+          p.nombre AS nombre_plantilla,
+          COALESCE(
+            NULLIF(TRIM(r.valor_texto), ''),
+            NULLIF(TRIM(r.valor_json::text), ''),
+            CASE
+              WHEN r.valor_bool IS TRUE THEN 'SI'
+              WHEN r.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) AS valor_orden
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p
+          ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_respuesta r
+          ON r.id_informe = i.id_informe
+         AND r.id_pregunta = $${idxPregunta}
+        WHERE i.id_proyecto = $1
+        ${baseWhere}
+        ORDER BY
+          COALESCE(
+            NULLIF(TRIM(r.valor_texto), ''),
+            NULLIF(TRIM(r.valor_json::text), ''),
+            CASE
+              WHEN r.valor_bool IS TRUE THEN 'SI'
+              WHEN r.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) ${orderSql},
+          i.id_informe ${orderSql}
+        `,
+        baseParams
+      );
+
+      informes = q.rows || [];
+    } else {
+      const params = [idProyecto];
+      let whereExtra = "";
+
+      if (idPlantilla) {
+        params.push(idPlantilla);
+        whereExtra = ` AND i.id_plantilla = $${params.length} `;
+      }
+
+      let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+      if (orderBy === "fecha") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.fecha_creado DESC, i.id_informe DESC"
+            : "i.fecha_creado ASC, i.id_informe ASC";
+      } else if (orderBy === "id") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.id_informe DESC"
+            : "i.id_informe ASC";
+      }
+
+      const q = await pool.query(
+        `
+        SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_proyecto = $1
+        ${whereExtra}
+        ORDER BY ${orderClause}
+        `,
+        params
+      );
+
+      informes = q.rows || [];
     }
 
-    // 1) lista de informes
-    const infQ = await pool.query(
-      `SELECT i.*, p.nombre AS nombre_plantilla
-       FROM ema.informe i
-       JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-       WHERE i.id_proyecto = $1
-       ${whereExtra}
-       ORDER BY i.fecha_creado DESC, i.id_informe DESC`,
-      params
-    );
-
-    const informes = infQ.rows || [];
-    if (!informes.length) return res.status(404).send("No hay informes para exportar.");
+    if (!informes.length) {
+      return res.status(404).send("No hay informes para exportar.");
+    }
 
     const uploadsRoot = path.join(__dirname, "..", "uploads");
-
-    // 2) para cada informe...
     const informesBlocks = [];
 
+    function escapeHtml(v) {
+      return String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatRespuesta(r) {
+      let val = r?.valor_texto;
+
+      if (r?.valor_bool !== null && r?.valor_bool !== undefined) {
+        val = r.valor_bool ? "Sí" : "No";
+      } else if (r?.valor_json !== null && r?.valor_json !== undefined) {
+        try {
+          const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
+
+          if (Array.isArray(parsed)) {
+            val = parsed.join(", ");
+          } else if (parsed && typeof parsed === "object") {
+            if ("lat" in parsed && "lng" in parsed) {
+              val = `${parsed.lat}, ${parsed.lng}`;
+            } else {
+              val = JSON.stringify(parsed);
+            }
+          } else {
+            val = String(parsed);
+          }
+        } catch {
+          val = String(r.valor_json);
+        }
+      }
+
+      return val || "-";
+    }
+
+    function buildRespuestasMapLocal(respuestas) {
+      const map = {};
+      for (const r of respuestas) {
+        map[Number(r.id_pregunta)] = formatRespuesta(r);
+      }
+      return map;
+    }
+
+    function renderTablaUnicaHTML({
+      informeRows,
+      preguntasTodas,
+      respuestasMapPorInforme,
+      fotosPorInformePorPregunta,
+    }) {
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
+      const headers = [
+        `<th style="white-space:nowrap;">ID</th>`,
+        `<th style="white-space:nowrap;">Fecha</th>`,
+        ...preguntasOrdenadas.map(
+          (p) => `<th>${escapeHtml(p.etiqueta || "")}</th>`
+        ),
+      ].join("");
+
+      const rows = informeRows
+        .map((inf) => {
+          const cols = [
+            `<td>${escapeHtml(inf.id_informe)}</td>`,
+            `<td style="white-space:nowrap;">${escapeHtml(_formatFechaPY(inf.fecha_creado))}</td>`,
+          ];
+
+          for (const p of preguntasOrdenadas) {
+            const val =
+              respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
+
+            let html = `<div>${escapeHtml(val)}</div>`;
+
+            if (incluirFotos) {
+              const fotosListOriginal =
+                fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
+              const fotosList = fotosListOriginal.slice(0, maxFotos);
+
+              for (const f of fotosList) {
+                if (!f?.dataUri) continue;
+
+                html += `
+                  <div style="margin-top:6px;">
+                    <img src="${f.dataUri}" style="max-width:120px; max-height:80px; display:block;" />
+                    ${
+                      f.descripcion
+                        ? `<div style="font-size:10px;color:#666;margin-top:2px;">${escapeHtml(f.descripcion)}</div>`
+                        : ""
+                    }
+                  </div>
+                `;
+              }
+            }
+
+            cols.push(`<td>${html}</td>`);
+          }
+
+          return `<tr>${cols.join("")}</tr>`;
+        })
+        .join("");
+
+      return `
+        <table class="tabla-general">
+          <thead>
+            <tr>${headers}</tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
+    }
+
     for (const informe of informes) {
+      const seccParams = [informe.id_plantilla];
+      let seccWhereExtra = "";
+
+      if (seccionesIds.length) {
+        seccParams.push(seccionesIds);
+        seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+      }
+
       const { rows: secciones } = await pool.query(
-        `SELECT * FROM ema.informe_seccion
-         WHERE id_plantilla = $1
-         ORDER BY orden`,
-        [informe.id_plantilla]
+        `
+        SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ${seccWhereExtra}
+        ORDER BY orden
+        `,
+        seccParams
       );
+
+      if (!secciones.length) continue;
+
+      const seccionesFiltradasIds = secciones
+        .map((s) => Number(s.id_seccion))
+        .filter(Boolean);
+
+      const pregParams = [informe.id_plantilla];
+      let pregWhereExtra = "";
+
+      if (seccionesFiltradasIds.length) {
+        pregParams.push(seccionesFiltradasIds);
+        pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
+      }
+
+      if (preguntasIds.length) {
+        pregParams.push(preguntasIds);
+        pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+      }
 
       const { rows: preguntas } = await pool.query(
-        `SELECT q.*
-         FROM ema.informe_pregunta q
-         JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-         WHERE s.id_plantilla = $1
-         ORDER BY s.orden, q.orden`,
-        [informe.id_plantilla]
+        `
+        SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ${pregWhereExtra}
+        ORDER BY s.orden, q.orden
+        `,
+        pregParams
       );
+
+      if (!preguntas.length) continue;
+
+      const preguntasIdsFiltradas = preguntas.map((p) => Number(p.id_pregunta)).filter(Boolean);
 
       const { rows: respuestas } = await pool.query(
-        `SELECT r.*
-         FROM ema.informe_respuesta r
-         WHERE r.id_informe = $1`,
-        [informe.id_informe]
+        `
+        SELECT *
+        FROM ema.informe_respuesta
+        WHERE id_informe = $1
+          AND id_pregunta = ANY($2::int[])
+        `,
+        [informe.id_informe, preguntasIdsFiltradas]
       );
 
-      const { rows: fotos } = await pool.query(
-        `SELECT *
-         FROM ema.informe_foto
-         WHERE id_informe = $1
-         ORDER BY orden`,
-        [informe.id_informe]
-      );
-
-      // âœ… respuestasMap (fix [object Object] + coords)
-      const respuestasMap = {};
-      for (const r of respuestas) {
-        let val = r.valor_texto;
-
-        if (r.valor_bool !== null && r.valor_bool !== undefined) {
-          val = r.valor_bool ? "SÃ­" : "No";
-        } else if (r.valor_json !== null && r.valor_json !== undefined) {
-          try {
-            const parsed = typeof r.valor_json === "string" ? JSON.parse(r.valor_json) : r.valor_json;
-
-            if (Array.isArray(parsed)) {
-              val = parsed.join(", ");
-            } else if (parsed && typeof parsed === "object") {
-              // âœ… caso ubicaciÃ³n {lat,lng}
-              if ("lat" in parsed && "lng" in parsed) val = `${parsed.lat}, ${parsed.lng}`;
-              else val = JSON.stringify(parsed, null, 2);
-            } else {
-              val = String(parsed);
-            }
-          } catch {
-            val = String(r.valor_json);
-          }
-        }
-
-        respuestasMap[r.id_pregunta] = val || "-";
+      let fotos = [];
+      if (incluirFotos && maxFotos > 0) {
+        const fotosQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_foto
+          WHERE id_informe = $1
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_pregunta, orden
+          `,
+          [informe.id_informe, preguntasIdsFiltradas]
+        );
+        fotos = fotosQ.rows || [];
       }
+
+      const respuestasMap = buildRespuestasMapLocal(respuestas);
 
       const fotosPorPregunta = {};
       for (const f of fotos) {
@@ -4934,18 +6931,223 @@ async function generarPdfProyecto(req, res) {
         if (!dataUri) continue;
 
         if (!fotosPorPregunta[f.id_pregunta]) fotosPorPregunta[f.id_pregunta] = [];
-        fotosPorPregunta[f.id_pregunta].push({ descripcion: f.descripcion, dataUri });
+        if (fotosPorPregunta[f.id_pregunta].length >= maxFotos) continue;
+
+        fotosPorPregunta[f.id_pregunta].push({
+          descripcion: f.descripcion || "",
+          dataUri,
+        });
       }
 
-      const oneHtml = htmlTemplateInforme(informe, secciones, preguntas, respuestasMap, fotosPorPregunta);
-      const bodyMatch = oneHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-      const bodyInner = bodyMatch ? bodyMatch[1] : oneHtml;
+      let blockHtml = "";
 
-      informesBlocks.push(bodyInner);
+      if (!isTabla) {
+        const seccionesConPreguntas = secciones.filter((sec) =>
+          preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
+        );
+
+        const seccionesHtml = seccionesConPreguntas
+          .map((sec) => {
+            const preguntasSec = preguntas.filter(
+              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
+            );
+
+            if (!preguntasSec.length) return "";
+
+            const rowsHtml = preguntasSec
+              .map((p) => {
+                const valor = respuestasMap[p.id_pregunta] ?? "-";
+
+                let fotosHtml = "";
+                if (incluirFotos) {
+                  const fotosList = (fotosPorPregunta[p.id_pregunta] || []).slice(0, maxFotos);
+                  if (fotosList.length) {
+                    fotosHtml = `
+                      <div class="fotos-wrap">
+                        ${fotosList
+                          .map(
+                            (fx) => `
+                              <div class="foto-item">
+                                <img src="${fx.dataUri}" />
+                                ${fx.descripcion ? `<div class="foto-desc">${escapeHtml(fx.descripcion)}</div>` : ""}
+                              </div>
+                            `
+                          )
+                          .join("")}
+                      </div>
+                    `;
+                  }
+                }
+
+                return `
+                  <tr>
+                    <td class="pregunta-col">${escapeHtml(p.etiqueta)}</td>
+                    <td class="respuesta-col">
+                      <div>${escapeHtml(valor)}</div>
+                      ${fotosHtml}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
+
+            return `
+              <h3>${escapeHtml(sec.titulo || "Sección")}</h3>
+              <table class="detalle-table">
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+            `;
+          })
+          .join("");
+
+        blockHtml = `
+          <div class="informe-block">
+            <h2>${escapeHtml(informe.titulo || informe.nombre_plantilla || "INFORME")}</h2>
+            <div class="meta-line">
+              <strong>ID Informe:</strong> ${escapeHtml(informe.id_informe)}
+              &nbsp;&nbsp;&nbsp;
+              <strong>Fecha:</strong> ${escapeHtml(_formatFechaPY(informe.fecha_creado))}
+            </div>
+            ${seccionesHtml}
+          </div>
+        `;
+      } else {
+        const tablaHtml = renderTablaUnicaHTML({
+          informeRows: [informe],
+          preguntasTodas: preguntas,
+          respuestasMapPorInforme: {
+            [informe.id_informe]: respuestasMap,
+          },
+          fotosPorInformePorPregunta: {
+            [informe.id_informe]: fotosPorPregunta,
+          },
+        });
+
+        blockHtml = `
+          <div class="informe-block">
+            <h2>${escapeHtml(informe.nombre_plantilla || "Plantilla")}</h2>
+            ${tablaHtml}
+          </div>
+        `;
+      }
+
+      informesBlocks.push(blockHtml);
     }
 
-    // âœ… Multi usa las mismas clases/CSS => mismo formato que individual
-    const html = htmlTemplateMultiInformes({ proyectoLabel, informesBlocks });
+    if (!informesBlocks.length) {
+      return res.status(404).send("No hay datos para exportar con esos filtros.");
+    }
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Informes del proyecto</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            font-size: 11px;
+            color: #222;
+            margin: 0;
+            padding: 0;
+          }
+          .page {
+            padding: 10px 6px;
+          }
+          h1 {
+            margin: 0 0 8px 0;
+            font-size: 24px;
+          }
+          h2 {
+            margin: 14px 0 8px 0;
+            font-size: 18px;
+          }
+          h3 {
+            margin: 12px 0 6px 0;
+            font-size: 14px;
+          }
+          .top-meta {
+            margin-bottom: 12px;
+            line-height: 1.5;
+          }
+          .meta-line {
+            margin-bottom: 8px;
+          }
+          .informe-block {
+            margin-bottom: 20px;
+            page-break-inside: avoid;
+          }
+          .detalle-table,
+          .tabla-general {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            margin-bottom: 12px;
+          }
+          .detalle-table td,
+          .tabla-general th,
+          .tabla-general td {
+            border: 1px solid #999;
+            padding: 4px;
+            vertical-align: top;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+          }
+          .tabla-general th {
+            background: #f1f1f1;
+            font-weight: bold;
+          }
+          .pregunta-col {
+            width: 35%;
+            font-weight: bold;
+            background: #fafafa;
+          }
+          .respuesta-col {
+            width: 65%;
+          }
+          .fotos-wrap {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .foto-item img {
+            max-width: 180px;
+            max-height: 120px;
+            display: block;
+            border: 1px solid #ccc;
+          }
+          .foto-desc {
+            font-size: 10px;
+            color: #666;
+            margin-top: 2px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="page">
+          <h1>INFORMES DEL PROYECTO</h1>
+          <div class="top-meta">
+            <div><strong>Proyecto:</strong> ${escapeHtml(proyectoLabel)}</div>
+            <div><strong>Generado:</strong> ${escapeHtml(_formatFechaPY(new Date()))}</div>
+            <div><strong>Formato:</strong> ${escapeHtml(isTabla ? "TABLA (tipo Excel)" : "NORMAL")}</div>
+            <div><strong>Fotos:</strong> ${escapeHtml(incluirFotos ? `Sí (máx. ${maxFotos} por pregunta)` : "No")}</div>
+            <div><strong>Orden:</strong> ${
+              escapeHtml(
+                orderBy === "pregunta" && orderPreguntaId > 0
+                  ? `pregunta #${orderPreguntaId} (${orderDir})`
+                  : `${orderBy} (${orderDir})`
+              )
+            }</div>
+          </div>
+          ${informesBlocks.join("")}
+        </div>
+      </body>
+      </html>
+    `;
 
     const browser = await puppeteer.launch({
       headless: true,
@@ -4960,10 +7162,15 @@ async function generarPdfProyecto(req, res) {
       const pdfBuffer = await page.pdf({
         format: "A4",
         printBackground: true,
+        landscape: isTabla,
         margin: { top: "12mm", right: "12mm", bottom: "14mm", left: "12mm" },
       });
 
-      const fileName = `Proyecto_${idProyecto}_Informes${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}.pdf`;
+      const fileName =
+        `Proyecto_${idProyecto}_Informes` +
+        `${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}` +
+        `${isTabla ? `_TABLA` : `_NORMAL`}.pdf`;
+
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
       res.setHeader("Content-Length", pdfBuffer.length);
@@ -5055,8 +7262,228 @@ let sharp = null;
 try { sharp = require("sharp"); } catch { /* si no estÃ¡, se omite */ }
 
 // =========================
-// âœ… generarWordProyecto (NORMAL + TABLA REAL)
+// ✅ generarWordProyecto ACTUALIZADO
+//    - selección de preguntas/secciones
+//    - exportación por lote
+//    - control de fotos
+//    - optimización de imágenes
+//    - NO muestra secciones vacías
+//    - muestra rango real del lote
 // =========================
+
+function normalizeTextForSort(v) {
+  return String(v || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function parseProgressiveValue(v) {
+  const s = String(v || "").trim();
+  if (!s) return Number.POSITIVE_INFINITY;
+
+  const cleaned = s.replace(/[^\d+.,-]/g, "");
+
+  if (cleaned.includes("+")) {
+    const [a, b] = cleaned.split("+");
+    const n1 = Number(String(a || "0").replace(",", "."));
+    const n2 = Number(String(b || "0").replace(",", "."));
+    if (Number.isFinite(n1) && Number.isFinite(n2)) {
+      return n1 * 1000 + n2;
+    }
+  }
+
+  const n = Number(cleaned.replace(",", "."));
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function compareMixed(a, b, dir = "asc") {
+  const mul = dir === "desc" ? -1 : 1;
+
+  const aNum = typeof a === "number" ? a : Number.NaN;
+  const bNum = typeof b === "number" ? b : Number.NaN;
+
+  if (Number.isFinite(aNum) && Number.isFinite(bNum)) {
+    if (aNum < bNum) return -1 * mul;
+    if (aNum > bNum) return 1 * mul;
+    return 0;
+  }
+
+  const sa = normalizeTextForSort(a);
+  const sb = normalizeTextForSort(b);
+
+  if (sa < sb) return -1 * mul;
+  if (sa > sb) return 1 * mul;
+  return 0;
+}
+
+function matchPreguntaOrden(etiqueta = "", orderBy = "fecha") {
+  const e = normalizeTextForSort(etiqueta);
+
+  if (orderBy === "progresiva") {
+    return (
+      e.includes("progresiva") ||
+      e.includes("pk") ||
+      e.includes("abscisa")
+    );
+  }
+
+  if (orderBy === "tramo") {
+    return (
+      e === "tramo" ||
+      e.includes("tramo ") ||
+      e.includes("subtramo")
+    );
+  }
+
+  return false;
+}
+
+async function obtenerInformesOrdenadosProyecto({
+  idProyecto,
+  idPlantilla,
+  orderBy = "fecha",
+  orderDir = "asc",
+}) {
+  const dir = String(orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const order = String(orderBy || "fecha").toLowerCase();
+
+  const baseParams = [idProyecto];
+  let whereExtra = "";
+
+  if (idPlantilla) {
+    baseParams.push(idPlantilla);
+    whereExtra = ` AND i.id_plantilla = $${baseParams.length} `;
+  }
+
+  const baseQ = await pool.query(
+    `
+    SELECT i.*, p.nombre AS nombre_plantilla
+    FROM ema.informe i
+    JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+    WHERE i.id_proyecto = $1
+    ${whereExtra}
+    `,
+    baseParams
+  );
+
+  let baseInformes = baseQ.rows || [];
+  if (!baseInformes.length) return [];
+
+  if (order === "fecha") {
+    baseInformes.sort((a, b) => {
+      const fa = new Date(a.fecha_creado).getTime() || 0;
+      const fb = new Date(b.fecha_creado).getTime() || 0;
+
+      if (fa !== fb) {
+        return dir === "desc" ? fb - fa : fa - fb;
+      }
+
+      return dir === "desc"
+        ? Number(b.id_informe) - Number(a.id_informe)
+        : Number(a.id_informe) - Number(b.id_informe);
+    });
+
+    return baseInformes;
+  }
+
+  const plantillas = [
+    ...new Set(baseInformes.map((x) => Number(x.id_plantilla)).filter(Boolean)),
+  ];
+
+  const preguntasOrden = new Map();
+
+  for (const idPlant of plantillas) {
+    const pq = await pool.query(
+      `
+      SELECT q.id_pregunta, q.etiqueta
+      FROM ema.informe_pregunta q
+      JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+      WHERE s.id_plantilla = $1
+      ORDER BY s.orden, q.orden
+      `,
+      [idPlant]
+    );
+
+    const candidata = (pq.rows || []).find((r) => matchPreguntaOrden(r.etiqueta, order));
+    preguntasOrden.set(idPlant, candidata ? Number(candidata.id_pregunta) : null);
+  }
+
+  const idsInformes = baseInformes.map((x) => Number(x.id_informe)).filter(Boolean);
+  const idsPregOrden = [...new Set([...preguntasOrden.values()].filter(Boolean))];
+
+  let respuestasOrdenRows = [];
+  if (idsInformes.length && idsPregOrden.length) {
+    const rq = await pool.query(
+      `
+      SELECT id_informe, id_pregunta, valor_texto, valor_json
+      FROM ema.informe_respuesta
+      WHERE id_informe = ANY($1::int[])
+        AND id_pregunta = ANY($2::int[])
+      `,
+      [idsInformes, idsPregOrden]
+    );
+    respuestasOrdenRows = rq.rows || [];
+  }
+
+  const respuestaOrdenMap = new Map();
+  for (const r of respuestasOrdenRows) {
+    let valor = r.valor_texto;
+
+    if (!valor && r.valor_json != null) {
+      if (typeof r.valor_json === "string") {
+        valor = r.valor_json;
+      } else if (typeof r.valor_json === "object") {
+        valor =
+          r.valor_json?.label ??
+          r.valor_json?.nombre ??
+          r.valor_json?.value ??
+          JSON.stringify(r.valor_json);
+      }
+    }
+
+    respuestaOrdenMap.set(`${r.id_informe}_${r.id_pregunta}`, valor || "");
+  }
+
+  baseInformes = baseInformes.map((inf) => {
+    const idPlant = Number(inf.id_plantilla);
+    const idPregOrden = preguntasOrden.get(idPlant);
+
+    let sortValueRaw = "";
+    if (idPregOrden) {
+      sortValueRaw = respuestaOrdenMap.get(`${inf.id_informe}_${idPregOrden}`) || "";
+    }
+
+    return {
+      ...inf,
+      __sortValueRaw: sortValueRaw,
+      __sortValue:
+        order === "progresiva"
+          ? parseProgressiveValue(sortValueRaw)
+          : normalizeTextForSort(sortValueRaw),
+    };
+  });
+
+  baseInformes.sort((a, b) => {
+    const cmp = compareMixed(a.__sortValue, b.__sortValue, dir);
+    if (cmp !== 0) return cmp;
+
+    const fa = new Date(a.fecha_creado).getTime() || 0;
+    const fb = new Date(b.fecha_creado).getTime() || 0;
+
+    if (fa !== fb) {
+      return dir === "desc" ? fb - fa : fa - fb;
+    }
+
+    return dir === "desc"
+      ? Number(b.id_informe) - Number(a.id_informe)
+      : Number(a.id_informe) - Number(b.id_informe);
+  });
+
+  return baseInformes;
+}
+
 async function generarWordProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
@@ -5064,14 +7491,35 @@ async function generarWordProyecto(req, res) {
   const modo = String(req.query.modo || "normal").toLowerCase();
   const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
 
-  if (!idProyecto) return res.status(400).send("idProyecto invÃ¡lido");
+  const preguntasIds = String(req.query.preguntas || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const seccionesIds = String(req.query.secciones || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const incluirFotos = String(req.query.incluirFotos ?? "1") !== "0";
+  const fotosEnTabla = String(req.query.fotosEnTabla ?? "0") === "1";
+  const maxFotos = Math.max(0, Number(req.query.maxFotos || 2));
+
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
+  const offset = (page - 1) * limit;
+
+  if (!idProyecto) {
+    return res.status(400).send("idProyecto inválido");
+  }
 
   try {
-    // proyecto label
     const proyQ = await pool.query(
-      `SELECT gid, nombre, codigo
-       FROM ema.proyectos
-       WHERE gid = $1`,
+      `
+      SELECT gid, nombre, codigo
+      FROM ema.proyectos
+      WHERE gid = $1
+      `,
       [idProyecto]
     );
 
@@ -5080,37 +7528,142 @@ async function generarWordProyecto(req, res) {
       ? `${proy.codigo ? proy.codigo + " - " : ""}${proy.nombre || ""}`.trim()
       : String(idProyecto);
 
-    // informes (posible filtro por plantilla)
-    const params = [idProyecto];
-    let whereExtra = "";
+    const totalParams = [idProyecto];
+    let totalWhereExtra = "";
+
     if (idPlantilla) {
-      params.push(idPlantilla);
-      whereExtra = ` AND i.id_plantilla = $${params.length} `;
+      totalParams.push(idPlantilla);
+      totalWhereExtra += ` AND i.id_plantilla = $${totalParams.length} `;
     }
 
-    const infQ = await pool.query(
-      `SELECT i.*, p.nombre AS nombre_plantilla
-       FROM ema.informe i
-       JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
-       WHERE i.id_proyecto = $1
-       ${whereExtra}
-       ORDER BY i.fecha_creado DESC, i.id_informe DESC`,
-      params
+    const totalQ = await pool.query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM ema.informe i
+      WHERE i.id_proyecto = $1
+      ${totalWhereExtra}
+      `,
+      totalParams
     );
 
-    const informes = infQ.rows || [];
-    if (!informes.length) return res.status(404).send("No hay informes para exportar.");
+    const totalInformes = Number(totalQ.rows?.[0]?.total || 0);
+    const totalPages = Math.max(1, Math.ceil(totalInformes / limit));
+    const desde = totalInformes === 0 ? 0 : offset + 1;
 
+    let informes = [];
+
+    if (orderBy === "pregunta" && orderPreguntaId > 0) {
+      const baseParams = [idProyecto];
+      let baseWhere = "";
+
+      if (idPlantilla) {
+        baseParams.push(idPlantilla);
+        baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+      }
+
+      baseParams.push(orderPreguntaId);
+      const idxPregunta = baseParams.length;
+      const idxLimit = idxPregunta + 1;
+      const idxOffset = idxPregunta + 2;
+      const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+      const q = await pool.query(
+        `
+        SELECT
+          i.*,
+          p.nombre AS nombre_plantilla,
+          COALESCE(
+            NULLIF(TRIM(ir.valor_texto), ''),
+            NULLIF(TRIM(ir.valor_json::text), ''),
+            CASE
+              WHEN ir.valor_bool IS TRUE THEN 'SI'
+              WHEN ir.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) AS valor_orden
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p
+          ON p.id_plantilla = i.id_plantilla
+        LEFT JOIN ema.informe_respuesta ir
+          ON ir.id_informe = i.id_informe
+         AND ir.id_pregunta = $${idxPregunta}
+        WHERE i.id_proyecto = $1
+        ${baseWhere}
+        ORDER BY
+          COALESCE(
+            NULLIF(TRIM(ir.valor_texto), ''),
+            NULLIF(TRIM(ir.valor_json::text), ''),
+            CASE
+              WHEN ir.valor_bool IS TRUE THEN 'SI'
+              WHEN ir.valor_bool IS FALSE THEN 'NO'
+              ELSE ''
+            END
+          ) ${orderSql},
+          i.id_informe ${orderSql}
+        LIMIT $${idxLimit} OFFSET $${idxOffset}
+        `,
+        [...baseParams, limit, offset]
+      );
+
+      informes = q.rows || [];
+    } else {
+      const params = [idProyecto];
+      let whereExtra = "";
+
+      if (idPlantilla) {
+        params.push(idPlantilla);
+        whereExtra = ` AND i.id_plantilla = $${params.length} `;
+      }
+
+      let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+      if (orderBy === "fecha") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.fecha_creado DESC, i.id_informe DESC"
+            : "i.fecha_creado ASC, i.id_informe ASC";
+      } else if (orderBy === "id") {
+        orderClause =
+          orderDir === "desc"
+            ? "i.id_informe DESC"
+            : "i.id_informe ASC";
+      }
+
+      params.push(limit);
+      const idxLimit = params.length;
+
+      params.push(offset);
+      const idxOffset = params.length;
+
+      const q = await pool.query(
+        `
+        SELECT i.*, p.nombre AS nombre_plantilla
+        FROM ema.informe i
+        JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+        WHERE i.id_proyecto = $1
+        ${whereExtra}
+        ORDER BY ${orderClause}
+        LIMIT $${idxLimit} OFFSET $${idxOffset}
+        `,
+        params
+      );
+
+      informes = q.rows || [];
+    }
+
+    if (!informes.length) {
+      return res.status(404).send("No hay informes para exportar en ese lote.");
+    }
+
+    const hasta = offset + informes.length;
     const uploadsRoot = path.join(__dirname, "..", "uploads");
-
-    // =========================
-    // DOCX children
-    // =========================
     const children = [];
 
-    // Portada Ãºnica
     children.push(
-      new Paragraph({ text: "INFORMES DEL PROYECTO", heading: HeadingLevel.TITLE }),
+      new Paragraph({
+        text: "INFORMES DEL PROYECTO",
+        heading: HeadingLevel.TITLE,
+      }),
       new Paragraph({
         children: [
           new TextRun({ text: "Proyecto: ", bold: true }),
@@ -5129,10 +7682,40 @@ async function generarWordProyecto(req, res) {
           new TextRun({ text: isTabla ? "TABLA (tipo Excel)" : "NORMAL" }),
         ],
       }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Lote: ", bold: true }),
+          new TextRun({ text: `${page} / ${totalPages}` }),
+          new TextRun({ text: "   Registros en este lote: ", bold: true }),
+          new TextRun({ text: `${informes.length}` }),
+          new TextRun({ text: "   Rango: ", bold: true }),
+          new TextRun({ text: `${desde} - ${hasta}` }),
+          new TextRun({ text: "   Total informes: ", bold: true }),
+          new TextRun({ text: `${totalInformes}` }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Fotos: ", bold: true }),
+          new TextRun({
+            text: incluirFotos ? `Sí (máx. ${maxFotos} por pregunta)` : "No",
+          }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Orden: ", bold: true }),
+          new TextRun({
+            text:
+              orderBy === "pregunta" && orderPreguntaId > 0
+                ? `pregunta #${orderPreguntaId} (${orderDir})`
+                : `${orderBy} (${orderDir})`,
+          }),
+        ],
+      }),
       new Paragraph({ text: " " })
     );
 
-    // agrupar informes por plantilla (porque secciones/preguntas dependen de plantilla)
     const informesPorPlantilla = new Map();
     for (const inf of informes) {
       const k = Number(inf.id_plantilla);
@@ -5140,102 +7723,126 @@ async function generarWordProyecto(req, res) {
       informesPorPlantilla.get(k).push(inf);
     }
 
-    // ===========
-    // helper: leer imagen compatible con Word
-    // ===========
-    async function readImageForDocx(absPath) {
+    async function readImageForDocx(absPath, maxWidth = 1400) {
       if (!absPath || !fs.existsSync(absPath)) return null;
 
       const ext = String(path.extname(absPath) || "").toLowerCase();
       const buf = fs.readFileSync(absPath);
 
-      // Word soporta jpg/png. WebP NO.
-      if (ext === ".webp") {
-        if (!sharp) return null; // sin sharp no podemos convertir
-        try {
-          const out = await sharp(buf).png().toBuffer();
-          return { buffer: out, ext: "png" };
-        } catch {
-          return null;
-        }
+      if (!sharp) {
+        if (ext === ".jpg" || ext === ".jpeg") return { buffer: buf, ext: "jpg" };
+        if (ext === ".png") return { buffer: buf, ext: "png" };
+        return null;
       }
 
-      if (ext === ".jpg" || ext === ".jpeg") return { buffer: buf, ext: "jpg" };
-      if (ext === ".png") return { buffer: buf, ext: "png" };
+      try {
+        let pipeline = sharp(buf).rotate().resize({
+          width: maxWidth,
+          withoutEnlargement: true,
+        });
 
-      // si viene otra cosa, intentamos igual, pero suele fallar
-      return { buffer: buf, ext: ext.replace(".", "") || "jpg" };
+        if (ext === ".png") {
+          const out = await pipeline.png({ compressionLevel: 9 }).toBuffer();
+          return { buffer: out, ext: "png" };
+        }
+
+        const out = await pipeline.jpeg({ quality: 75 }).toBuffer();
+        return { buffer: out, ext: "jpg" };
+      } catch (e) {
+        console.warn("No se pudo optimizar imagen:", absPath, e?.message || e);
+        return null;
+      }
     }
 
-    // ===========
-    // TABLA: UNA tabla por secciÃ³n, filas = informes
-    // ===========
-    async function buildTablaSeccion({
-      seccion,
-      preguntasSec,
+    async function buildTablaUnica({
+      preguntasTodas,
       informesPlantilla,
       respuestasMapPorInforme,
       fotosPorInformePorPregunta,
     }) {
-      // Header: ID/Fecha + preguntas
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
       const headerCells = [
         new TableCell({
           width: { size: 7, type: WidthType.PERCENTAGE },
-          children: [new Paragraph({ children: [new TextRun({ text: "ID", bold: true })] })],
+          shading: { fill: "CCCCCC" },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "ID", bold: true, color: "000000" })],
+            }),
+          ],
         }),
         new TableCell({
           width: { size: 13, type: WidthType.PERCENTAGE },
-          children: [new Paragraph({ children: [new TextRun({ text: "Fecha", bold: true })] })],
+          shading: { fill: "CCCCCC" },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "Fecha", bold: true, color: "000000" })],
+            }),
+          ],
         }),
       ];
 
-      const perQ = Math.max(1, Math.floor(80 / preguntasSec.length));
-      for (const p of preguntasSec) {
+      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasOrdenadas.length)));
+
+      for (const p of preguntasOrdenadas) {
         headerCells.push(
           new TableCell({
             width: { size: perQ, type: WidthType.PERCENTAGE },
+            shading: { fill: "CCCCCC" },
             children: [
               new Paragraph({
-                children: [new TextRun({ text: safeStr(p.etiqueta || ""), bold: true })],
+                children: [
+                  new TextRun({
+                    text: cleanDocxText(p.etiqueta || ""),
+                    bold: true,
+                    color: "000000",
+                  }),
+                ],
               }),
             ],
           })
         );
       }
 
-      const rows = [
-        new TableRow({ children: headerCells }),
-      ];
+      const rows = [new TableRow({ children: headerCells })];
 
-      // filas = informes
       for (const inf of informesPlantilla) {
-        const rowCells = [];
-
-        rowCells.push(
+        const rowCells = [
           new TableCell({
             width: { size: 7, type: WidthType.PERCENTAGE },
-            children: [new Paragraph(String(inf.id_informe))],
+            children: [new Paragraph(new TextRun({ text: String(inf.id_informe), color: "000000" }))],
           }),
           new TableCell({
             width: { size: 13, type: WidthType.PERCENTAGE },
-            children: [new Paragraph(_formatFechaPY(inf.fecha_creado))],
-          })
-        );
+            children: [new Paragraph(new TextRun({ text: _formatFechaPY(inf.fecha_creado), color: "000000" }))],
+          }),
+        ];
 
-        for (const p of preguntasSec) {
-          const val =
-            respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
+        for (const p of preguntasOrdenadas) {
+          const val = respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
 
-          const cellChildren = [];
-          cellChildren.push(new Paragraph({ children: [new TextRun({ text: safeStr(val) })] }));
+          const cellChildren = [
+            new Paragraph({
+              children: [new TextRun({ text: cleanDocxText(val), color: "000000" })],
+            }),
+          ];
 
-          const fotosList =
-            fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
+          if (incluirFotos && fotosEnTabla) {
+            const fotosListOriginal =
+              fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
 
-          if (fotosList.length) {
-            // miniaturas
-            const imgW = 120;
-            const imgH = 80;
+            const fotosList = fotosListOriginal.slice(0, maxFotos);
 
             for (const f of fotosList) {
               if (!f?.buffer) continue;
@@ -5245,7 +7852,7 @@ async function generarWordProyecto(req, res) {
                   children: [
                     new ImageRun({
                       data: f.buffer,
-                      transformation: { width: imgW, height: imgH },
+                      transformation: { width: 120, height: 80 },
                     }),
                   ],
                 })
@@ -5255,7 +7862,11 @@ async function generarWordProyecto(req, res) {
                 cellChildren.push(
                   new Paragraph({
                     children: [
-                      new TextRun({ text: safeStr(f.descripcion), size: 18, color: "666666" }),
+                      new TextRun({
+                        text: cleanDocxText(f.descripcion),
+                        size: 18,
+                        color: "666666",
+                      }),
                     ],
                   })
                 );
@@ -5280,53 +7891,112 @@ async function generarWordProyecto(req, res) {
       });
     }
 
-    // ===========
-    // recorrer plantillas
-    // ===========
     for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
       const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
 
-      // tÃ­tulo plantilla (una vez)
       children.push(
         new Paragraph({
-          text: `Plantilla: ${safeStr(nombrePlantilla)}`,
+          text: `Plantilla: ${cleanDocxText(nombrePlantilla)}`,
           heading: HeadingLevel.HEADING_1,
         }),
         new Paragraph({ text: " " })
       );
 
-      // secciones/preguntas una vez por plantilla
+      const seccParams = [idPlant];
+      let seccWhereExtra = "";
+
+      if (seccionesIds.length) {
+        seccParams.push(seccionesIds);
+        seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+      }
+
       const { rows: secciones } = await pool.query(
-        `SELECT * FROM ema.informe_seccion WHERE id_plantilla = $1 ORDER BY orden`,
-        [idPlant]
+        `
+        SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ${seccWhereExtra}
+        ORDER BY orden
+        `,
+        seccParams
       );
+
+      if (!secciones.length) continue;
+
+      const seccionesFiltradasIds = secciones
+        .map((s) => Number(s.id_seccion))
+        .filter(Boolean);
+
+      const pregParams = [idPlant];
+      let pregWhereExtra = "";
+
+      if (seccionesFiltradasIds.length) {
+        pregParams.push(seccionesFiltradasIds);
+        pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
+      }
+
+      if (preguntasIds.length) {
+        pregParams.push(preguntasIds);
+        pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+      }
 
       const { rows: preguntas } = await pool.query(
-        `SELECT q.*
-         FROM ema.informe_pregunta q
-         JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
-         WHERE s.id_plantilla = $1
-         ORDER BY s.orden, q.orden`,
-        [idPlant]
+        `
+        SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ${pregWhereExtra}
+        ORDER BY s.orden, q.orden
+        `,
+        pregParams
       );
 
-      // traer respuestas de TODOS los informes de esa plantilla en un query
-      const idsInformes = infosPlantilla.map((x) => Number(x.id_informe)).filter(Boolean);
+      const preguntasIdsFiltradas = preguntas
+        .map((x) => Number(x.id_pregunta))
+        .filter(Boolean);
 
-      const { rows: respuestasAll } = await pool.query(
-        `SELECT * FROM ema.informe_respuesta
-         WHERE id_informe = ANY($1::int[])`,
-        [idsInformes]
+      const seccionesConPreguntas = secciones.filter((sec) =>
+        preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
       );
 
-      const { rows: fotosAll } = await pool.query(
-        `SELECT * FROM ema.informe_foto
-         WHERE id_informe = ANY($1::int[])
-         ORDER BY id_informe, orden`,
-        [idsInformes]
-      );
+      if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
+        continue;
+      }
 
-      // map respuestas por informe
+      const idsInformes = infosPlantilla
+        .map((x) => Number(x.id_informe))
+        .filter(Boolean);
+
+      let respuestasAll = [];
+      if (idsInformes.length && preguntasIdsFiltradas.length) {
+        const respQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_respuesta
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          `,
+          [idsInformes, preguntasIdsFiltradas]
+        );
+        respuestasAll = respQ.rows || [];
+      }
+
+      let fotosAll = [];
+      if (incluirFotos && idsInformes.length && preguntasIdsFiltradas.length && maxFotos > 0) {
+        const fotosQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_foto
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_informe, id_pregunta, orden
+          `,
+          [idsInformes, preguntasIdsFiltradas]
+        );
+        fotosAll = fotosQ.rows || [];
+      }
+
       const respuestasMapPorInforme = {};
       for (const inf of idsInformes) respuestasMapPorInforme[inf] = {};
 
@@ -5334,44 +8004,53 @@ async function generarWordProyecto(req, res) {
         const infId = Number(r.id_informe);
         const pId = Number(r.id_pregunta);
         const val = buildRespuestasMap([r])[pId];
+        if (!respuestasMapPorInforme[infId]) respuestasMapPorInforme[infId] = {};
         respuestasMapPorInforme[infId][pId] = val || "-";
       }
 
-      // fotos por informe y pregunta (buffer ya convertido si webp)
       const fotosPorInformePorPregunta = {};
       for (const infId of idsInformes) fotosPorInformePorPregunta[infId] = {};
 
-      for (const f of fotosAll) {
-        const infId = Number(f.id_informe);
-        const pId = Number(f.id_pregunta);
-        if (!infId || !pId) continue;
+      if (incluirFotos && fotosAll.length && maxFotos > 0) {
+        const contadorFotos = {};
 
-        const abs = path.join(
-          uploadsRoot,
-          String(f.ruta_archivo || "").replace(/\//g, path.sep)
-        );
+        for (const f of fotosAll) {
+          const infId = Number(f.id_informe);
+          const pId = Number(f.id_pregunta);
+          if (!infId || !pId) continue;
 
-        const img = await readImageForDocx(abs);
-        if (!img?.buffer) continue; // si webp y no hay sharp -> salta
+          const key = `${infId}_${pId}`;
+          contadorFotos[key] = contadorFotos[key] || 0;
+          if (contadorFotos[key] >= maxFotos) continue;
 
-        if (!fotosPorInformePorPregunta[infId][pId]) fotosPorInformePorPregunta[infId][pId] = [];
-        fotosPorInformePorPregunta[infId][pId].push({
-          descripcion: f.descripcion || "",
-          buffer: img.buffer,
-        });
+          const abs = path.join(
+            uploadsRoot,
+            String(f.ruta_archivo || "").replace(/\//g, path.sep)
+          );
+
+          const img = await readImageForDocx(abs, isTabla ? 900 : 1400);
+          if (!img?.buffer) continue;
+
+          if (!fotosPorInformePorPregunta[infId][pId]) {
+            fotosPorInformePorPregunta[infId][pId] = [];
+          }
+
+          fotosPorInformePorPregunta[infId][pId].push({
+            descripcion: f.descripcion || "",
+            buffer: img.buffer,
+          });
+
+          contadorFotos[key]++;
+        }
       }
 
-      // ===========
-      // render segun modo
-      // ===========
       if (!isTabla) {
-        // âœ… NORMAL: igual a tu lÃ³gica (pero ahora por plantilla agrupada)
         for (const informe of infosPlantilla) {
           const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
 
           children.push(
             new Paragraph({
-              text: safeStr(informe.titulo || nombrePlantilla || "INFORME"),
+              text: cleanDocxText(informe.titulo || nombrePlantilla || "INFORME"),
               heading: HeadingLevel.HEADING_2,
             }),
             new Paragraph({
@@ -5385,106 +8064,126 @@ async function generarWordProyecto(req, res) {
             new Paragraph({ text: " " })
           );
 
-          for (const sec of secciones) {
+          for (const sec of seccionesConPreguntas) {
+            const preguntasSec = preguntas.filter(
+              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
+            );
+
+            if (!preguntasSec.length) continue;
+
             children.push(
               new Paragraph({
-                text: safeStr(sec.titulo || "SecciÃ³n"),
+                text: cleanDocxText(sec.titulo || "Sección"),
                 heading: HeadingLevel.HEADING_3,
               })
             );
 
-            const preguntasSec = preguntas.filter((p) => p.id_seccion === sec.id_seccion);
-            if (!preguntasSec.length) {
-              children.push(new Paragraph({ text: "Sin preguntas en esta secciÃ³n." }), new Paragraph({ text: " " }));
-              continue;
-            }
-
             const rows = preguntasSec.map((p) => {
               const valor = respuestasMap[p.id_pregunta] ?? "-";
+
               return new TableRow({
                 children: [
                   new TableCell({
                     width: { size: 45, type: WidthType.PERCENTAGE },
-                    children: [new Paragraph({ children: [new TextRun({ text: safeStr(p.etiqueta), bold: true })] })],
+                    children: [
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cleanDocxText(p.etiqueta),
+                            bold: true,
+                          }),
+                        ],
+                      }),
+                    ],
                   }),
                   new TableCell({
                     width: { size: 55, type: WidthType.PERCENTAGE },
-                    children: [new Paragraph(safeStr(valor))],
+                    children: [new Paragraph(cleanDocxText(valor))],
                   }),
                 ],
               });
             });
 
             children.push(
-              new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }),
+              new Table({
+                width: { size: 100, type: WidthType.PERCENTAGE },
+                rows,
+              }),
               new Paragraph({ text: " " })
             );
 
-            // fotos debajo (por informe/pregunta)
-            for (const p of preguntasSec) {
-              const fotosList = fotosPorInformePorPregunta?.[informe.id_informe]?.[p.id_pregunta] || [];
-              if (!fotosList.length) continue;
+            if (incluirFotos && maxFotos > 0) {
+              for (const p of preguntasSec) {
+                const fotosListOriginal =
+                  fotosPorInformePorPregunta?.[informe.id_informe]?.[p.id_pregunta] || [];
 
-              children.push(
-                new Paragraph({ children: [new TextRun({ text: `Fotos - ${safeStr(p.etiqueta)}`, italics: true })] })
-              );
+                const fotosList = fotosListOriginal.slice(0, maxFotos);
+                if (!fotosList.length) continue;
 
-              for (const fx of fotosList) {
                 children.push(
                   new Paragraph({
                     children: [
-                      new ImageRun({
-                        data: fx.buffer,
-                        transformation: { width: 460, height: 260 },
+                      new TextRun({
+                        text: `Fotos - ${cleanDocxText(p.etiqueta)}`,
+                        italics: true,
                       }),
                     ],
                   })
                 );
 
-                if (fx.descripcion) {
-                  children.push(new Paragraph({ children: [new TextRun({ text: safeStr(fx.descripcion), size: 18, color: "666666" })] }));
-                }
-              }
+                for (const fx of fotosList) {
+                  children.push(
+                    new Paragraph({
+                      children: [
+                        new ImageRun({
+                          data: fx.buffer,
+                          transformation: { width: 460, height: 260 },
+                        }),
+                      ],
+                    })
+                  );
 
-              children.push(new Paragraph({ text: " " }));
+                  if (fx.descripcion) {
+                    children.push(
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cleanDocxText(fx.descripcion),
+                            size: 18,
+                            color: "666666",
+                          }),
+                        ],
+                      })
+                    );
+                  }
+                }
+
+                children.push(new Paragraph({ text: " " }));
+              }
             }
           }
 
           children.push(new Paragraph({ children: [], pageBreakBefore: true }));
         }
       } else {
-        // âœ… TABLA REAL (una tabla por secciÃ³n, filas=informes)
-        for (const sec of secciones) {
-          children.push(
-            new Paragraph({
-              text: safeStr(sec.titulo || "SecciÃ³n"),
-              heading: HeadingLevel.HEADING_2,
-            })
-          );
+        const preguntasTodas = [...preguntas];
 
-          const preguntasSec = preguntas.filter((p) => p.id_seccion === sec.id_seccion);
-          if (!preguntasSec.length) {
-            children.push(new Paragraph({ text: "Sin preguntas en esta secciÃ³n." }), new Paragraph({ text: " " }));
-            continue;
-          }
-
-          const tabla = await buildTablaSeccion({
-            seccion: sec,
-            preguntasSec,
+        if (preguntasTodas.length) {
+          const tabla = await buildTablaUnica({
+            preguntasTodas,
             informesPlantilla: infosPlantilla,
             respuestasMapPorInforme,
             fotosPorInformePorPregunta,
           });
 
-          children.push(tabla, new Paragraph({ text: " " }));
+          children.push(tabla);
+          children.push(new Paragraph({ text: " " }));
         }
 
-        // salto de pÃ¡gina entre plantillas
         children.push(new Paragraph({ children: [], pageBreakBefore: true }));
       }
     }
 
-    // âœ… Landscape SOLO para TABLA (mejor â€œtipo excelâ€)
     const doc = new Document({
       sections: [
         {
@@ -5498,15 +8197,828 @@ async function generarWordProyecto(req, res) {
 
     const buffer = await Packer.toBuffer(doc);
 
-    const fileName = `Proyecto_${idProyecto}_Informes${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}_${isTabla ? "TABLA" : "NORMAL"}.docx`;
+    const fileName =
+      `Proyecto_${idProyecto}` +
+      `${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}` +
+      `_Lote_${page}_de_${totalPages}` +
+      `_${isTabla ? "TABLA" : "NORMAL"}.docx`;
 
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("X-Export-Page", String(page));
+    res.setHeader("X-Export-Limit", String(limit));
+    res.setHeader("X-Export-Total", String(totalInformes));
+    res.setHeader("X-Export-Total-Pages", String(totalPages));
+    res.setHeader("X-Export-Range-From", String(desde));
+    res.setHeader("X-Export-Range-To", String(hasta));
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("Content-Length", buffer.length);
+
     return res.end(buffer);
   } catch (err) {
     console.error("generarWordProyecto error:", err);
     return res.status(500).send("Error al generar Word del proyecto");
+  }
+}
+
+async function generarWordProyectoRangoUnico(req, res) {
+  const idProyecto = Number(req.params.idProyecto);
+  const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
+
+  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
+  const orderDir =
+    String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
+
+  const modo = String(req.query.modo || "normal").toLowerCase();
+  const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
+
+  const preguntasIds = String(req.query.preguntas || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const seccionesIds = String(req.query.secciones || "")
+    .split(",")
+    .map((x) => Number(String(x).trim()))
+    .filter(Boolean);
+
+  const incluirFotos = String(req.query.incluirFotos ?? "1") !== "0";
+  const fotosEnTabla = String(req.query.fotosEnTabla ?? "0") === "1";
+  const maxFotos = Math.max(0, Number(req.query.maxFotos || 2));
+
+  let limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
+  if (incluirFotos) {
+    limit = Math.min(limit, 20);
+  }
+
+  const fromPage = Math.max(1, Number(req.query.fromPage || 1));
+  let toPage = Math.max(fromPage, Number(req.query.toPage || fromPage));
+
+  if (!idProyecto) {
+    return res.status(400).send("idProyecto inválido");
+  }
+
+  try {
+    const proyQ = await pool.query(
+      `
+      SELECT gid, nombre, codigo
+      FROM ema.proyectos
+      WHERE gid = $1
+      `,
+      [idProyecto]
+    );
+
+    const proy = proyQ.rows?.[0];
+    const proyectoLabel = proy
+      ? `${proy.codigo ? proy.codigo + " - " : ""}${proy.nombre || ""}`.trim()
+      : String(idProyecto);
+
+    const totalParams = [idProyecto];
+    let totalWhereExtra = "";
+
+    if (idPlantilla) {
+      totalParams.push(idPlantilla);
+      totalWhereExtra += ` AND i.id_plantilla = $${totalParams.length} `;
+    }
+
+    const totalQ = await pool.query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM ema.informe i
+      WHERE i.id_proyecto = $1
+      ${totalWhereExtra}
+      `,
+      totalParams
+    );
+
+    const totalInformes = Number(totalQ.rows?.[0]?.total || 0);
+    const totalPages = Math.max(1, Math.ceil(totalInformes / limit));
+
+    if (toPage > totalPages) toPage = totalPages;
+
+    const uploadsRoot = path.join(__dirname, "..", "uploads");
+    const children = [];
+
+    const addSpacer = () => {
+      children.push(new Paragraph({ text: "" }));
+    };
+
+    const addPageBreak = () => {
+      children.push(new Paragraph({ text: "", pageBreakBefore: true }));
+    };
+
+    children.push(
+      new Paragraph({
+        text: "INFORMES DEL PROYECTO",
+        heading: HeadingLevel.TITLE,
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Proyecto: ", bold: true }),
+          new TextRun({ text: proyectoLabel }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Generado: ", bold: true }),
+          new TextRun({ text: _formatFechaPY(new Date()) }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Formato: ", bold: true }),
+          new TextRun({ text: isTabla ? "TABLA (tipo Excel)" : "NORMAL" }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Lotes: ", bold: true }),
+          new TextRun({ text: `${fromPage} al ${toPage}` }),
+          new TextRun({ text: "   Registros por lote: ", bold: true }),
+          new TextRun({ text: `${limit}` }),
+          new TextRun({ text: "   Total informes: ", bold: true }),
+          new TextRun({ text: `${totalInformes}` }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Fotos: ", bold: true }),
+          new TextRun({
+            text: incluirFotos ? `Sí (máx. ${maxFotos} por pregunta)` : "No",
+          }),
+        ],
+      }),
+      new Paragraph({
+        children: [
+          new TextRun({ text: "Orden: ", bold: true }),
+          new TextRun({
+            text:
+              orderBy === "pregunta" && orderPreguntaId > 0
+                ? `pregunta #${orderPreguntaId} (${orderDir})`
+                : `${orderBy} (${orderDir})`,
+          }),
+        ],
+      })
+    );
+
+    addSpacer();
+
+    async function readImageForDocx(absPath, maxWidth = 1400) {
+      if (!absPath || !fs.existsSync(absPath)) return null;
+
+      const ext = String(path.extname(absPath) || "").toLowerCase();
+      const buf = fs.readFileSync(absPath);
+
+      if (!sharp) {
+        if (ext === ".jpg" || ext === ".jpeg") return { buffer: buf, ext: "jpg" };
+        if (ext === ".png") return { buffer: buf, ext: "png" };
+        return null;
+      }
+
+      try {
+        let pipeline = sharp(buf).rotate().resize({
+          width: maxWidth,
+          withoutEnlargement: true,
+        });
+
+        if (ext === ".png") {
+          const out = await pipeline.png({ compressionLevel: 9 }).toBuffer();
+          return { buffer: out, ext: "png" };
+        }
+
+        const out = await pipeline.jpeg({ quality: 75 }).toBuffer();
+        return { buffer: out, ext: "jpg" };
+      } catch (e) {
+        console.warn("No se pudo optimizar imagen:", absPath, e?.message || e);
+        return null;
+      }
+    }
+
+    async function buildTablaUnica({
+      preguntasTodas,
+      informesPlantilla,
+      respuestasMapPorInforme,
+      fotosPorInformePorPregunta,
+    }) {
+      const preguntasOrdenadas = [...preguntasTodas].sort((a, b) => {
+        const sa = Number(a.id_seccion || 0);
+        const sb = Number(b.id_seccion || 0);
+        if (sa !== sb) return sa - sb;
+
+        const oa = Number(a.orden || 0);
+        const ob = Number(b.orden || 0);
+        if (oa !== ob) return oa - ob;
+
+        return Number(a.id_pregunta || 0) - Number(b.id_pregunta || 0);
+      });
+
+      if (!preguntasOrdenadas.length) return null;
+
+      const headerCells = [
+        new TableCell({
+          width: { size: 7, type: WidthType.PERCENTAGE },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "ID", bold: true })],
+            }),
+          ],
+        }),
+        new TableCell({
+          width: { size: 13, type: WidthType.PERCENTAGE },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: "Fecha", bold: true })],
+            }),
+          ],
+        }),
+      ];
+
+      const perQ = Math.max(1, Math.floor(80 / Math.max(1, preguntasOrdenadas.length)));
+
+      for (const p of preguntasOrdenadas) {
+        headerCells.push(
+          new TableCell({
+            width: { size: perQ, type: WidthType.PERCENTAGE },
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: cleanDocxText(p.etiqueta || ""),
+                    bold: true,
+                  }),
+                ],
+              }),
+            ],
+          })
+        );
+      }
+
+      const rows = [new TableRow({ children: headerCells })];
+
+      for (const inf of informesPlantilla) {
+        const rowCells = [
+          new TableCell({
+            width: { size: 7, type: WidthType.PERCENTAGE },
+            children: [new Paragraph(String(inf.id_informe || ""))],
+          }),
+          new TableCell({
+            width: { size: 13, type: WidthType.PERCENTAGE },
+            children: [new Paragraph(_formatFechaPY(inf.fecha_creado))],
+          }),
+        ];
+
+        for (const p of preguntasOrdenadas) {
+          const val = respuestasMapPorInforme?.[inf.id_informe]?.[p.id_pregunta] ?? "-";
+
+          const cellChildren = [
+            new Paragraph({
+              children: [new TextRun({ text: cleanDocxText(val) })],
+            }),
+          ];
+
+          if (incluirFotos && fotosEnTabla) {
+            const fotosListOriginal =
+              fotosPorInformePorPregunta?.[inf.id_informe]?.[p.id_pregunta] || [];
+
+            const fotosList = fotosListOriginal.slice(0, maxFotos);
+
+            for (const f of fotosList) {
+              if (!f?.buffer) continue;
+
+              cellChildren.push(
+                new Paragraph({
+                  children: [
+                    new ImageRun({
+                      data: f.buffer,
+                      transformation: { width: 120, height: 80 },
+                    }),
+                  ],
+                })
+              );
+
+              if (f.descripcion) {
+                cellChildren.push(
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: cleanDocxText(f.descripcion),
+                        size: 18,
+                        color: "666666",
+                      }),
+                    ],
+                  })
+                );
+              }
+            }
+          }
+
+          rowCells.push(
+            new TableCell({
+              width: { size: perQ, type: WidthType.PERCENTAGE },
+              children: cellChildren,
+            })
+          );
+        }
+
+        rows.push(new TableRow({ children: rowCells }));
+      }
+
+      return new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows,
+      });
+    }
+
+    // =========================================================
+    // 1) JUNTAR TODOS LOS INFORMES DEL RANGO COMPLETO
+    // =========================================================
+    const infosRango = [];
+
+    for (let currentPage = fromPage; currentPage <= toPage; currentPage++) {
+      const offset = (currentPage - 1) * limit;
+      let infosPagina = [];
+
+      if (orderBy === "pregunta" && orderPreguntaId > 0) {
+        const baseParams = [idProyecto];
+        let baseWhere = "";
+
+        if (idPlantilla) {
+          baseParams.push(idPlantilla);
+          baseWhere += ` AND i.id_plantilla = $${baseParams.length} `;
+        }
+
+        baseParams.push(orderPreguntaId);
+        const idxPregunta = baseParams.length;
+        const idxLimit = idxPregunta + 1;
+        const idxOffset = idxPregunta + 2;
+        const orderSql = orderDir === "desc" ? "DESC" : "ASC";
+
+        const q = await pool.query(
+          `
+          SELECT
+            i.*,
+            p.nombre AS nombre_plantilla,
+            COALESCE(
+              NULLIF(TRIM(ir.valor_texto), ''),
+              NULLIF(TRIM(ir.valor_json::text), ''),
+              CASE
+                WHEN ir.valor_bool IS TRUE THEN 'SI'
+                WHEN ir.valor_bool IS FALSE THEN 'NO'
+                ELSE ''
+              END
+            ) AS valor_orden
+          FROM ema.informe i
+          JOIN ema.informe_plantilla p
+            ON p.id_plantilla = i.id_plantilla
+          LEFT JOIN ema.informe_respuesta ir
+            ON ir.id_informe = i.id_informe
+           AND ir.id_pregunta = $${idxPregunta}
+          WHERE i.id_proyecto = $1
+          ${baseWhere}
+          ORDER BY
+            COALESCE(
+              NULLIF(TRIM(ir.valor_texto), ''),
+              NULLIF(TRIM(ir.valor_json::text), ''),
+              CASE
+                WHEN ir.valor_bool IS TRUE THEN 'SI'
+                WHEN ir.valor_bool IS FALSE THEN 'NO'
+                ELSE ''
+              END
+            ) ${orderSql},
+            i.id_informe ${orderSql}
+          LIMIT $${idxLimit} OFFSET $${idxOffset}
+          `,
+          [...baseParams, limit, offset]
+        );
+
+        infosPagina = q.rows || [];
+      } else {
+        const params = [idProyecto];
+        let whereExtra = "";
+
+        if (idPlantilla) {
+          params.push(idPlantilla);
+          whereExtra = ` AND i.id_plantilla = $${params.length} `;
+        }
+
+        let orderClause = "i.fecha_creado ASC, i.id_informe ASC";
+
+        if (orderBy === "fecha") {
+          orderClause =
+            orderDir === "desc"
+              ? "i.fecha_creado DESC, i.id_informe DESC"
+              : "i.fecha_creado ASC, i.id_informe ASC";
+        } else if (orderBy === "id") {
+          orderClause = orderDir === "desc" ? "i.id_informe DESC" : "i.id_informe ASC";
+        }
+
+        params.push(limit);
+        const idxLimit = params.length;
+
+        params.push(offset);
+        const idxOffset = params.length;
+
+        const q = await pool.query(
+          `
+          SELECT i.*, p.nombre AS nombre_plantilla
+          FROM ema.informe i
+          JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
+          WHERE i.id_proyecto = $1
+          ${whereExtra}
+          ORDER BY ${orderClause}
+          LIMIT $${idxLimit} OFFSET $${idxOffset}
+          `,
+          params
+        );
+
+        infosPagina = q.rows || [];
+      }
+
+      if (infosPagina.length) {
+        infosRango.push(...infosPagina);
+      }
+    }
+
+    if (!infosRango.length) {
+      return res.status(404).send("No hay informes para exportar en ese rango.");
+    }
+
+    // =========================================================
+    // 2) AGRUPAR UNA SOLA VEZ POR PLANTILLA
+    // =========================================================
+    const informesPorPlantilla = new Map();
+    for (const inf of infosRango) {
+      const k = Number(inf.id_plantilla);
+      if (!informesPorPlantilla.has(k)) informesPorPlantilla.set(k, []);
+      informesPorPlantilla.get(k).push(inf);
+    }
+
+    // =========================================================
+    // 3) ARMAR CONTENIDO UNA SOLA VEZ (SIN TITULO POR LOTE)
+    // =========================================================
+    let bloquesAgregados = 0;
+
+    for (const [idPlant, infosPlantilla] of informesPorPlantilla.entries()) {
+      if (!Array.isArray(infosPlantilla) || !infosPlantilla.length) continue;
+
+      const nombrePlantilla = infosPlantilla[0]?.nombre_plantilla || String(idPlant);
+
+      children.push(
+        new Paragraph({
+          text: `Plantilla: ${cleanDocxText(nombrePlantilla)}`,
+          heading: HeadingLevel.HEADING_1,
+        })
+      );
+      addSpacer();
+
+      const seccParams = [idPlant];
+      let seccWhereExtra = "";
+
+      if (seccionesIds.length) {
+        seccParams.push(seccionesIds);
+        seccWhereExtra += ` AND id_seccion = ANY($${seccParams.length}::int[]) `;
+      }
+
+      const { rows: secciones } = await pool.query(
+        `
+        SELECT *
+        FROM ema.informe_seccion
+        WHERE id_plantilla = $1
+        ${seccWhereExtra}
+        ORDER BY orden
+        `,
+        seccParams
+      );
+
+      if (!secciones.length) continue;
+
+      const seccionesFiltradasIds = secciones
+        .map((s) => Number(s.id_seccion))
+        .filter(Boolean);
+
+      const pregParams = [idPlant];
+      let pregWhereExtra = "";
+
+      if (seccionesFiltradasIds.length) {
+        pregParams.push(seccionesFiltradasIds);
+        pregWhereExtra += ` AND s.id_seccion = ANY($${pregParams.length}::int[]) `;
+      }
+
+      if (preguntasIds.length) {
+        pregParams.push(preguntasIds);
+        pregWhereExtra += ` AND q.id_pregunta = ANY($${pregParams.length}::int[]) `;
+      }
+
+      const { rows: preguntas } = await pool.query(
+        `
+        SELECT q.*
+        FROM ema.informe_pregunta q
+        JOIN ema.informe_seccion s ON s.id_seccion = q.id_seccion
+        WHERE s.id_plantilla = $1
+        ${pregWhereExtra}
+        ORDER BY s.orden, q.orden
+        `,
+        pregParams
+      );
+
+      const preguntasIdsFiltradas = preguntas
+        .map((x) => Number(x.id_pregunta))
+        .filter(Boolean);
+
+      const seccionesConPreguntas = secciones.filter((sec) =>
+        preguntas.some((p) => Number(p.id_seccion) === Number(sec.id_seccion))
+      );
+
+      if (!seccionesConPreguntas.length || !preguntasIdsFiltradas.length) {
+        continue;
+      }
+
+      const idsInformes = infosPlantilla
+        .map((x) => Number(x.id_informe))
+        .filter(Boolean);
+
+      let respuestasAll = [];
+      if (idsInformes.length && preguntasIdsFiltradas.length) {
+        const respQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_respuesta
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          `,
+          [idsInformes, preguntasIdsFiltradas]
+        );
+        respuestasAll = respQ.rows || [];
+      }
+
+      let fotosAll = [];
+      if (incluirFotos && idsInformes.length && preguntasIdsFiltradas.length && maxFotos > 0) {
+        const fotosQ = await pool.query(
+          `
+          SELECT *
+          FROM ema.informe_foto
+          WHERE id_informe = ANY($1::int[])
+            AND id_pregunta = ANY($2::int[])
+          ORDER BY id_informe, id_pregunta, orden
+          `,
+          [idsInformes, preguntasIdsFiltradas]
+        );
+        fotosAll = fotosQ.rows || [];
+      }
+
+      const respuestasMapPorInforme = {};
+      for (const inf of idsInformes) respuestasMapPorInforme[inf] = {};
+
+      for (const r of respuestasAll) {
+        const infId = Number(r.id_informe);
+        const pId = Number(r.id_pregunta);
+        const val = buildRespuestasMap([r])[pId];
+        if (!respuestasMapPorInforme[infId]) respuestasMapPorInforme[infId] = {};
+        respuestasMapPorInforme[infId][pId] = val || "-";
+      }
+
+      const fotosPorInformePorPregunta = {};
+      for (const infId of idsInformes) fotosPorInformePorPregunta[infId] = {};
+
+      if (incluirFotos && fotosAll.length && maxFotos > 0) {
+        const contadorFotos = {};
+
+        for (const f of fotosAll) {
+          const infId = Number(f.id_informe);
+          const pId = Number(f.id_pregunta);
+          if (!infId || !pId) continue;
+
+          const key = `${infId}_${pId}`;
+          contadorFotos[key] = contadorFotos[key] || 0;
+          if (contadorFotos[key] >= maxFotos) continue;
+
+          const abs = path.join(
+            uploadsRoot,
+            String(f.ruta_archivo || "").replace(/\//g, path.sep)
+          );
+
+          const img = await readImageForDocx(abs, isTabla ? 900 : 1400);
+          if (!img?.buffer) continue;
+
+          if (!fotosPorInformePorPregunta[infId][pId]) {
+            fotosPorInformePorPregunta[infId][pId] = [];
+          }
+
+          fotosPorInformePorPregunta[infId][pId].push({
+            descripcion: f.descripcion || "",
+            buffer: img.buffer,
+          });
+
+          contadorFotos[key]++;
+        }
+      }
+
+      if (!isTabla) {
+        let informesAgregadosPlantilla = 0;
+
+        for (const informe of infosPlantilla) {
+          const respuestasMap = respuestasMapPorInforme[informe.id_informe] || {};
+
+          children.push(
+            new Paragraph({
+              text: cleanDocxText(informe.titulo || nombrePlantilla || "INFORME"),
+              heading: HeadingLevel.HEADING_2,
+            }),
+            new Paragraph({
+              children: [
+                new TextRun({ text: "ID Informe: ", bold: true }),
+                new TextRun(String(informe.id_informe)),
+                new TextRun({ text: "   Fecha: ", bold: true }),
+                new TextRun(_formatFechaPY(informe.fecha_creado)),
+              ],
+            })
+          );
+
+          addSpacer();
+
+          for (const sec of seccionesConPreguntas) {
+            const preguntasSec = preguntas.filter(
+              (p) => Number(p.id_seccion) === Number(sec.id_seccion)
+            );
+
+            if (!preguntasSec.length) continue;
+
+            children.push(
+              new Paragraph({
+                text: cleanDocxText(sec.titulo || "Sección"),
+                heading: HeadingLevel.HEADING_3,
+              })
+            );
+
+            const rows = preguntasSec.map((p) => {
+              const valor = respuestasMap[p.id_pregunta] ?? "-";
+
+              return new TableRow({
+                children: [
+                  new TableCell({
+                    width: { size: 45, type: WidthType.PERCENTAGE },
+                    children: [
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cleanDocxText(p.etiqueta),
+                            bold: true,
+                          }),
+                        ],
+                      }),
+                    ],
+                  }),
+                  new TableCell({
+                    width: { size: 55, type: WidthType.PERCENTAGE },
+                    children: [new Paragraph(cleanDocxText(valor))],
+                  }),
+                ],
+              });
+            });
+
+            if (rows.length) {
+              children.push(
+                new Table({
+                  width: { size: 100, type: WidthType.PERCENTAGE },
+                  rows,
+                })
+              );
+              addSpacer();
+            }
+
+            if (incluirFotos && maxFotos > 0) {
+              for (const p of preguntasSec) {
+                const fotosListOriginal =
+                  fotosPorInformePorPregunta?.[informe.id_informe]?.[p.id_pregunta] || [];
+
+                const fotosList = fotosListOriginal.slice(0, maxFotos);
+                if (!fotosList.length) continue;
+
+                children.push(
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: `Fotos - ${cleanDocxText(p.etiqueta)}`,
+                        italics: true,
+                      }),
+                    ],
+                  })
+                );
+
+                for (const fx of fotosList) {
+                  if (!fx?.buffer) continue;
+
+                  children.push(
+                    new Paragraph({
+                      children: [
+                        new ImageRun({
+                          data: fx.buffer,
+                          transformation: { width: 460, height: 260 },
+                        }),
+                      ],
+                    })
+                  );
+
+                  if (fx.descripcion) {
+                    children.push(
+                      new Paragraph({
+                        children: [
+                          new TextRun({
+                            text: cleanDocxText(fx.descripcion),
+                            size: 18,
+                            color: "666666",
+                          }),
+                        ],
+                      })
+                    );
+                  }
+                }
+
+                addSpacer();
+              }
+            }
+          }
+
+          informesAgregadosPlantilla++;
+          bloquesAgregados++;
+
+          if (informesAgregadosPlantilla < infosPlantilla.length) {
+            addPageBreak();
+          }
+        }
+      } else {
+        const preguntasTodas = [...preguntas];
+
+        const tabla = await buildTablaUnica({
+          preguntasTodas,
+          informesPlantilla: infosPlantilla,
+          respuestasMapPorInforme,
+          fotosPorInformePorPregunta,
+        });
+
+        if (tabla) {
+          children.push(tabla);
+          addSpacer();
+          bloquesAgregados++;
+        }
+      }
+    }
+
+    if (!bloquesAgregados) {
+      return res.status(500).send("No se pudo generar contenido válido para el Word.");
+    }
+
+    if (!children.length) {
+      return res.status(500).send("Documento vacío (no se generó contenido).");
+    }
+
+    console.log("[WORD-RANGO-UNICO]");
+    console.log("Proyecto:", idProyecto);
+    console.log("Plantilla:", idPlantilla);
+    console.log("fromPage:", fromPage, "toPage:", toPage);
+    console.log("Total informes:", totalInformes);
+    console.log("Infos rango:", infosRango.length);
+    console.log("Bloques agregados:", bloquesAgregados);
+    console.log("Children:", children.length);
+
+    const doc = new Document({
+      sections: [
+        {
+          properties: isTabla
+            ? { page: { size: { orientation: PageOrientation.LANDSCAPE } } }
+            : {},
+          children,
+        },
+      ],
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+
+    if (!buffer || !buffer.length) {
+      return res.status(500).send("No se pudo generar el archivo Word.");
+    }
+
+    const fileName =
+      `Proyecto_${idProyecto}` +
+      `${idPlantilla ? `_Plantilla_${idPlantilla}` : ""}` +
+      `_Lotes_${fromPage}_a_${toPage}` +
+      `_${isTabla ? "TABLA" : "NORMAL"}.docx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.end(buffer);
+  } catch (err) {
+    console.error("generarWordProyectoRangoUnico error:", err);
+    return res.status(500).send("Error al generar Word único del rango");
   }
 }
 
@@ -6034,10 +9546,12 @@ async function duplicarPlantilla(req, res) {
         }
       }
 
-      if (search) {
-        params.push(`%${search}%`);
+      const searchValue = String(search || "").trim();
+      if (searchValue) {
+        params.push(`%${searchValue}%`);
         const searchIdx = params.length;
-        whereConditions.push(`
+
+        const searchPredicates = [`
           EXISTS (
             SELECT 1 
             FROM ema.informe_respuesta r2 
@@ -6048,7 +9562,15 @@ async function duplicarPlantilla(req, res) {
               OR r2.valor_bool::text ILIKE $${searchIdx}
             )
           )
-        `);
+        `];
+
+        if (/^\d+$/.test(searchValue)) {
+          params.push(Number(searchValue));
+          const idIdx = params.length;
+          searchPredicates.push(`i.id_informe = $${idIdx}`);
+        }
+
+        whereConditions.push(`(${searchPredicates.join(" OR ")})`);
       }
 
       const whereClause = whereConditions.map(c => `(${c})`).join(" AND ");
@@ -6058,8 +9580,13 @@ async function duplicarPlantilla(req, res) {
         FROM ema.informe i
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
         LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
-        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
-          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.formula_resultado fr ON fr.id_resultado = (
+          SELECT fr2.id_resultado 
+          FROM ema.formula_resultado fr2 
+          WHERE fr2.id_registro = ir.id_registro 
+          ORDER BY fr2.id_resultado DESC 
+          LIMIT 1
+        )
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
           AND pu.id_usuario = $${scope.userParamIndex}
@@ -6101,6 +9628,7 @@ async function duplicarPlantilla(req, res) {
           fr.fecha_recalculo,
           fr.fecha_manual_evaluacion,
           fr.fecha_revision_usuario,
+          fr.version_formula,
           CONCAT(u.first_name, ' ', u.last_name) AS evaluador_nombre,
           (
             SELECT jsonb_object_agg(q_vis.etiqueta, 
@@ -6123,8 +9651,13 @@ async function duplicarPlantilla(req, res) {
         FROM ema.informe i
         JOIN ema.informe_plantilla p ON p.id_plantilla = i.id_plantilla
         LEFT JOIN ema.informe_registro ir ON ir.id_informe = i.id_informe
-        LEFT JOIN ema.formula_resultado fr ON fr.id_registro = ir.id_registro
-          AND fr.id_formula = (SELECT id_formula FROM ema.formula f WHERE f.id_plantilla = p.id_plantilla AND f.activo = true ORDER BY f.version DESC LIMIT 1)
+        LEFT JOIN ema.formula_resultado fr ON fr.id_resultado = (
+          SELECT fr2.id_resultado 
+          FROM ema.formula_resultado fr2 
+          WHERE fr2.id_registro = ir.id_registro 
+          ORDER BY fr2.id_resultado DESC 
+          LIMIT 1
+        )
         LEFT JOIN ema.informe_plantilla_usuario pu
           ON pu.id_plantilla = p.id_plantilla
           AND pu.id_usuario = $${scope.userParamIndex}
@@ -6194,9 +9727,13 @@ module.exports = {
   getInforme,
   generarPdf,
   actualizarInforme,
+  importExcelUpdateRespuestas,
+  previewConsolidacionCampos,
+  applyConsolidacionCampos,
   deleteInformeFoto,
   deleteInforme,
   bulkDeleteInformesByProyectoPlantilla,
+  bulkDeleteFotosByProyectoPlantilla,
 
   // Proyecto helpers
   listPlantillasByProyecto,
@@ -6207,6 +9744,7 @@ module.exports = {
   buscarPersonasProyecto,
   generarPdfProyecto,
   generarWordProyecto,
+  generarWordProyectoRangoUnico,
 
   // Share links (privado)
   createShareLink,

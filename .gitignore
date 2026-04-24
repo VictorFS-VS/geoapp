@@ -11,12 +11,17 @@ build/
 **/dist/
 **/build/
 
+backup_old/
 frontend/dist/
 frontend/build/
 backend/dist/
 backend/build/
+
 geoapp_V10/
+backup_old/
 docs/
+**/backup_old/
+**/docs/
 
 *.log
 npm-debug.log*
@@ -105,6 +110,10 @@ backend/ema-geoapp-ec4ee88497fd.json
 *.docx
 *.pdf
 *.rtf
+*.xlsx
+*.xls
+*.ppt
+*.pptx
 
 **/*.md
 **/*.txt
@@ -112,6 +121,10 @@ backend/ema-geoapp-ec4ee88497fd.json
 **/*.docx
 **/*.pdf
 **/*.rtf
+**/*.xlsx
+**/*.xls
+**/*.ppt
+**/*.pptx
 
 *.gitignore
 **/*.gitignore
@@ -121,6 +134,9 @@ backend/ema-geoapp-ec4ee88497fd.json
 # =========================
 releases/
 backup/
+backup_old/
+**/backup/
+**/backup_old/
 
 *.bak
 *.old

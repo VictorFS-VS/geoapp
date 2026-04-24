@@ -89,9 +89,14 @@ function getPermScope(req, permCode) {
 /**
  * ✅ Valida que el user pueda acceder a un proyecto (para scope "own").
  * Asume:
- * - clientes: req.user.id_cliente se compara con proyectos.id_proponente (y/o id_cliente si existe)
+ * - clientes: req.user.id_cliente se compara con proyectos.id_proponente
+ *   y/o proyectos.id_cliente si esa columna existe.
  * - consultores: req.user.id_consultor se compara con proyectos.id_consultor
- * - admin: siempre ok (y/o scope all)
+ * - admin / scope all: siempre ok
+ *
+ * Nota:
+ * - En este sistema ema.informe.id_proyecto apunta a ema.proyectos.gid
+ *   (no a p.id_proyecto).
  */
 async function assertProyectoScope(req, idProyecto, permCode = "informes.export") {
   const idP = toInt(idProyecto, null);
@@ -102,35 +107,58 @@ async function assertProyectoScope(req, idProyecto, permCode = "informes.export"
   }
 
   const scope = getPermScope(req, permCode);
-  if (scope === "all") return true;
 
-  // scope own => validar pertenencia
+  // Si el permiso ya fue validado por requirePerm y el scope es "all" o "project",
+  // no forzamos validación de ownership acá.
+  if (scope === "all" || scope === "project") return true;
+
   const idCliente = req?.user?.id_cliente ? Number(req.user.id_cliente) : null;
   const idConsultor = req?.user?.id_consultor ? Number(req.user.id_consultor) : null;
 
-  // Si no hay ningun vínculo, no autorizamos (scope own)
   if (!idCliente && !idConsultor) {
     const e = new Error("Sin alcance para este recurso (scope=own).");
     e.status = 403;
     throw e;
   }
 
-  const q = `
+  // Intento 1: usando p.gid + p.id_cliente si existe
+  const q1 = `
     SELECT 1
     FROM ema.proyectos p
-    WHERE p.id_proyecto = $1
+    WHERE p.gid = $1
       AND (
-        -- cliente (en tu sistema normalmente es id_proponente)
         ($2::int IS NULL OR p.id_proponente = $2 OR (p.id_cliente IS NOT NULL AND p.id_cliente = $2))
       )
       AND (
-        -- consultor
         ($3::int IS NULL OR p.id_consultor = $3)
       )
     LIMIT 1
   `;
-  const r = await pool.query(q, [idP, idCliente, idConsultor]);
-  if (r.rowCount > 0) return true;
+
+  try {
+    const r1 = await pool.query(q1, [idP, idCliente, idConsultor]);
+    if (r1.rowCount > 0) return true;
+  } catch (err) {
+    // Si falla porque no existe p.id_cliente, probamos sin esa columna
+    if (err?.code !== "42703") throw err;
+  }
+
+  // Intento 2: usando p.gid sin p.id_cliente
+  const q2 = `
+    SELECT 1
+    FROM ema.proyectos p
+    WHERE p.gid = $1
+      AND (
+        ($2::int IS NULL OR p.id_proponente = $2)
+      )
+      AND (
+        ($3::int IS NULL OR p.id_consultor = $3)
+      )
+    LIMIT 1
+  `;
+
+  const r2 = await pool.query(q2, [idP, idCliente, idConsultor]);
+  if (r2.rowCount > 0) return true;
 
   const e = new Error("No autorizado para exportar informes de este proyecto.");
   e.status = 403;

@@ -792,6 +792,53 @@ async function eliminarQuejaReclamo(req, res) {
   }
 }
 
+/* =========================================================
+   GET /api/quejas-reclamos/stats
+========================================================= */
+async function obtenerEstadisticasQuejas(req, res) {
+  try {
+    const { id_proyecto } = req.query;
+    if (!id_proyecto) return res.status(400).json({ message: "Falta id_proyecto" });
+
+    // 1. Estados
+    const qEstados = `
+      SELECT estado, COUNT(*)::int as count 
+      FROM ema.quejas_reclamos 
+      WHERE id_proyecto = $1 
+      GROUP BY estado`;
+    const rEstados = await pool.query(qEstados, [id_proyecto]);
+
+    // 2. Tipologías (Motivos)
+    const qTipos = `
+      SELECT tipologia, COUNT(*)::int as count 
+      FROM ema.quejas_reclamos 
+      WHERE id_proyecto = $1 
+      GROUP BY tipologia 
+      ORDER BY count DESC 
+      LIMIT 10`;
+    const rTipos = await pool.query(qTipos, [id_proyecto]);
+
+    // 3. Tiempo promedio de respuesta (en días)
+    const qPromedio = `
+      SELECT AVG(fecha_cierre::date - fecha_reclamo::date)::float as promedio_respuesta 
+      FROM ema.quejas_reclamos 
+      WHERE id_proyecto = $1 
+        AND fecha_cierre IS NOT NULL 
+        AND fecha_reclamo IS NOT NULL
+        AND fecha_cierre >= fecha_reclamo`;
+    const rPromedio = await pool.query(qPromedio, [id_proyecto]);
+
+    return res.json({
+      estados: rEstados.rows,
+      tipologias: rTipos.rows,
+      promedio_respuesta: Math.round(rPromedio.rows[0]?.promedio_respuesta || 0)
+    });
+  } catch (err) {
+    console.error("❌ obtenerEstadisticasQuejas:", err);
+    return res.status(500).json({ message: "Error al obtener estadísticas" });
+  }
+}
+
 module.exports = {
   listarQuejasReclamos,
   obtenerQuejaReclamo,
@@ -799,4 +846,5 @@ module.exports = {
   actualizarQuejaReclamo,
   cambiarEstadoQuejaReclamo,
   eliminarQuejaReclamo,
+  obtenerEstadisticasQuejas,
 };

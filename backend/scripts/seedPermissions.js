@@ -10,6 +10,12 @@ const MODULES = [
 ];
 
 const ACTIONS = ["read", "create", "update", "delete"];
+const EXTRA_PERMISSIONS = [
+  ["informes.diagnostico.read", "Ver diagnóstico / scoring de informes"],
+  ["informes.diagnostico.create", "Ejecutar diagnóstico / scoring de informes"],
+  ["informes.diagnostico.update", "Actualizar diagnóstico / scoring de informes"],
+  ["informes.diagnostico.delete", "Eliminar diagnóstico / scoring de informes"],
+];
 
 async function run() {
   const client = await pool.connect();
@@ -27,6 +33,14 @@ async function run() {
           ON CONFLICT (code) DO NOTHING
         `, [code, description]);
       }
+    }
+
+    for (const [code, description] of EXTRA_PERMISSIONS) {
+      await client.query(`
+        INSERT INTO public.permissions (code, description)
+        VALUES ($1, $2)
+        ON CONFLICT (code) DO NOTHING
+      `, [code, description]);
     }
 
     console.log("✅ Permisos base creados");

@@ -33,28 +33,34 @@ const normalizeItems = (rawItems) =>
       label: String(item?.label ?? "").trim() || "(sin valor)",
       count: Math.max(0, Number(item?.count || 0)),
       color_hex: item?.color_hex || "",
+      isSynthetic: item?.isSynthetic === true,
       _idx: idx,
     }))
     .filter((item) => item.label);
 
 const limitItems = (items, maxItems) => {
   if (!maxItems || items.length <= maxItems) return items;
-  const head = items.slice(0, maxItems - 1);
-  const rest = items.slice(maxItems - 1);
+  const pinned = items.filter((item) => item.isSynthetic === true);
+  const regular = items.filter((item) => item.isSynthetic !== true);
+  const pinnedCount = pinned.length;
+  const regularLimit = Math.max(0, maxItems - pinnedCount);
+  if (regularLimit <= 0) return pinned.slice(0, maxItems);
+
+  const head = regular.slice(0, Math.max(0, regularLimit - 1));
+  const rest = regular.slice(Math.max(0, regularLimit - 1));
   const restCount = rest.reduce((acc, it) => acc + (it.count || 0), 0);
-  if (restCount <= 0) return head;
-  return [
-    ...head,
-    {
-      label: "Otros",
-      count: restCount,
-      color_hex: "",
-      isOther: true,
-    },
-  ];
+  const overflow = restCount > 0
+    ? [{
+        label: "Otros",
+        count: restCount,
+        color_hex: "",
+        isOther: true,
+      }]
+    : [];
+  return [...head, ...overflow, ...pinned];
 };
 
-const formatHoverSummary = (label, count, pct, baseLabel = "de la base") =>
+const formatHoverSummary = (label, count, pct, baseLabel = "de los registros") =>
   `${label}\nCantidad: ${count.toLocaleString()}\n${pct}% ${baseLabel}`;
 
 const polarToCartesian = (cx, cy, radius, angleInDegrees) => {
@@ -120,7 +126,7 @@ const ProjectHomeKpiChart = ({
     [limitedItems]
   );
   const technicalLabel = ""; // No mostrar metadata técnica
-  const baseLabel = "Base";
+  const baseLabel = "Total registros";
 
   if (!summary) {
     return (
@@ -322,7 +328,7 @@ const ProjectHomeKpiChart = ({
         <div className="ph-kpi-hero-header">
           <div className="ph-kpi-hero-label">{summary.etiqueta}</div>
           <div className="ph-kpi-hero-base">
-            Base: {total.toLocaleString()}
+            {baseLabel}: {total.toLocaleString()}
           </div>
         </div>
         <div className="ph-kpi-hero-insight">
@@ -330,7 +336,7 @@ const ProjectHomeKpiChart = ({
             {predominantItem?.label || "Sin datos"}
           </div>
           <div className="ph-kpi-hero-percentage">
-            {predominantPct}% de la base
+            {predominantPct}% de los registros
           </div>
         </div>
         <div className="ph-kpi-hero-chart-area">
