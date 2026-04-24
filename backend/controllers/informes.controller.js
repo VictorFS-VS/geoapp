@@ -7490,6 +7490,10 @@ async function obtenerInformesOrdenadosProyecto({
 async function generarWordProyecto(req, res) {
   const idProyecto = Number(req.params.idProyecto);
   const idPlantilla = req.query.plantilla ? Number(req.query.plantilla) : null;
+  const orderBy = String(req.query.orderBy || "fecha").toLowerCase();
+  const orderDir =
+    String(req.query.orderDir || "asc").toLowerCase() === "desc" ? "desc" : "asc";
+  const orderPreguntaId = Number(req.query.orderPreguntaId || 0);
 
   const modo = String(req.query.modo || "normal").toLowerCase();
   const isTabla = modo === "tabla" || modo === "excel" || modo === "table";
